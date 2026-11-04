@@ -14,9 +14,11 @@ Pajoniiir docs (`docs/SHARED_P4_BOARDS.md`, `docs/HARDWARE_WIRING.md`,
   own access point (AP) is the normal mode and joining another network (STA) is "a visit,
   not a state to live in". M3: on by default, WPA2, AP+STA at the same time. JC1060: none.
   On M3 the C6 uses the P4's SDMMC controller, so an internal SD card would share it.
-- **The deck's HTTP API has no authentication.** Control routes check an `X-DDJ-Control: 1`
-  header (which any client can send). Firmware updates are safe only because bundles are
-  signed and the deck verifies them. There is no file upload route.
+- **The deck's HTTP API has no authentication.** `api_request_allowed()` in web_server.c
+  checks the Host header (against DNS rebinding) and, for changes, an `X-DDJ-Control: 1`
+  header (so web pages can't trigger actions). Both stop browsers, not programs: any app
+  on the network can send them. Firmware updates are safe only because bundles are signed
+  and the deck verifies them. There is no file upload route.
 - **Storage access is already arbitrated** (`media_io_gate`, `sd_io_gate`, the library
   load gate), because playback and library reads share the drive.
 
