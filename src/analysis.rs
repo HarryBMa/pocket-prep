@@ -319,6 +319,42 @@ mod tests {
         }
     }
 
+    /// Music with a known tempo and key: chords in A minor over a kick drum.
+    #[test]
+    fn synthetic_music_tempo_and_key() {
+        for (bpm, sr) in [(124.0, 44100u32), (128.0, 48000), (174.0, 44100)] {
+            let y = crate::testaudio::music(sr, 60.0, bpm, 0.1, crate::testaudio::A_MINOR);
+            let a = analyse_audio(&AudioBuffer::new(sr, y.clone(), y), None, (85.0, 175.0));
+            assert!((a["bpm"].as_f64().unwrap() - bpm).abs() < 0.05, "{bpm}@{sr}: bpm {}", a["bpm"]);
+            assert_eq!((a["key"].as_str(), a["camelot"].as_str()), (Some("Am"), Some("8A")), "{bpm}@{sr}");
+        }
+    }
+
+    /// Real tracks with known values (not in git: copyright). Run with
+    ///   POCKET_PREP_KNOWN_TRACKS=<folder> cargo test --release -- --ignored known_tracks
+    /// Expected values are in tests/known_tracks.json.
+    #[test]
+    #[ignore]
+    fn known_tracks() {
+        let dir = std::path::PathBuf::from(std::env::var("POCKET_PREP_KNOWN_TRACKS").expect("set POCKET_PREP_KNOWN_TRACKS"));
+        let list: Value = serde_json::from_str(include_str!("../tests/known_tracks.json")).unwrap();
+        let mut failures = vec![];
+        for t in list["tracks"].as_array().unwrap() {
+            let file = t["file"].as_str().unwrap();
+            let audio = clubcraft_audio::decode::decode_native(&dir.join(file)).unwrap();
+            let a = analyse_audio(&audio, None, (85.0, 175.0));
+            let (bpm, key) = (a["bpm"].as_f64().unwrap(), a["key"].as_str().unwrap_or("").to_string());
+            println!("{file}: {bpm} BPM, {key}");
+            if (bpm - t["bpm"].as_f64().unwrap()).abs() > 0.05 {
+                failures.push(format!("{file}: bpm {bpm}, expected {}", t["bpm"]));
+            }
+            if key != t["key"].as_str().unwrap() {
+                failures.push(format!("{file}: key {key}, expected {}", t["key"]));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
     fn section(kind: SectionKind, start_bar: i32, bars: u32, g: &clubcraft_core::BeatGrid) -> clubcraft_core::Section {
         clubcraft_core::Section { kind, start: g.time_of_bar(start_bar as f64), end: g.time_of_bar((start_bar + bars as i32) as f64),
                                   start_bar, bars, energy: 0.5, stems: [0.0; 4] }

@@ -1,0 +1,9 @@
+{
+  "about": "Expected analysis for real tracks (audio not in git). BPMs were checked by grid lock over the whole track. Keys are ClubCraft's results and NOT yet confirmed by ear or another tool: replace them with confirmed keys.",
+  "tracks": [
+    { "file": "sorry.flac", "bpm": 130.0, "key": "Bm", "key_confirmed": false },
+    { "file": "Still Here (Original Mix).mp3", "bpm": 126.0, "key": "Eb", "key_confirmed": false },
+    { "file": "Mwaki (enzie edit) (RS).wav", "bpm": 128.0, "key": "C", "key_confirmed": false },
+    { "file": "FISHER-Atmosphere (Glowing Embers Bootleg).wav", "bpm": 174.0, "key": "Gm", "key_confirmed": false }
+  ]
+}

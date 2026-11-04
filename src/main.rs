@@ -18,6 +18,8 @@ mod jobs;
 mod library;
 mod server;
 mod stems;
+#[cfg(test)]
+mod testaudio;
 
 
 /// Bind 127.0.0.1:8765, or any free port if that's taken.
