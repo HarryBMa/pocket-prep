@@ -504,15 +504,18 @@ function deckWarnings(list) {
     ...list.map((w) => h("div", { class: "muted" }, `${w.title}: ${w.problem}`))];
 }
 async function loadExport() {
-  const drives = await api("/api/drives").catch(() => []);
+  const drives = await api(`/api/drives?all=${$("#allDrives").checked}`).catch(() => []);
+  if (!drives.some((d) => d.root === exp.root && !d.problem)) exp.root = null;
   $("#drives").replaceChildren(...(drives.length ? drives.map((d) => {
-    const c = h("button", { class: "card" + (exp.root === d.root ? " chosen" : "") },
+    // Drives the deck can't read (NTFS, APFS...) are shown, with the reason, but can't be chosen.
+    const c = h("button", { class: "card" + (exp.root === d.root ? " chosen" : ""), disabled: !!d.problem },
       h("b", {}, `${d.label || "Drive"} (${d.root})`),
       h("div", { class: "muted" }, `${d.removable ? "Removable" : "Fixed disk"} · ${d.filesystem} · ${fmtBytes(d.free)} free of ${fmtBytes(d.total)}`),
+      d.problem ? h("div", { class: "alert-text" }, d.problem) : null,
       d.has_export ? h("div", { class: "muted" }, "Has a library already: it will be updated") : null);
     c.addEventListener("click", () => { exp.root = d.root; loadExport(); });
     return c;
-  }) : [h("p", { class: "muted" }, "No drives found. Insert an SD card or USB stick.")]));
+  }) : [h("p", { class: "muted" }, "No removable drives found. Insert an SD card or USB stick.")]));
   const lists = state.playlists.filter((p) => !p.is_folder);
   $("#exportPlaylists").replaceChildren(...lists.map((p) => h("label", { class: "check" }, h("input", { type: "checkbox", value: p.id }), `${p.name} (${p.count})`)));
   updatePlan();
@@ -521,6 +524,7 @@ $$("input[name=scope]").forEach((r) => r.addEventListener("change", () => { $("#
 $("#exportPlaylists").addEventListener("change", updatePlan);
 $("#includeStems").addEventListener("change", updatePlan);
 $("#refreshDrives").addEventListener("click", loadExport);
+$("#allDrives").addEventListener("change", loadExport);
 function exportBody() {
   const scope = $("input[name=scope]:checked").value;
   const ids = scope === "playlists" ? $$("#exportPlaylists input:checked").map((i) => +i.value) : null;
@@ -539,8 +543,9 @@ async function updatePlan() {
       h("div", {}, h("b", {}, `${p.tracks} tracks`), `, ${p.playlists} playlists, ${p.with_stems} with stems · up to ${fmtBytes(p.bytes)} (${fmtBytes(p.free)} free)`),
       p.unanalysed ? h("div", { class: "muted" }, `${p.unanalysed} tracks aren't analysed yet; they'll be analysed during the export (slower).`) : null,
       ...deckWarnings(p.warnings),
-      p.fits ? null : h("div", {}, h("b", {}, "Doesn't fit. "), "Choose fewer playlists or turn off stems."));
-    btn.disabled = !p.fits || !p.tracks;
+      p.fits ? null : h("div", {}, h("b", {}, "Doesn't fit. "), "Choose fewer playlists or turn off stems."),
+      p.target_problem ? h("div", { class: "alert-text" }, p.target_problem) : null);
+    btn.disabled = !p.fits || !p.tracks || !!p.target_problem;
   } catch (e) { plan.textContent = e.message; }
 }
 $("#doExport").addEventListener("click", async () => {

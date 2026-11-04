@@ -290,8 +290,14 @@ fn export_args(b: &Value) -> (String, Option<Vec<i64>>, bool) {
     (b["root"].as_str().unwrap_or("").to_string(), pls, b["include_stems"].as_bool().unwrap_or(true))
 }
 
-async fn drives() -> R {
-    blocking(|| Ok(json!(usb::list_drives()))).await
+#[derive(Deserialize)]
+struct DriveQuery {
+    #[serde(default)]
+    all: bool,
+}
+
+async fn drives(Query(q): Query<DriveQuery>) -> R {
+    blocking(move || Ok(json!(usb::list_drives(q.all)))).await
 }
 
 async fn export_plan(Json(b): Json<Value>) -> R {

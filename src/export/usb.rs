@@ -72,23 +72,58 @@ pub fn deck_problem(path: &Path) -> Option<String> {
     }
 }
 
-/// Drives the system can see, removable ones first.
-pub fn list_drives() -> Vec<Value> {
+/// The system drive (Windows: %SystemDrive%, macOS: / and its system volumes). Never an export target.
+fn is_system(mount: &Path) -> bool {
+    if cfg!(windows) {
+        let sys = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        mount.to_string_lossy().trim_end_matches('\\').eq_ignore_ascii_case(&sys)
+    } else {
+        let m = mount.to_string_lossy();
+        m == "/" || m.starts_with("/System/") || m.starts_with("/private/") || m.starts_with("/dev")
+    }
+}
+
+/// The deck's SD/USB stack (FatFs) reads FAT32 and exFAT only.
+fn deck_filesystem_problem(fs: &str) -> Option<String> {
+    match fs.to_ascii_lowercase().as_str() {
+        "fat32" | "fat" | "fat16" | "vfat" | "msdos" | "exfat" => None,
+        _ => Some(format!("{fs} drive: the deck reads FAT32 and exFAT only. Format it as exFAT first (this erases it).")),
+    }
+}
+
+/// Drives to offer for export: removable ones only unless `all`, and never the system drive.
+pub fn list_drives(all: bool) -> Vec<Value> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
-    let mut out: Vec<Value> = disks.list().iter().filter_map(|d| {
-        let root = d.mount_point().to_string_lossy().to_string();
-        // macOS mounts system volumes under /System/Volumes; they're not export targets.
-        if root.starts_with("/System/") || root.starts_with("/private/") || root.starts_with("/dev") {
-            return None;
-        }
-        Some(json!({
-            "root": root, "label": d.name().to_string_lossy(), "filesystem": d.file_system().to_string_lossy(),
+    let mut out: Vec<Value> = disks.list().iter().filter(|d| !is_system(d.mount_point()) && (all || d.is_removable())).map(|d| {
+        let fs = d.file_system().to_string_lossy().to_string();
+        json!({
+            "root": d.mount_point().to_string_lossy(), "label": d.name().to_string_lossy(), "filesystem": fs,
             "removable": d.is_removable(), "free": d.available_space(), "total": d.total_space(),
             "has_export": d.mount_point().join("PIONEER/rekordbox/export.pdb").exists(),
-        }))
+            "problem": deck_filesystem_problem(&fs),
+        })
     }).collect();
     out.sort_by_key(|d| (!d["removable"].as_bool().unwrap_or(false), d["root"].as_str().unwrap_or("").to_string()));
     out
+}
+
+/// Why `root` can't be an export target, if it can't: the system drive, or a filesystem
+/// the deck can't read. POCKET_PREP_ANY_TARGET=1 lifts this for tests/e2e.sh.
+pub fn target_problem(root: &Path) -> Option<String> {
+    if std::env::var_os("POCKET_PREP_ANY_TARGET").is_some() {
+        return None;
+    }
+    let mut probe = root.to_path_buf();
+    while !probe.exists() && probe.pop() {}
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let Some(d) = disks.list().iter().filter(|d| probe.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len()) else {
+        return Some("Can't find the drive for that folder".into());
+    };
+    if is_system(d.mount_point()) {
+        return Some("That's the system drive. Choose an SD card or USB stick.".into());
+    }
+    deck_filesystem_problem(&d.file_system().to_string_lossy())
 }
 
 fn anlz_rel(tid: u32) -> String {
@@ -164,7 +199,7 @@ pub fn plan(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool) -> Re
         "tracks": tracks.len(), "playlists": pls.len(), "bytes": need, "free": free, "fits": (need as f64) < free as f64 * 0.98,
         "unanalysed": tracks.iter().filter(|t| t["analysed_at"].is_null()).count(),
         "with_stems": tracks.iter().filter(|t| t["stems"] == "done").count(),
-        "warnings": warnings(&tracks),
+        "warnings": warnings(&tracks), "target_problem": target_problem(Path::new(root)),
     }))
 }
 
@@ -183,6 +218,9 @@ fn copy_if_changed(src: &Path, dst: &Path) -> Result<bool> {
 pub fn export(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
               progress: &dyn Fn(f64, &str), cancel: &dyn Fn() -> bool) -> Result<Value> {
     let root = PathBuf::from(root);
+    if let Some(why) = target_problem(&root) {
+        return Err(anyhow!(why));
+    }
     std::fs::create_dir_all(&root)?;
     let (tracks, pls) = collect(playlist_ids)?;
     if tracks.is_empty() {
@@ -384,5 +422,28 @@ mod tests {
         assert!(deck_problem(&wav(24, "hi.wav")).unwrap().contains("24-bit"));
         assert!(deck_problem(Path::new("x.m4a")).is_some());
         assert!(deck_problem(Path::new("x.flac")).is_none());
+    }
+}
+
+#[cfg(test)]
+mod drive_tests {
+    use super::*;
+
+    #[test]
+    fn only_fat_and_exfat_pass() {
+        for ok in ["FAT32", "exFAT", "msdos", "exfat"] {
+            assert!(deck_filesystem_problem(ok).is_none(), "{ok}");
+        }
+        for bad in ["NTFS", "apfs", "hfs", "ReFS"] {
+            assert!(deck_filesystem_problem(bad).unwrap().contains("FAT32 and exFAT"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn system_drive_is_never_a_target() {
+        let sys = if cfg!(windows) { format!("{}\\", std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into())) } else { "/".into() };
+        assert!(is_system(Path::new(&sys)));
+        assert!(target_problem(&Path::new(&sys).join("PocketPrepTest")).unwrap().contains("system drive"));
+        assert!(list_drives(true).iter().all(|d| !is_system(Path::new(d["root"].as_str().unwrap()))));
     }
 }

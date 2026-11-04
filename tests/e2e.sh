@@ -12,7 +12,7 @@ DATA="$(mktemp -d)"
 BIN=target/release/pocket-prep
 [ -x "$BIN.exe" ] && BIN="$BIN.exe"
 
-POCKET_PREP_DATA="$DATA" "$BIN" --headless > "$DATA/server.log" 2>&1 &
+POCKET_PREP_ANY_TARGET=1 POCKET_PREP_DATA="$DATA" "$BIN" --headless > "$DATA/server.log" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true' EXIT
 for _ in $(seq 50); do grep -q "running at" "$DATA/server.log" && break; sleep 0.2; done
