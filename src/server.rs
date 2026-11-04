@@ -82,6 +82,15 @@ fn queue_analysis(track_ids: &[i64]) -> Vec<i64> {
     }).collect()
 }
 
+/// Re-analyse tracks whose analysis predates the current analysis::VERSION (run at startup).
+pub fn queue_outdated_analysis() {
+    let ids: Vec<i64> = db::query("SELECT id FROM tracks WHERE deleted=0 AND analysed_at IS NOT NULL", &[]).unwrap_or_default()
+        .iter().filter_map(|r| r["id"].as_i64())
+        .filter(|&id| analysis::load_analysis(id).and_then(|a| a["version"].as_i64()).unwrap_or(0) < analysis::VERSION)
+        .collect();
+    queue_analysis(&ids);
+}
+
 fn queue_stems(track_ids: &[i64]) -> anyhow::Result<Vec<i64>> {
     let mut out = vec![];
     for &tid in track_ids {

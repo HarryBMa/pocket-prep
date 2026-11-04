@@ -11,3 +11,4 @@ icons/source.png
 models/*.onnx
 *.log
 gen/
+.impeccable/

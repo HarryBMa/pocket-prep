@@ -26,6 +26,8 @@ use serde_json::{json, Value};
 use crate::{config, db, stems};
 
 const COLS_PER_S: f64 = 150.0;
+/// Bump when results change; older analyses are redone at startup (3 = ClubCraft + phrase cues).
+pub const VERSION: i64 = 3;
 
 pub fn load_analysis(track_id: i64) -> Option<Value> {
     let text = std::fs::read_to_string(config::analysis_dir().join(format!("{track_id}.json"))).ok()?;
@@ -183,6 +185,34 @@ pub fn beats_from_grid(a: &Value) -> Vec<(u16, u32, f64)> {
 
 // ── ClubCraft analysis, mapped to our JSON ───────────────────────────────────
 
+/// Automatic hot cues: A start, B first drop, C first breakdown after it, D outro.
+/// Each sits on a phrase line (every 8 bars from the grid anchor, where ClubCraft's
+/// sections start), and there is at most one per 16-bar phrase. When two land in
+/// the same phrase the musical event beats "Start" (e.g. a drop at bar 8), otherwise
+/// the earlier one in the list wins. Returns (slot 1-4, time in s, label).
+pub fn auto_cues(sections: &[clubcraft_core::Section], g: &clubcraft_core::BeatGrid) -> Vec<(i64, f64, &'static str)> {
+    let first_drop = sections.iter().find(|s| s.kind == SectionKind::Drop);
+    let breakdown = first_drop.and_then(|d| sections.iter().find(|s| s.kind == SectionKind::Breakdown && s.start > d.start));
+    let outro = sections.iter().find(|s| s.kind == SectionKind::Outro);
+    let wanted = [(1, Some(g.downbeat), "Start"), (2, first_drop.map(|s| s.start), "Drop"),
+                  (3, breakdown.map(|s| s.start), "Breakdown"), (4, outro.map(|s| s.start), "Outro")];
+    let bar_of = |t: f64| (g.bar_at(t) / 8.0).round() as i64 * 8;          // nearest phrase line
+    let mut taken: Vec<(i64, i64)> = vec![];                                   // (16-bar phrase, slot)
+    // Musical events first, then Start, so Start gives way when it shares a phrase.
+    for &(slot, t, _) in wanted[1..].iter().chain(&wanted[..1]) {
+        let Some(t) = t else { continue };
+        let phrase = bar_of(t).div_euclid(16);
+        if !taken.iter().any(|&(p, _)| p == phrase) {
+            taken.push((phrase, slot));
+        }
+    }
+    taken.sort_by_key(|&(_, slot)| slot);
+    taken.iter().map(|&(_, slot)| {
+        let (_, t, label) = wanted[slot as usize - 1];
+        (slot, g.time_of_bar(bar_of(t.unwrap()) as f64).max(0.0), label)
+    }).collect()
+}
+
 /// Analyse decoded audio (and stems, if any) into our analysis JSON. No database access.
 pub fn analyse_audio(audio: &AudioBuffer, stems: Option<&StemsRef>, bpm_range: (f64, f64)) -> Value {
     let mut opts = AnalyzeOptions::default();
@@ -206,7 +236,7 @@ pub fn analyse_audio(audio: &AudioBuffer, stems: Option<&StemsRef>, bpm_range: (
     let intro_end = r.sections.first().filter(|s| s.kind == SectionKind::Intro).map(|s| ms(s.end));
     let drops: Vec<f64> = r.sections.iter().filter(|s| s.kind == SectionKind::Drop).map(|s| ms(s.start)).collect();
     json!({
-        "version": 2,
+        "version": VERSION,
         "bpm": g.bpm, "period_ms": beat * 1000.0, "first_beat_ms": first * 1000.0,
         "downbeat_index": (n as i64).rem_euclid(4), "duration_ms": duration_ms,
         "key": r.key.map(|k| k.name()), "camelot": r.key.map(|k| k.camelot()),
@@ -215,9 +245,9 @@ pub fn analyse_audio(audio: &AudioBuffer, stems: Option<&StemsRef>, bpm_range: (
                     "outro_start_ms": start_of(SectionKind::Outro), "drops": drops},
         "sections": r.sections.iter().map(|s| json!({
             "kind": s.kind.label(), "start_ms": ms(s.start), "end_ms": ms(s.end), "bars": s.bars, "energy": s.energy})).collect::<Vec<_>>(),
-        // Auto cues: slot 1-8 = hot cue A-H, 0 = memory cue.
-        "auto_cues": r.cues.iter().map(|c| json!({
-            "slot": c.slot.map(|s| s as i64 + 1).unwrap_or(0), "start_ms": ms(c.pos), "label": c.name})).collect::<Vec<_>>(),
+        // Auto cues: slot 1-4 = hot cue A-D.
+        "auto_cues": auto_cues(&r.sections, &g).iter().map(|&(slot, t, label)| json!({
+            "slot": slot, "start_ms": ms(t), "label": label})).collect::<Vec<_>>(),
         "waveforms": waveforms(&peak, &lo, &mid, &hi),
     })
 }
@@ -287,6 +317,30 @@ mod tests {
             assert!(off < 15.0, "{sr}: grid {off} ms off the clicks");
             assert!((0..4).contains(&a["downbeat_index"].as_i64().unwrap()));
         }
+    }
+
+    fn section(kind: SectionKind, start_bar: i32, bars: u32, g: &clubcraft_core::BeatGrid) -> clubcraft_core::Section {
+        clubcraft_core::Section { kind, start: g.time_of_bar(start_bar as f64), end: g.time_of_bar((start_bar + bars as i32) as f64),
+                                  start_bar, bars, energy: 0.5, stems: [0.0; 4] }
+    }
+
+    #[test]
+    fn auto_cues_one_per_16_bar_phrase() {
+        use SectionKind::*;
+        let g = clubcraft_core::BeatGrid::new(126.0, 0.02);
+        // "Still Here": 8-bar intro, so the drop shares the first 16-bar phrase with Start.
+        let s = [section(Intro, 0, 8, &g), section(Drop, 8, 24, &g), section(Breakdown, 32, 16, &g),
+                 section(Drop, 48, 16, &g), section(Outro, 136, 10, &g)];
+        let c = auto_cues(&s, &g);
+        assert_eq!(c.iter().map(|x| (x.0, x.2)).collect::<Vec<_>>(), [(2, "Drop"), (3, "Breakdown"), (4, "Outro")]);
+        assert!((c[0].1 - g.time_of_bar(8.0)).abs() < 1e-9);
+        // 32-bar intro: all four, each on its own phrase.
+        let s = [section(Intro, 0, 32, &g), section(Drop, 32, 64, &g), section(Breakdown, 96, 16, &g), section(Outro, 176, 9, &g)];
+        let c = auto_cues(&s, &g);
+        assert_eq!(c.iter().map(|x| x.0).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        // A section starting 1 bar off a phrase line is moved onto it.
+        let s = [section(Intro, 0, 33, &g), section(Drop, 33, 64, &g)];
+        assert!((auto_cues(&s, &g)[1].1 - g.time_of_bar(32.0)).abs() < 1e-9);
     }
 
     #[test]

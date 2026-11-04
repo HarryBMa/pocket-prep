@@ -61,6 +61,7 @@ fn main() {
     config::ensure_dirs().expect("can't create the data folder");
     drop(db::conn());                                       // create or upgrade the library now
     let url = start_server();
+    server::queue_outdated_analysis();
     println!("Pocket Prep running at {url}  (data: {})", config::data_dir().display());
 
     let args: Vec<String> = std::env::args().collect();
