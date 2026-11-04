@@ -30,8 +30,8 @@ existing library carries over. Old MP3 stems are marked "not made" and need rema
   auto cues (A start, B first drop, C breakdown, D outro; phrase lines, <= 1 per 16-bar phrase).
   Analysis VERSION 3; older analyses are redone at startup.
 - `stems.rs`: ClubCraft's `clubcraft-stems` (htdemucs, Quality::Fast): CoreML on Mac if the
-  .mlmodelc exists, DirectML on Windows only if its self-check vs CPU passes (it currently fails,
-  so CPU: ~45 s per 4 min track), else CPU. We write one 8-channel 16-bit 44.1 kHz WAV per track.
+  .mlmodelc exists, DirectML on Windows only if its self-check vs CPU passes, else CPU (~41 s per
+  4:38 track). We write one 8-channel 16-bit 44.1 kHz FLAC per track (docs/STEMS_FORMAT.md v3).
 - `export/`: pdb.rs, anlz.rs (our writers; rekordcrate can't create a PDB yet, but the tests parse
   our output with it), usb.rs (card layout; removable drives only unless "Show all"; never the
   system drive; FAT32/exFAT only; deck-decodability warnings).
@@ -55,9 +55,12 @@ existing library carries over. Old MP3 stems are marked "not made" and need rema
 4. CDJ compatibility of export.pdb untested on hardware (data pages only, no index pages).
    rekordcrate and Pajoniiir both parse it.
 5. Stems are hard-clipped at 16-bit: on a brickwalled master ~0.01 % of drum samples clip.
-6. Stems format is 8-ch WAV (2.54 GB/hour). 8-ch FLAC would be 1.17 GB/hour (measured); not changed.
+6. GPU stems: DirectML fails its self-check because ONNX Runtime's DML graph fusion miscomputes this
+   model (-82 dB vs CPU); with session config `ep.dml.disable_graph_fusion=1` it is correct (72/91 dB)
+   and ~0.087 s per 7.8 s segment (CPU 0.77 s). Needs a one-line change in ClubCraft's
+   crates/stems/src/backend/onnx.rs (fork or upstream), then delete data/clubcraft/directml-htdemucs.txt.
 7. Export rewrites all ANLZ files and the PDB each time; doesn't remove deleted tracks from the stick.
-8. Firmware doesn't read POCKETDECK/ yet, and has no file-upload API (needed for wireless sync).
+8. Firmware doesn't read POCKETDECK/ yet, and has no file-upload API (see docs/SYNC_OPTIONS.md).
 
 ## Format notes worth keeping
 - PDB: little-endian, 4096-byte pages, 0x28-byte page header. Row slots grow backwards from the page
