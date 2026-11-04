@@ -50,7 +50,7 @@ echo "export: $(api "${URL}api/jobs" | grep -o '"result":{[^}]*')"
 for f in PIONEER/rekordbox/export.pdb POCKETDECK/stems.json POCKETDECK/export.json; do
   [ -s "$OUT/$f" ] || { echo "missing $f"; exit 1; }
 done
-ls "$OUT"/POCKETDECK/STEMS/*.wav > /dev/null
+ls "$OUT"/POCKETDECK/STEMS/*.flac > /dev/null
 # Audio must be copied byte for byte.
 for src in "$@"; do
   dst=$(find "$OUT/Contents" -name "$(basename "$src")" | head -1)

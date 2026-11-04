@@ -76,7 +76,7 @@ pub fn conn() -> MutexGuard<'static, Connection> {
         let ids: Vec<i64> = st.query_map([], |r| r.get(0)).unwrap().flatten().collect();
         drop(st);
         for id in ids {
-            if !crate::stems::stem_file(id).exists() {
+            if !crate::stems::has_stems(id) {
                 c.execute("UPDATE tracks SET stems='none' WHERE id=?", [id]).unwrap();
             }
         }

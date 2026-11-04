@@ -587,6 +587,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
+name = "claxon"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bfbf56724aa9eca8afa4fcfadeb479e722935bb2a0900c2d37e0cc477af0688"
+
+[[package]]
 name = "clubcraft-analysis"
 version = "0.3.4"
 source = "git+https://github.com/beneaze/ClubCraft?rev=d654ccd8710bf132d4587479338290d51632bcfc#d654ccd8710bf132d4587479338290d51632bcfc"
@@ -3492,6 +3498,7 @@ dependencies = [
  "base64 0.22.1",
  "binrw",
  "chrono",
+ "claxon",
  "clubcraft-analysis",
  "clubcraft-audio",
  "clubcraft-core",
@@ -3499,6 +3506,7 @@ dependencies = [
  "dirs 6.0.0",
  "espflash",
  "fallible-iterator",
+ "flacenc",
  "image",
  "lofty 0.22.4",
  "mime_guess",

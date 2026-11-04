@@ -82,8 +82,19 @@ fn queue_analysis(track_ids: &[i64]) -> Vec<i64> {
     }).collect()
 }
 
-/// Re-analyse tracks whose analysis predates the current analysis::VERSION (run at startup).
-pub fn queue_outdated_analysis() {
+/// Startup housekeeping as a visible job: convert 0.2-era WAV stems to FLAC, then
+/// re-analyse outdated tracks (after, so the analysis can use the converted stems).
+pub fn startup_jobs() {
+    jobs::submit("stems", "Convert stems to FLAC", "io", None, |h| {
+        h.progress(0.1, "Converting");
+        let n = stems::migrate_wav_stems()?;
+        queue_outdated_analysis();
+        Ok(Some(json!({"converted": n})))
+    });
+}
+
+/// Re-analyse tracks whose analysis predates the current analysis::VERSION.
+fn queue_outdated_analysis() {
     let ids: Vec<i64> = db::query("SELECT id FROM tracks WHERE deleted=0 AND analysed_at IS NOT NULL", &[]).unwrap_or_default()
         .iter().filter_map(|r| r["id"].as_i64())
         .filter(|&id| analysis::load_analysis(id).and_then(|a| a["version"].as_i64()).unwrap_or(0) < analysis::VERSION)

@@ -11,7 +11,7 @@
 //!
 //!   POCKETDECK/export.json                 what wrote the stick, when, and any warnings
 //!   POCKETDECK/stems.json                  which stem file belongs to which track
-//!   POCKETDECK/STEMS/xxxxxxxx.wav          8-channel stems: drums, bass, other, vocals
+//!   POCKETDECK/STEMS/xxxxxxxx.flac         8-channel FLAC stems: drums, bass, other, vocals
 //!   POCKETDECK/analysis/xxxxxxxx.json      phrases, energy, key (for autopilot)
 
 use anyhow::{anyhow, Result};
@@ -344,12 +344,12 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
         let ext_id = format!("{tid:08X}");
         let sf = stems::stem_file(tid);
         if include_stems && sf.exists() {
-            let rel = format!("POCKETDECK/STEMS/{ext_id}.wav");
+            let rel = format!("POCKETDECK/STEMS/{ext_id}.flac");
             copy_if_changed(&sf, &root.join(&rel))?;
-            let frames = (std::fs::metadata(&sf)?.len() as usize - stems::DATA_OFFSET) / 16;
+            let _ = std::fs::remove_file(root.join(format!("POCKETDECK/STEMS/{ext_id}.wav")));   // format 2 leftover
             stem_manifest.insert(audio_path.clone(), json!({
-                "file": format!("/{rel}"), "sample_rate": stems::RATE, "channels": 8, "frames": frames,
-                "data_offset": stems::DATA_OFFSET, "order": stems::STEM_NAMES}));
+                "file": format!("/{rel}"), "format": "flac", "sample_rate": stems::RATE, "channels": stems::CHANNELS,
+                "frames": stems::stem_frames(tid)?, "seek_interval_frames": stems::SEEK_FRAMES, "order": stems::STEM_NAMES}));
         }
         let extra = root.join("POCKETDECK/analysis");
         std::fs::create_dir_all(&extra)?;
@@ -397,7 +397,7 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
     let pd = root.join("POCKETDECK");
     std::fs::create_dir_all(&pd)?;
     let n_stems = stem_manifest.len();
-    std::fs::write(pd.join("stems.json"), serde_json::to_string_pretty(&json!({"version": 2, "tracks": stem_manifest}))?)?;
+    std::fs::write(pd.join("stems.json"), serde_json::to_string_pretty(&json!({"version": 3, "tracks": stem_manifest}))?)?;
     let warn = warnings(&tracks);
     let summary = json!({
         "app": "Pocket Prep", "version": env!("CARGO_PKG_VERSION"),
@@ -484,9 +484,13 @@ mod export_tests {
         let pl = library::create_playlist("Fredag", 0, false).unwrap();
         library::add_to_playlist(pl["id"].as_i64().unwrap(), &[tid]).unwrap();
 
+        // Stems: the track itself in all four slots is enough to check the file and manifest.
+        let mono: Vec<f32> = y.iter().map(|v| v.clamp(-1.0, 1.0)).collect();
+        crate::stems::write_stems(&crate::stems::stem_file(tid), &std::array::from_fn(|_| (mono.clone(), mono.clone()))).unwrap();
+
         let card = tmp.join("card");
-        let summary = export_to(&card.to_string_lossy(), None, false, &|_, _| {}, &|| false).unwrap();
-        assert_eq!(summary["tracks"], 1);
+        let summary = export_to(&card.to_string_lossy(), None, true, &|_, _| {}, &|| false).unwrap();
+        assert_eq!((summary["tracks"].as_i64(), summary["stems"].as_i64()), (Some(1), Some(1)));
 
         // export.pdb: the track, its playlist, and the entry linking them.
         let pdb = std::fs::read(card.join("PIONEER/rekordbox/export.pdb")).unwrap();
@@ -524,6 +528,15 @@ mod export_tests {
                 }
             }
         }
+
+        // stems.json: keyed by the PDB path, pointing at a decodable 8-channel FLAC of the right length.
+        let manifest: Value = serde_json::from_slice(&std::fs::read(card.join("POCKETDECK/stems.json")).unwrap()).unwrap();
+        assert_eq!(manifest["version"], 3);
+        let e = &manifest["tracks"][path.as_str()];
+        assert_eq!((e["format"].as_str(), e["channels"].as_i64(), e["seek_interval_frames"].as_i64()), (Some("flac"), Some(8), Some(4410)));
+        assert_eq!(e["frames"].as_u64(), Some(y.len() as u64));
+        let flac = claxon::FlacReader::open(card.join(e["file"].as_str().unwrap().trim_start_matches('/'))).unwrap();
+        assert_eq!((flac.streaminfo().channels, flac.streaminfo().samples), (8, Some(y.len() as u64)));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
