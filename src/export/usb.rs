@@ -217,10 +217,16 @@ fn copy_if_changed(src: &Path, dst: &Path) -> Result<bool> {
 
 pub fn export(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
               progress: &dyn Fn(f64, &str), cancel: &dyn Fn() -> bool) -> Result<Value> {
-    let root = PathBuf::from(root);
-    if let Some(why) = target_problem(&root) {
+    if let Some(why) = target_problem(Path::new(root)) {
         return Err(anyhow!(why));
     }
+    export_to(root, playlist_ids, include_stems, progress, cancel)
+}
+
+/// The export itself, without the target-drive check (tests write to a temp folder).
+fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
+             progress: &dyn Fn(f64, &str), cancel: &dyn Fn() -> bool) -> Result<Value> {
+    let root = PathBuf::from(root);
     std::fs::create_dir_all(&root)?;
     let (tracks, pls) = collect(playlist_ids)?;
     if tracks.is_empty() {
@@ -445,5 +451,79 @@ mod drive_tests {
         assert!(is_system(Path::new(&sys)));
         assert!(target_problem(&Path::new(&sys).join("PocketPrepTest")).unwrap().contains("system drive"));
         assert!(list_drives(true).iter().all(|d| !is_system(Path::new(d["root"].as_str().unwrap()))));
+    }
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+    use binrw::BinRead;
+    use fallible_iterator::FallibleIterator;
+    use rekordcrate::anlz::{Content, CueListType, ANLZ};
+    use rekordcrate::pdb::io::Database as Reader;
+    use rekordcrate::pdb::{DatabaseType, PlaylistEntry, PlaylistTreeNode, Track};
+
+    /// The whole pipeline on a throwaway library: import a synthetic track, analyse it,
+    /// set a hot cue, put it in a playlist, export, then read the card back with
+    /// rekordcrate and follow every reference (PDB -> audio file, PDB -> ANLZ files).
+    /// The only test that touches the library database (its location is process-wide).
+    #[test]
+    fn full_export_reads_back_with_rekordcrate() {
+        let tmp = std::env::temp_dir().join(format!("pocketprep_export_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::env::set_var("POCKET_PREP_DATA", tmp.join("data"));
+        std::fs::create_dir_all(tmp.join("music")).unwrap();
+        let song = tmp.join("music").join("Testartist - Testsång.wav");
+        let y = crate::testaudio::music(44100, 40.0, 128.0, 0.1, crate::testaudio::A_MINOR);
+        std::fs::write(&song, crate::testaudio::wav(44100, &y)).unwrap();
+
+        let ids = library::import_paths(&[song.to_string_lossy().to_string()]).unwrap();
+        let tid = ids[0];
+        analysis::analyse(tid, &|_, _| {}).unwrap();
+        library::set_cues(tid, &[json!({"slot": 1, "start_ms": 1000, "label": "A"}), json!({"slot": 0, "start_ms": 5000})]).unwrap();
+        let pl = library::create_playlist("Fredag", 0, false).unwrap();
+        library::add_to_playlist(pl["id"].as_i64().unwrap(), &[tid]).unwrap();
+
+        let card = tmp.join("card");
+        let summary = export_to(&card.to_string_lossy(), None, false, &|_, _| {}, &|| false).unwrap();
+        assert_eq!(summary["tracks"], 1);
+
+        // export.pdb: the track, its playlist, and the entry linking them.
+        let pdb = std::fs::read(card.join("PIONEER/rekordbox/export.pdb")).unwrap();
+        let mut r = Reader::open_non_persistent(std::io::Cursor::new(pdb.as_slice()), DatabaseType::Plain).unwrap();
+        let tracks: Vec<(u32, String, String)> = r.iter_rows::<Track>().unwrap()
+            .map(|t| Ok((t.id.0, t.offsets.inner.title.clone().into_string().unwrap(),
+                         t.offsets.inner.file_path.clone().into_string().unwrap())))
+            .collect().unwrap();
+        assert_eq!(tracks.len(), 1);
+        let (pdb_id, title, path) = &tracks[0];
+        assert_eq!(title, "Testartist - Testsång");
+        assert!(card.join(path.trim_start_matches('/')).exists(), "audio missing at {path}");
+        assert_eq!(std::fs::read(card.join(path.trim_start_matches('/'))).unwrap(), std::fs::read(&song).unwrap(), "audio not byte-identical");
+        let names: Vec<String> = r.iter_rows::<PlaylistTreeNode>().unwrap().map(|p| Ok(p.name.clone().into_string().unwrap())).collect().unwrap();
+        assert_eq!(names, ["Fredag"]);
+        assert_eq!(r.iter_rows::<PlaylistEntry>().unwrap().count().unwrap(), 1);
+
+        // ANLZ files: path matches the PDB, beat grid at 128 BPM, our two cues.
+        let adir = card.join(anlz_rel(*pdb_id));
+        for name in ["ANLZ0000.DAT", "ANLZ0000.EXT"] {
+            let bytes = std::fs::read(adir.join(name)).unwrap();
+            let anlz = ANLZ::read(&mut std::io::Cursor::new(&bytes)).unwrap();
+            for s in &anlz.sections {
+                match &s.content {
+                    Content::Path(p) => assert_eq!(&p.path.to_string(), path),
+                    Content::BeatGrid(g) => {
+                        assert!(g.beats.len() > 80, "{} beats", g.beats.len());
+                        assert!(g.beats.iter().all(|b| (b.tempo as i32 - 12800).abs() <= 5));
+                    }
+                    Content::CueList(c) if name.ends_with("DAT") => match c.list_type {
+                        CueListType::HotCues => assert_eq!(c.cues.iter().map(|q| (q.hot_cue, q.time)).collect::<Vec<_>>(), [(1, 1000)]),
+                        CueListType::MemoryCues => assert_eq!(c.cues.iter().map(|q| q.time).collect::<Vec<_>>(), [5000]),
+                    },
+                    _ => {}
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
