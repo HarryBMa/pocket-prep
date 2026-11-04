@@ -10,3 +10,4 @@ models/*.all.onnx
 icons/source.png
 models/*.onnx
 *.log
+gen/
