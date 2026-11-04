@@ -296,6 +296,35 @@ function decodeWave(w) {
   return { detail: b64(w.detail), duration: w.duration_ms / 1000 };
 }
 
+// "Artist - Title" in the title or filename (spaced dash), or "Artist-Title" when the part
+// before the dash has no spaces (e.g. "FISHER-Atmosphere"). Only offered when the artist is empty.
+function splitGuess(t) {
+  if (t.artist || state.noSplit?.has(t.id)) return null;
+  const file = (t.path || "").split(/[\\/]/).pop().replace(/\.[^.]+$/, "");
+  for (const s of [t.title, file]) {
+    const m = s && (s.match(/^(.+?)\s+[-–—]\s+(.+)$/) || s.match(/^([^\s\-–—]+)[-–—](\S.*)$/));
+    if (m) return { artist: m[1].trim(), title: m[2].trim() };
+  }
+  return null;
+}
+function splitSuggestion(t) {
+  const g = splitGuess(t);
+  if (!g) return null;
+  const apply = async () => {
+    try {
+      const r = await api(`/api/tracks/${t.id}`, { method: "PATCH", body: g });
+      Object.assign(state.current, r.track);
+      toast("Artist and title split", r.undo);
+      loadTracks(); renderDetail();
+    } catch (e) { fail(e); }
+  };
+  const no = () => { (state.noSplit ??= new Set()).add(t.id); renderDetail(); };
+  return h("div", { class: "suggest" },
+    h("span", {}, "No artist. Split into ", h("b", {}, g.artist), " – ", h("b", {}, g.title), "?"),
+    h("button", { class: "ghost small", onclick: apply }, "Split"),
+    h("button", { class: "ghost small", onclick: no }, "No thanks"));
+}
+
 function renderDetail() {
   const t = state.current;
   const d = $("#detail");
@@ -347,6 +376,7 @@ function renderDetail() {
         h("button", { class: "ghost", id: "playBtn", onclick: togglePlay }, player.paused ? "Play" : "Pause"),
         h("span", { class: "time", id: "timeLabel" }, ""),
         h("button", { class: "ghost small", onclick: closeDetail }, "Close"))),
+    splitSuggestion(t),
     waveBox,
     h("div", { class: "d-row" },
       h("div", {}, pads,
