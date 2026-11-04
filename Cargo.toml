@@ -1,0 +1,47 @@
+[package]
+name = "pocket-prep"
+version = "0.2.0"
+description = "Companion prep app for the Pocket Deck: library, analysis, stems, rekordbox-format export, deck updates"
+edition = "2021"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower-http = { version = "0.6", features = ["fs"] }
+rust-embed = "8"
+mime_guess = "2"
+tower = { version = "0.5", features = ["util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }      # same as clubcraft-core: one bundled SQLite
+lofty = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serialport = "4"
+espflash = { version = "4", default-features = false, features = ["serialport"] }
+sysinfo = "0.33"
+dirs = "6"
+chrono = "0.4"
+
+# Analysis (beat grid, key, energy, sections, auto cues), decoding and stem separation come
+# from ClubCraft (MIT OR Apache-2.0), pinned to a reviewed commit.
+clubcraft-core = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
+clubcraft-audio = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
+clubcraft-analysis = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
+clubcraft-stems = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
+
+[dev-dependencies]
+# Independent rekordbox parser (MPL-2.0), used in tests to check our export.pdb and ANLZ files.
+rekordcrate = { git = "https://github.com/Holzhaus/rekordcrate", rev = "68cd702e9c78bde4b9eab477e0a7547a0cb69768" }
+fallible-iterator = "0.3"
+binrw = "0.15"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[profile.dev.package."*"]
+opt-level = 3                     # DSP and FFT code is far too slow unoptimised

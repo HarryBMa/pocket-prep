@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+.pytest_cache/
+
+target/
+models/*.bin
+models/*.all.onnx
+icons/source.png
+models/*.onnx
+*.log
