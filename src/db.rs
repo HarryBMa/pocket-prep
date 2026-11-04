@@ -81,6 +81,8 @@ pub fn conn() -> MutexGuard<'static, Connection> {
             }
         }
         c.execute("UPDATE tracks SET stems='none' WHERE stems IN ('queued','running')", []).unwrap();
+        // A "0" comment came from the tag, not the user (see library::read_tags).
+        c.execute("UPDATE tracks SET comment=NULL WHERE trim(comment)='0'", []).unwrap();
         Mutex::new(c)
     })
     .lock()

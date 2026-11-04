@@ -47,7 +47,8 @@ pub fn read_tags(path: &Path) -> Tags {
         info.artist = s(t.artist()).or_else(|| t.get_string(&ItemKey::AlbumArtist).map(str::to_string));
         info.album = s(t.album());
         info.genre = s(t.genre());
-        info.comment = s(t.comment());
+        // Some stores write a literal "0" as the comment; that means no comment.
+        info.comment = s(t.comment()).filter(|c| c != "0");
         info.year = t.year();
         info.track_number = t.track();
     }
