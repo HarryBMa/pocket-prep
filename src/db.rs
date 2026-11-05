@@ -68,7 +68,12 @@ pub fn conn() -> MutexGuard<'static, Connection> {
     CONN.get_or_init(|| {
         config::ensure_dirs().expect("can't create the data folder");
         let c = Connection::open(config::db_path()).expect("can't open the library database");
-        c.pragma_update(None, "journal_mode", "WAL").unwrap();
+        // Exclusive locking before WAL: SQLite then keeps the WAL index in ordinary memory
+        // instead of shared memory, which network and redirected folders can't map
+        // ("disk I/O error"). The app has one connection, and this also stops a second copy
+        // of the app from using the same library at the same time.
+        c.pragma_update(None, "locking_mode", "EXCLUSIVE").expect("can't open the library database");
+        c.pragma_update(None, "journal_mode", "WAL").expect("can't open the library database");
         c.execute_batch(SCHEMA).unwrap();
         // Stems from the Python app were separate MP3s; the new format is one 8-channel WAV.
         // MP3 encoder delay makes the old files drift from the track, so they must be remade.
