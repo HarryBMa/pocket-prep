@@ -160,7 +160,7 @@ async function newPlaylist(isFolder) {
   if (!name) return;
   const parent = inFolder ? state.openFolderTarget : 0;
   const p = await api("/api/playlists", { body: { name, parent_id: parent, is_folder: isFolder } });
-  if (!isFolder && state.selected.size) await addToPlaylist(p.id, [...state.selected]);
+  if (!isFolder && state.selected.size) await addToPlaylist(p.id, [...state.selected], p.name || name);
   loadPlaylists();
 }
 $("#newPlaylist").addEventListener("click", () => newPlaylist(false).catch(fail));
@@ -168,10 +168,10 @@ $("#newFolder").addEventListener("click", () => newPlaylist(true).catch(fail));
 $("#allTracks").addEventListener("click", () => selectPlaylist(0));
 
 function selectPlaylist(id) { state.playlist = id; state.selected.clear(); state.anchor = null; loadPlaylists(); loadTracks(); }
-async function addToPlaylist(pid, ids) {
+async function addToPlaylist(pid, ids, name = null) {
   const r = await api(`/api/playlists/${pid}/add`, { body: { track_ids: ids } });
   const p = state.playlists.find((x) => x.id === pid);
-  toast(`Added ${ids.length} to "${p ? p.name : "playlist"}"`, r.undo);
+  toast(`Added ${ids.length} to "${name || p?.name || "playlist"}"`, r.undo);
   loadPlaylists();
 }
 
@@ -729,7 +729,6 @@ async function pollJobs() {
   updateStatusCells();
   if (lastActive && active.length < lastActive) {     // something finished
     loadTracks();
-    if (exp.root && $("#view-export").classList.contains("active")) updatePlan();   // ready for the next export
     if (state.current) openTrack(state.current.id);
   } else if (state.current && active.some((j) => j.track_id === state.current.id && j.kind === "stems")) {
     renderStemProgress();
@@ -774,8 +773,12 @@ function renderInlineJobs() {
         ...deckWarnings(j.result.warnings)));
     }
   }
-  // Only one export at a time: the button waits while one is queued or running.
-  if (exp.root && state.jobs.some((j) => j.kind === "export" && isActive(j))) $("#doExport").disabled = true;
+  // Only one export at a time: the button waits while one is queued or running, and the plan
+  // is worked out again once it ends (a small export can finish between two polls).
+  const ej = state.jobs.find((x) => x.kind === "export"), ejKey = ej ? `${ej.id}:${isActive(ej)}` : "";
+  if (exp.root && ej && isActive(ej)) $("#doExport").disabled = true;
+  if (exp.jobKey !== undefined && ejKey !== exp.jobKey && ej && !isActive(ej) && exp.root) updatePlan();
+  exp.jobKey = ejKey;
 }
 function toggleJobs(show = $("#jobsPanel").hidden) {
   $("#jobsPanel").hidden = !show;

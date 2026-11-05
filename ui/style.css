@@ -250,7 +250,7 @@ canvas { display: block; width: 100%; }
 .pad .x { position: absolute; top: 1px; right: 4px; font-size: 12px; color: var(--ink-3); display: none; }
 .pad.set:hover .x, .pad.set:focus-visible .x { display: block; }
 .pad .x:hover { color: var(--ink); }
-.mem { display: flex; flex-direction: column; margin-top: 8px; max-width: 268px; }
+.mem { display: flex; flex-direction: column; margin-top: 8px; max-width: 268px; max-height: 118px; overflow: auto; }
 .mem-row { display: flex; align-items: center; gap: 6px; font-size: 12px; border-bottom: 1px solid var(--line); padding: 2px 0; }
 .mem-row:last-child { border-bottom: 0; }
 .mem-row .m { font-weight: 600; color: var(--ink-3); width: 14px; }
@@ -358,8 +358,11 @@ canvas { display: block; width: 100%; }
 .toast.alert button { color: #111112; text-decoration: underline; }
 
 /* ── Responsive: 1920, 1600, 1366 wide; smaller windows reflow ──────────── */
+@media (max-width: 1700px) {
+  .search input { width: 170px; }
+  .seg button { padding: 4px 8px; }
+}
 @media (max-width: 1500px) {
-  .search input { width: 180px; }
   .d-row { grid-template-columns: auto minmax(300px, 1fr); }
   .d-row .d-stems { grid-column: 1 / -1; display: flex; gap: 18px; flex-wrap: wrap; }
   .stats .stat { padding: 0 10px; }
