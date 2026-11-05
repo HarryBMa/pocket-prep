@@ -1,24 +1,24 @@
-# Pocket Prep
+# DKPRP
 
-Companion app for the Pocket Deck (ESP32-P4 standalone DJ deck running
+Preparation app for the DECK001 (formerly Pocket Prep / Pocket Deck; an ESP32-P4 standalone DJ deck running
 [Pajoniiir](https://github.com/dvucinozd/Pajoniiir) firmware). Import music, analyse it (tempo, beat
 grid, key, energy, sections, hot cues), split stems (Demucs), and export a
-rekordbox-format USB drive that the deck and CDJs read. Works offline. Windows and macOS.
+rekordbox-format USB drive that the DECK001 and CDJs read. Works offline. Windows and macOS.
 
 ## Install
 
 Download from [Releases](../../releases).
 
-**macOS (Apple Silicon, macOS 13 Ventura or newer):** open the `.dmg` and drag Pocket Prep
+**macOS (Apple Silicon, macOS 13 Ventura or newer):** open the `.dmg` and drag DKPRP
 to Applications. The app isn't notarized by Apple yet, so the first time:
 
-1. Open Pocket Prep once; macOS says it can't verify the developer. Click **Done**.
+1. Open DKPRP once; macOS says it can't verify the developer. Click **Done**.
 2. Open **System Settings > Privacy & Security**, scroll down, click **Open Anyway** next
-   to "Pocket Prep", and confirm.
+   to "DKPRP", and confirm.
 
 After that it opens normally.
 
-**Windows 10/11 (x64):** run `Pocket Prep_x.y.z_x64-setup.exe`. SmartScreen may warn
+**Windows 10/11 (x64):** run `DKPRP_x.y.z_x64-setup.exe`. SmartScreen may warn
 because the installer isn't code-signed: click **More info > Run anyway**.
 
 ## Using it
