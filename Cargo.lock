@@ -595,7 +595,6 @@ checksum = "4bfbf56724aa9eca8afa4fcfadeb479e722935bb2a0900c2d37e0cc477af0688"
 [[package]]
 name = "clubcraft-analysis"
 version = "0.3.4"
-source = "git+https://github.com/beneaze/ClubCraft?rev=d654ccd8710bf132d4587479338290d51632bcfc#d654ccd8710bf132d4587479338290d51632bcfc"
 dependencies = [
  "anyhow",
  "clubcraft-audio",
@@ -610,7 +609,6 @@ dependencies = [
 [[package]]
 name = "clubcraft-audio"
 version = "0.3.4"
-source = "git+https://github.com/beneaze/ClubCraft?rev=d654ccd8710bf132d4587479338290d51632bcfc#d654ccd8710bf132d4587479338290d51632bcfc"
 dependencies = [
  "anyhow",
  "clubcraft-core",
@@ -623,7 +621,6 @@ dependencies = [
 [[package]]
 name = "clubcraft-core"
 version = "0.3.4"
-source = "git+https://github.com/beneaze/ClubCraft?rev=d654ccd8710bf132d4587479338290d51632bcfc#d654ccd8710bf132d4587479338290d51632bcfc"
 dependencies = [
  "anyhow",
  "blake3",
@@ -637,7 +634,6 @@ dependencies = [
 [[package]]
 name = "clubcraft-stems"
 version = "0.3.4"
-source = "git+https://github.com/beneaze/ClubCraft?rev=d654ccd8710bf132d4587479338290d51632bcfc#d654ccd8710bf132d4587479338290d51632bcfc"
 dependencies = [
  "anyhow",
  "block2",

@@ -47,3 +47,10 @@ tauri-build = { version = "2", features = [] }
 
 [profile.dev.package."*"]
 opt-level = 3                     # DSP and FFT code is far too slow unoptimised
+
+# ClubCraft with Pocket Prep's local fixes (see vendor/clubcraft/README-VENDORED.md).
+[patch."https://github.com/beneaze/ClubCraft"]
+clubcraft-core = { path = "vendor/clubcraft/crates/core" }
+clubcraft-audio = { path = "vendor/clubcraft/crates/audio" }
+clubcraft-analysis = { path = "vendor/clubcraft/crates/analysis" }
+clubcraft-stems = { path = "vendor/clubcraft/crates/stems" }

@@ -1,0 +1,36 @@
+[package]
+name = "clubcraft-stems"
+description = "HTDemucs stem separation for ClubCraft (CoreML GPU / ONNX Runtime CPU)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clubcraft-core.workspace = true
+clubcraft-audio.workspace = true
+anyhow.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+realfft = "3.5"
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["download-binaries", "copy-dylibs"] }
+# ort 2.0.0-rc.9 asks for ort-sys "^2.0.0-rc.9", which would resolve to a newer (ORT 1.31) build; pin it.
+ort-sys = { version = "=2.0.0-rc.9", default-features = false }
+flacenc = { version = "0.5", features = ["par"] }
+symphonia = { version = "0.6", default-features = false, features = ["flac"] }
+
+# GPU separation on Windows through DirectML (any DX12 GPU).
+[target.'cfg(windows)'.dependencies]
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["download-binaries", "copy-dylibs", "directml"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSDictionary", "NSString", "NSURL", "NSValue", "NSError", "NSObject"] }
+objc2-core-ml = { version = "0.3.2", features = ["MLModel", "MLModelConfiguration", "MLMultiArray", "MLDictionaryFeatureProvider", "MLFeatureProvider", "MLFeatureValue", "MLPredictionOptions", "block2"] }
+
+[dev-dependencies]
+hound = "3.5"
+
+[lints]
+workspace = true
