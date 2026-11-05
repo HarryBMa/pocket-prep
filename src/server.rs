@@ -153,6 +153,8 @@ async fn get_track(P(tid): P<i64>) -> R {
         let a = analysis::load_analysis(tid);
         t.insert("cues".into(), json!(library::cues(tid)?));
         t.insert("phrases".into(), a.as_ref().map(|a| a["phrases"].clone()).unwrap_or(Value::Null));
+        // Phrase sections (intro, build, drop...) for the phrase strip under the waveform.
+        t.insert("sections".into(), a.as_ref().map(|a| a["sections"].clone()).unwrap_or(json!([])));
         t.insert("grid".into(), a.as_ref().map(|a| json!({
             "bpm": a["bpm"], "first_beat_ms": a["first_beat_ms"], "period_ms": a["period_ms"],
             "downbeat_index": a["downbeat_index"], "duration_ms": a["duration_ms"]})).unwrap_or(Value::Null));

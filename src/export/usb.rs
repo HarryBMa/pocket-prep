@@ -91,7 +91,7 @@ fn deck_filesystem_problem(fs: &str) -> Option<String> {
     }
 }
 
-/// If `root` holds a rekordbox library Pocket Prep didn't write, why we think so. Ours means
+/// If `root` holds a rekordbox library DKPRP (formerly Pocket Prep) didn't write, why we think so. Ours means
 /// POCKETDECK/export.json says Pocket Prep wrote it and its recorded hash still matches
 /// export.pdb (exports from before the hash was recorded count as ours). Anything else (a
 /// rekordbox export, or one rekordbox changed after us) must not be overwritten.
@@ -102,14 +102,14 @@ pub fn foreign_library(root: &Path) -> Option<String> {
     }
     let ours: Option<Value> = std::fs::read(root.join("POCKETDECK/export.json")).ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .filter(|j: &Value| j["app"] == "Pocket Prep");
+        .filter(|j: &Value| j["app"] == "Pocket Prep");   // internal marker: keep, or every card we wrote looks foreign
     let Some(ours) = ours else {
-        return Some("This drive already has a rekordbox library that Pocket Prep didn't write.".into());
+        return Some("This drive already has a rekordbox library that DKPRP didn't write.".into());
     };
     let Some(hash) = ours["pdb_blake3"].as_str() else { return None };
     match std::fs::read(&pdb) {
         Ok(b) if blake3::hash(&b).to_hex().as_str() == hash => None,
-        Ok(_) => Some("This drive's rekordbox library was changed by another program after Pocket Prep wrote it.".into()),
+        Ok(_) => Some("This drive's rekordbox library was changed by another program after DKPRP wrote it.".into()),
         Err(e) => Some(format!("Can't read this drive's rekordbox library ({e}).")),
     }
 }
@@ -253,7 +253,7 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
     let root = PathBuf::from(root);
     // Before anything is written: never overwrite a rekordbox library someone else made.
     if let Some(why) = foreign_library(&root) {
-        return Err(anyhow!("{why} Pocket Prep won't overwrite it. Use another drive, or move that library first."));
+        return Err(anyhow!("{why} DKPRP won't overwrite it. Use another drive, or move that library first."));
     }
     std::fs::create_dir_all(&root)?;
     let (tracks, pls) = collect(playlist_ids)?;

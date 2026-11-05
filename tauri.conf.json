@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Pocket Prep",
+  "productName": "DKPRP",
   "identifier": "com.pocketdeck.pocketprep",
   "build": { "frontendDist": "ui" },
   "app": { "windows": [], "security": { "csp": null } },
