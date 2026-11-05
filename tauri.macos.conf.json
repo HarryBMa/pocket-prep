@@ -1,8 +1,12 @@
 {
   "bundle": {
     "resources": {
+      "models/htdemucs.onnx": null,
       "models/htdemucs.mlmodelc": "models/htdemucs.mlmodelc"
     },
-    "macOS": { "minimumSystemVersion": "11.0" }
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "-"
+    }
   }
 }
