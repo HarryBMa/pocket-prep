@@ -91,6 +91,29 @@ fn deck_filesystem_problem(fs: &str) -> Option<String> {
     }
 }
 
+/// If `root` holds a rekordbox library Pocket Prep didn't write, why we think so. Ours means
+/// POCKETDECK/export.json says Pocket Prep wrote it and its recorded hash still matches
+/// export.pdb (exports from before the hash was recorded count as ours). Anything else (a
+/// rekordbox export, or one rekordbox changed after us) must not be overwritten.
+pub fn foreign_library(root: &Path) -> Option<String> {
+    let pdb = root.join("PIONEER/rekordbox/export.pdb");
+    if !pdb.exists() {
+        return None;
+    }
+    let ours: Option<Value> = std::fs::read(root.join("POCKETDECK/export.json")).ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .filter(|j: &Value| j["app"] == "Pocket Prep");
+    let Some(ours) = ours else {
+        return Some("This drive already has a rekordbox library that Pocket Prep didn't write.".into());
+    };
+    let Some(hash) = ours["pdb_blake3"].as_str() else { return None };
+    match std::fs::read(&pdb) {
+        Ok(b) if blake3::hash(&b).to_hex().as_str() == hash => None,
+        Ok(_) => Some("This drive's rekordbox library was changed by another program after Pocket Prep wrote it.".into()),
+        Err(e) => Some(format!("Can't read this drive's rekordbox library ({e}).")),
+    }
+}
+
 /// Drives to offer for export: removable ones only unless `all`, and never the system drive.
 pub fn list_drives(all: bool) -> Vec<Value> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
@@ -200,6 +223,7 @@ pub fn plan(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool) -> Re
         "unanalysed": tracks.iter().filter(|t| t["analysed_at"].is_null()).count(),
         "with_stems": tracks.iter().filter(|t| t["stems"] == "done").count(),
         "warnings": warnings(&tracks), "target_problem": target_problem(Path::new(root)),
+        "foreign_library": foreign_library(Path::new(root)),
     }))
 }
 
@@ -227,6 +251,10 @@ pub fn export(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
 fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
              progress: &dyn Fn(f64, &str), cancel: &dyn Fn() -> bool) -> Result<Value> {
     let root = PathBuf::from(root);
+    // Before anything is written: never overwrite a rekordbox library someone else made.
+    if let Some(why) = foreign_library(&root) {
+        return Err(anyhow!("{why} Pocket Prep won't overwrite it. Use another drive, or move that library first."));
+    }
     std::fs::create_dir_all(&root)?;
     let (tracks, pls) = collect(playlist_ids)?;
     if tracks.is_empty() {
@@ -392,7 +420,8 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
     let out = root.join("PIONEER/rekordbox");
     std::fs::create_dir_all(&out)?;
     let tmp = out.join("export.pdb.tmp");
-    std::fs::write(&tmp, database.write()?)?;
+    let pdb_bytes = database.write()?;
+    std::fs::write(&tmp, &pdb_bytes)?;
     std::fs::rename(&tmp, out.join("export.pdb"))?;            // never leave a half-written database
     let pd = root.join("POCKETDECK");
     std::fs::create_dir_all(&pd)?;
@@ -403,7 +432,9 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
         "app": "Pocket Prep", "version": env!("CARGO_PKG_VERSION"),
         "exported_at": chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
         "tracks": tracks.len() - skipped, "playlists": pls.len(), "copied": copied,
-        "missing_files": skipped, "stems": n_stems, "warnings": warn});
+        "missing_files": skipped, "stems": n_stems, "warnings": warn,
+        // Lets the next export tell whether export.pdb is still ours (see foreign_library).
+        "pdb_blake3": blake3::hash(&pdb_bytes).to_hex().to_string(), "pdb_size": pdb_bytes.len()});
     std::fs::write(pd.join("export.json"), serde_json::to_string_pretty(&summary)?)?;
     progress(1.0, "Done");
     Ok(summary)
@@ -538,5 +569,71 @@ mod export_tests {
         let flac = claxon::FlacReader::open(card.join(e["file"].as_str().unwrap().trim_start_matches('/'))).unwrap();
         assert_eq!((flac.streaminfo().channels, flac.streaminfo().samples), (8, Some(y.len() as u64)));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod interop_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn copy_dir(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).unwrap();
+        for e in std::fs::read_dir(src).unwrap().flatten() {
+            let (s, d) = (e.path(), dst.join(e.file_name()));
+            if s.is_dir() { copy_dir(&s, &d) } else { std::fs::copy(&s, &d).unwrap(); }
+        }
+    }
+
+    /// Every file under `dir` with its bytes.
+    fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut out = BTreeMap::new();
+        let mut todo = vec![dir.to_path_buf()];
+        while let Some(d) = todo.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() { todo.push(p) } else { out.insert(p.strip_prefix(dir).unwrap().to_path_buf(), std::fs::read(&p).unwrap()); }
+            }
+        }
+        out
+    }
+
+    /// A real rekordbox export (tests/fixtures) must survive an export from us unchanged:
+    /// we refuse before writing anything, and every file keeps its bytes.
+    #[test]
+    fn real_rekordbox_export_is_left_untouched() {
+        let card = std::env::temp_dir().join(format!("pocketprep_rb_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&card);
+        copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rekordbox_demo_tracks"), &card);
+        let before = snapshot(&card);
+        assert!(before.len() >= 12);
+        assert!(foreign_library(&card).unwrap().contains("didn't write"));
+        let err = export_to(&card.to_string_lossy(), None, true, &|_, _| {}, &|| false).unwrap_err();
+        assert!(err.to_string().contains("won't overwrite"), "{err}");
+        assert_eq!(snapshot(&card), before, "the rekordbox library was changed");
+        let _ = std::fs::remove_dir_all(&card);
+    }
+
+    /// Ours = export.json from Pocket Prep whose hash matches export.pdb.
+    #[test]
+    fn ownership_follows_the_recorded_hash() {
+        let card = std::env::temp_dir().join(format!("pocketprep_own_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&card);
+        std::fs::create_dir_all(card.join("PIONEER/rekordbox")).unwrap();
+        std::fs::create_dir_all(card.join("POCKETDECK")).unwrap();
+        assert!(foreign_library(&card).is_none(), "an empty drive is fine");
+        let pdb = b"pretend export.pdb".to_vec();
+        std::fs::write(card.join("PIONEER/rekordbox/export.pdb"), &pdb).unwrap();
+        let info = |hash: Option<String>| std::fs::write(card.join("POCKETDECK/export.json"),
+            json!({"app": "Pocket Prep", "pdb_blake3": hash}).to_string()).unwrap();
+        info(Some(blake3::hash(&pdb).to_hex().to_string()));
+        assert!(foreign_library(&card).is_none(), "ours, unchanged");
+        info(Some(blake3::hash(b"something else").to_hex().to_string()));
+        assert!(foreign_library(&card).unwrap().contains("changed by another program"));
+        info(None);
+        assert!(foreign_library(&card).is_none(), "written before hashes were recorded");
+        std::fs::write(card.join("POCKETDECK/export.json"), r#"{"app": "Other"}"#).unwrap();
+        assert!(foreign_library(&card).unwrap().contains("didn't write"));
+        let _ = std::fs::remove_dir_all(&card);
     }
 }

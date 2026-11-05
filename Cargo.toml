@@ -27,6 +27,7 @@ sysinfo = "0.33"
 dirs = "6"
 chrono = "0.4"
 flacenc = { version = "0.5", features = ["par"] }   # stem files (same version as clubcraft-stems)
+blake3 = "1"                                        # fingerprint of the export.pdb we wrote
 claxon = "0.4"                                      # reading stem files back (pure-Rust FLAC decoder)
 
 # Analysis (beat grid, key, energy, sections, auto cues), decoding and stem separation come

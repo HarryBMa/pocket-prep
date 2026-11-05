@@ -527,6 +527,14 @@ $("#clearJobs").addEventListener("click", () => api("/api/jobs/clear", { body: {
 
 // ── Export view ──────────────────────────────────────────────────────────────
 const exp = { root: null };
+// A rekordbox library we didn't write is never overwritten. Merging into it isn't built yet.
+function foreignLibrary(why) {
+  return h("div", { class: "suggest" },
+    h("span", {}, why, " Exporting would replace it, so Pocket Prep won't."),
+    h("button", { class: "ghost small", disabled: true, title: "Coming soon: keeps every existing track, cue and playlist" }, "Add to the existing library"),
+    h("button", { class: "ghost small", onclick: () => { exp.root = null; loadExport(); } }, "Cancel"));
+}
+
 // Files are copied as they are; these are the ones the deck can't decode.
 function deckWarnings(list) {
   if (!list || !list.length) return [];
@@ -574,8 +582,9 @@ async function updatePlan() {
       p.unanalysed ? h("div", { class: "muted" }, `${p.unanalysed} tracks aren't analysed yet; they'll be analysed during the export (slower).`) : null,
       ...deckWarnings(p.warnings),
       p.fits ? null : h("div", {}, h("b", {}, "Doesn't fit. "), "Choose fewer playlists or turn off stems."),
-      p.target_problem ? h("div", { class: "alert-text" }, p.target_problem) : null);
-    btn.disabled = !p.fits || !p.tracks || !!p.target_problem;
+      p.target_problem ? h("div", { class: "alert-text" }, p.target_problem) : null,
+      p.foreign_library ? foreignLibrary(p.foreign_library) : null);
+    btn.disabled = !p.fits || !p.tracks || !!p.target_problem || !!p.foreign_library;
   } catch (e) { plan.textContent = e.message; }
 }
 $("#doExport").addEventListener("click", async () => {
