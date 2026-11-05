@@ -47,20 +47,22 @@ existing library carries over. Old MP3 stems are marked "not made" and need rema
 - Stems: see docs/STEMS_FORMAT.md (8-ch interleaved, data at byte 4096, timed in seconds).
 
 ## Not verified / known gaps (priority order)
-1. **Keys unconfirmed** on real tracks: tests/known_tracks.json holds ClubCraft's keys; confirm by ear
-   or Mixed In Key and update the file.
-2. **Mac window never opened by a person** (built and tested over SSH on `brain`). Unsigned: right-click
-   > Open. No CoreML model yet (needs coremltools on a Mac), so Mac stems run on the CPU (~100 s/track).
-3. **Dragging files from Explorer/Finder doesn't import** (HTML drag and drop is kept for playlists).
-4. CDJ compatibility of export.pdb untested on hardware (data pages only, no index pages).
-   rekordcrate and Pajoniiir both parse it.
-5. Stems are hard-clipped at 16-bit: on a brickwalled master ~0.01 % of drum samples clip.
-6. GPU stems: DirectML fails its self-check because ONNX Runtime's DML graph fusion miscomputes this
-   model (-82 dB vs CPU); with session config `ep.dml.disable_graph_fusion=1` it is correct (72/91 dB)
-   and ~0.087 s per 7.8 s segment (CPU 0.77 s). Needs a one-line change in ClubCraft's
-   crates/stems/src/backend/onnx.rs (fork or upstream), then delete data/clubcraft/directml-htdemucs.txt.
-7. Export rewrites all ANLZ files and the PDB each time; doesn't remove deleted tracks from the stick.
-8. Firmware doesn't read POCKETDECK/ yet, and has no file-upload API (see docs/SYNC_OPTIONS.md).
+1. **Keys unconfirmed** on real tracks: tests/known_tracks.json holds ClubCraft's keys; confirm them.
+2. **Unsigned builds**: Windows SmartScreen and macOS Gatekeeper warn (right-click > Open on Mac).
+3. **CI never ran** (no GitHub remote). Windows was verified locally and in Windows Sandbox (clean,
+   offline); macOS on `brain` over SSH (window never opened by a person); Linux untested.
+4. **"Add to the existing library"** (merging into a rekordbox export we didn't write) isn't built;
+   such drives are refused (src/export/usb.rs foreign_library, test with a real rekordbox export).
+5. **Dragging files from Explorer/Finder doesn't import** (HTML drag and drop is kept for playlists).
+6. CDJ compatibility of export.pdb untested on hardware (data pages only). rekordcrate and Pajoniiir parse it.
+7. Stems are hard-clipped at 16-bit (~0.01 % of drum samples on brickwalled masters).
+8. Export rewrites all ANLZ files and the PDB each time; doesn't remove deleted tracks from the stick.
+9. Deck side not built: POCKETDECK/ reading, file upload (docs/SYNC_OPTIONS.md), cue import
+   (docs/DECK_CUE_IMPORT.md: re-exports orphan cues edited on the deck until that exists).
+
+Stems speed: Windows DirectML ~10 s per 4:38 track (vendored ClubCraft fix, see
+vendor/clubcraft/README-VENDORED.md), Mac CoreML ~29 s, CPU fallback ~41 s (PC) / ~100 s (M-series).
+Windows installer ~301 MB (215 MB of it is the offline WebView2 runtime).
 
 ## Format notes worth keeping
 - PDB: little-endian, 4096-byte pages, 0x28-byte page header. Row slots grow backwards from the page
