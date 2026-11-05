@@ -13,8 +13,13 @@ Inputs:  mix  [1, 2, 343980]         one 7.8 s stereo segment at 44.1 kHz
 Outputs: spec_out [1, 4, 4, 2048, 336]   per source (drums, bass, other, vocals)
          wave_out [1, 4, 2, 343980]      per source, time-branch waveform
 
-This mirrors ClubCraft's tools/model-export/export_htdemucs.py (ONNX part only).
-CoreML (.mlmodelc, Mac GPU) needs coremltools on a Mac and isn't made here.
+This mirrors ClubCraft's tools/model-export/export_htdemucs.py.
+
+On a Mac, `--coreml` makes `<dir>/htdemucs.mlmodelc` instead (CoreML ML Program, fp32,
+CPU+GPU, macOS 13+), which clubcraft-stems prefers there (several times faster):
+
+    uv run --python 3.11 --with demucs==4.0.1 --with torch==2.5.1 --with torchaudio==2.5.1 \
+        --with coremltools==8.3 --with "numpy<2" tools/export_demucs_onnx.py models --coreml
 """
 import json
 import math
@@ -95,6 +100,47 @@ class Core(torch.nn.Module):
         return x, xt
 
 
+def export_coreml(model, out_dir: Path) -> None:
+    """CoreML ML Program (fp32, CPU+GPU), compiled to .mlmodelc by macOS's CoreML."""
+    import shutil
+    import coremltools as ct
+    length = int(model.segment * model.samplerate)
+    frames = math.ceil(length / model.hop_length)
+    mix, mag = torch.zeros(1, 2, length), torch.zeros(1, 4, model.nfft // 2, frames)
+    with torch.no_grad():
+        traced = torch.jit.trace(Core(model).eval(), (mix, mag), check_trace=False)
+    ml = ct.convert(
+        traced,
+        inputs=[ct.TensorType(name="mix", shape=mix.shape), ct.TensorType(name="spec", shape=mag.shape)],
+        outputs=[ct.TensorType(name="spec_out"), ct.TensorType(name="wave_out")],
+        convert_to="mlprogram", compute_precision=ct.precision.FLOAT32,
+        compute_units=ct.ComputeUnit.CPU_AND_GPU, minimum_deployment_target=ct.target.macOS13,
+    )
+    package = out_dir / "htdemucs.mlpackage"
+    shutil.rmtree(package, ignore_errors=True)
+    ml.save(str(package))
+    shutil.rmtree(out_dir / "htdemucs.mlmodelc", ignore_errors=True)
+    # Compile with macOS's own CoreML (no Xcode needed, unlike `xcrun coremlcompiler`).
+    compiled = ct.models.utils.compile_model(str(package))
+    shutil.move(str(compiled), str(out_dir / "htdemucs.mlmodelc"))
+    shutil.rmtree(package)                       # only the compiled model is needed at runtime
+
+    # Check against PyTorch on the same test segment as the ONNX export.
+    g = torch.Generator().manual_seed(1)
+    t = torch.arange(length) / model.samplerate
+    x = 0.1 * torch.randn(1, 2, length, generator=g) + 0.3 * torch.sin(2 * torch.pi * 110 * t)
+    with torch.no_grad():
+        ref = Core(model).eval()(x, model._magnitude(model._spec(x)))
+    got = ct.models.CompiledMLModel(str(out_dir / "htdemucs.mlmodelc")).predict(
+        {"mix": x.numpy(), "spec": model._magnitude(model._spec(x)).numpy()})
+    for name, r in zip(["spec_out", "wave_out"], ref):
+        r = r.numpy()
+        sdr = 10 * np.log10((r ** 2).sum() / max(((r - got[name]) ** 2).sum(), 1e-30))
+        print(f"CoreML vs PyTorch {name}: {sdr:.1f} dB SDR")
+        assert sdr > 40, "CoreML model differs from PyTorch"
+    print("wrote", out_dir / "htdemucs.mlmodelc")
+
+
 def main(out_dir: Path) -> None:
     torch.backends.mha.set_fastpath_enabled(False)
     model = get_model("htdemucs").models[0].eval()
@@ -141,4 +187,10 @@ def main(out_dir: Path) -> None:
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1] if len(sys.argv) > 1 else "models"))
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    out = Path(args[0] if args else "models")
+    if "--coreml" in sys.argv:
+        torch.backends.mha.set_fastpath_enabled(False)   # the fused attention path can't be traced
+        export_coreml(get_model("htdemucs").models[0].eval(), out)
+    else:
+        main(out)
