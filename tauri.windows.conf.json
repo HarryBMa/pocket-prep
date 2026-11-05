@@ -1,0 +1,10 @@
+{
+  "build": { "beforeBundleCommand": { "script": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/prepare-windows-runtime.ps1", "cwd": "." } },
+  "bundle": {
+    "targets": ["nsis"],
+    "windows": {
+      "webviewInstallMode": { "type": "offlineInstaller" },
+      "nsis": { "installerHooks": "tools/windows-installer-hooks.nsh" }
+    }
+  }
+}
