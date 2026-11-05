@@ -34,8 +34,9 @@ Work Sans 400/500/600 and Fugaz One are bundled in `ui/fonts`.
 
 **Limits that shaped the redesign.**
 - No build step, no framework: everything is hand-written DOM via the `h()` helper.
-- wavesurfer.js 7.12 Regions draws markers as absolutely-positioned divs; a few thousand are fine
-  but every beat of a long track as a region would be heavy, so beat ticks are one canvas overlay.
+- wavesurfer.js 7.12 Regions draws markers as absolutely-positioned divs. Every beat is a marker
+  (thin, half-transparent; downbeats solid) for normal tracks; above 3000 beats (long mixes) only
+  downbeats are drawn. Cue labels are styled inline because the waveform lives in a shadow root.
 - `/api/tracks` (list) has no per-track analysis job id; analysis state comes from `analysed_at`
   plus the jobs list (`track_id`, `kind`).
 - `/api/deck/status` is a blocking request with a 2.5 s timeout; the app checks it at start-up and
