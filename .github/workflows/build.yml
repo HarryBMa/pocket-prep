@@ -1,5 +1,7 @@
-# Builds the installers for Windows and macOS (Apple Silicon and Intel).
-# The Demucs model isn't in git (174 MB): it is exported here from PyTorch, once per run.
+# Builds the installers: Windows x64 (NSIS, with DirectML, the VC++ runtime and offline
+# WebView2), macOS Apple Silicon and Intel (.app + DMG, CoreML model), Linux x64
+# (AppImage + .deb). The Demucs models aren't in git (174 MB / 205 MB): they are exported
+# from PyTorch here. Builds are unsigned (Windows SmartScreen and macOS Gatekeeper warn).
 name: build
 on:
   push:
@@ -18,27 +20,40 @@ jobs:
             target: aarch64-apple-darwin
           - os: macos-13
             target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - name: Export the Demucs model
+      - name: Linux build dependencies (WebKitGTK for Tauri, ALSA)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libudev-dev cmake
+      - name: Export the Demucs model (ONNX)
         shell: bash
         run: |
           uv run --python 3.12 --with demucs==4.0.1 --with torch==2.7.1 --with torchaudio==2.7.1 \
-            --with onnx --with onnxruntime --with "numpy<2.3" tools/export_demucs_onnx.py models/htdemucs.onnx
+            --with onnx --with onnxruntime --with "numpy<2.3" tools/export_demucs_onnx.py models
+      - name: Export the Demucs model (CoreML)
+        if: runner.os == 'macOS'
+        run: |
+          uv run --python 3.11 --with demucs==4.0.1 --with torch==2.5.1 --with torchaudio==2.5.1 \
+            --with coremltools==8.3 --with "numpy<2" tools/export_demucs_onnx.py models --coreml
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Test
-        run: cargo test --release -- --include-ignored
+        run: cargo test --release
       - name: Build installer
         run: npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: pocket-prep-${{ matrix.target }}
           path: |
-            target/${{ matrix.target }}/release/bundle/msi/*.msi
             target/${{ matrix.target }}/release/bundle/nsis/*.exe
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            target/${{ matrix.target }}/release/bundle/deb/*.deb

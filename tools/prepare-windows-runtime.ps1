@@ -12,7 +12,12 @@ $out = 'target\redist'
 New-Item -ItemType Directory -Force $out | Out-Null
 
 # DirectML: the file ort downloaded with ONNX Runtime (target\release\DirectML.dll links to it).
-$dml = Get-Item 'target\release\DirectML.dll'
+# With `tauri build --target <triple>` the build lands in target\<triple>\release.
+$release = 'target\release'
+if ($env:TAURI_ENV_TARGET_TRIPLE -and (Test-Path "target\$env:TAURI_ENV_TARGET_TRIPLE\release\DirectML.dll")) {
+    $release = "target\$env:TAURI_ENV_TARGET_TRIPLE\release"
+}
+$dml = Get-Item "$release\DirectML.dll"
 if ($dml.LinkType) { $dml = Get-Item $dml.Target }
 Copy-Item $dml.FullName (Join-Path $out 'DirectML.dll') -Force
 
