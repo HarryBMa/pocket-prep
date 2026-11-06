@@ -92,14 +92,18 @@ def separate_chunked(predict, wav: torch.Tensor, cfg: NeedleConfig, overlap: int
 
 def torch_predictor(model, batch: int = 64):
     """Wrap a PyTorch Needle as a `predict` function (float, in eval mode). The last group of
-    chunks of a track is padded to the full batch, so the GPU only ever sees one input shape."""
+    chunks of a track is padded to the full batch, so the GPU only ever sees one input shape.
+    Chunks are moved to the model's device and the masks back to the chunks' device, so a track
+    can be handled on the CPU (STFT, masks, iSTFT: several GB for a long song) while only the
+    network runs on the GPU."""
     model.eval()
+    device = next(model.parameters()).device
 
     def predict(xb):
-        n = xb.shape[0]
+        n, home = xb.shape[0], xb.device
         if n < batch:
             xb = F.pad(xb, (0, 0, 0, 0, 0, 0, 0, batch - n))
-        return model(xb)[:n]
+        return model(xb.to(device))[:n].to(home)
     return predict
 
 

@@ -14,7 +14,8 @@ back into real numbers after the last. That is exactly what the deck does around
 Vela keeps TFLite's integer arithmetic, so these scores are what to expect on the device.
 
 Speed: every worker process owns one single-threaded interpreter and handles whole tracks
-(separate, then museval). 16 workers keep all 16 hardware threads busy. Measured on the
+(separate, then museval). Each needs up to ~6-10 GB of RAM for a long song (whole-song STFT
+and museval), so the default is 4 workers, safe next to a training run. Measured on the
 9850X3D, one base-16 chunk takes 2.3 ms in int8 with TFLite's default XNNPACK kernels, 101 ms
 with the reference kernels, and 118 ms in int16 (XNNPACK has no int16 path). XNNPACK may round
 an integer differently from the reference kernels now and then; --reference-kernels checks that
@@ -76,20 +77,25 @@ def _predict(xb):
 def _work(job):
     name, folder, mix_path = job
     t = time.time()
-    mix = torch.from_numpy(read_audio(mix_path, dtype="float32"))
-    est = separate_chunked(_predict, mix, _W["cfg"], _W["overlap"]).numpy()
-    scores = score_track(read_stems(folder, "wav", dtype="float32"), est)
-    return name, scores, time.time() - t
+    if mix_path:                                            # MUSDB: real mixture.wav
+        refs = read_stems(folder, "wav", dtype="float32")
+        mix = read_audio(mix_path, dtype="float32")
+    else:                                                   # --refs: the mixture is the sum of the stems
+        refs = read_stems(folder, "flac", dtype="float32")
+        mix = refs.sum(0)
+    est = separate_chunked(_predict, torch.from_numpy(mix), _W["cfg"], _W["overlap"]).numpy()
+    return name, score_track(refs, est), time.time() - t
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tflite", required=True)
-    ap.add_argument("--musdb", required=True)
+    ap.add_argument("--musdb", help="MUSDB18-HQ root")
     ap.add_argument("--subset", default="test", choices=["test", "valid"])
+    ap.add_argument("--refs", help="instead of MUSDB: a folder of real stems (import_stems.py layout)")
     ap.add_argument("--frames", type=int, help="must match the .tflite input (default: from report.json)")
     ap.add_argument("--overlap", type=int, default=8)
-    ap.add_argument("--workers", type=int, default=16)
+    ap.add_argument("--workers", type=int, default=4, help="processes (each needs up to ~6-10 GB for a long song: whole-song STFT + museval)")
     ap.add_argument("--reference-kernels", action="store_true",
                     help="TFLite's slow reference kernels (closest to TFLite Micro on the device)")
     ap.add_argument("--float", help="results JSON of the float model, to print the quantisation loss")
@@ -100,11 +106,19 @@ def main():
 
     tflite = Path(a.tflite)
     cfg = load_config(tflite, a.frames)
-    name = a.name or f"{tflite.parent.name}_{tflite.stem.replace('needle_', '')}"
-    names = musdb_split(a.musdb)[a.subset]
+    # build\<run>\needle_b16_f32\needle_int8.tflite -> "<run>_int8", matching eval.py's "<run>"
+    run = tflite.parent.parent.name if tflite.parent.name.startswith("needle_") and tflite.parent.parent.name != "build" \
+        else tflite.parent.name
+    name = a.name or f"{run}_{tflite.stem.replace('needle_', '')}"
+    if a.refs:
+        subset = Path(a.refs).name
+        jobs = [(p.parent.name, str(p.parent), None) for p in sorted(Path(a.refs).glob("*/done"))]
+    else:
+        subset = a.subset
+        jobs = [(n, str(track_folder(a.musdb, a.subset, n)), str(track_folder(a.musdb, a.subset, n) / "mixture.wav"))
+                for n in musdb_split(a.musdb)[a.subset]]
     if a.limit:
-        names = names[:a.limit]
-    jobs = [(n, str(track_folder(a.musdb, a.subset, n)), str(track_folder(a.musdb, a.subset, n) / "mixture.wav")) for n in names]
+        jobs = jobs[:a.limit]
 
     t0, per_track = time.time(), {}
     with mp.get_context("spawn").Pool(a.workers, initializer=_init,
@@ -114,7 +128,7 @@ def main():
             print(f"{k}/{len(jobs)} {n}: SDR avg {np.mean([scores['SDR'][s] for s in SOURCES]):.2f} dB ({secs:.0f} s)", flush=True)
     print(f"evaluated {len(jobs)} tracks in {(time.time() - t0) / 60:.1f} min")
     per_track = dict(sorted(per_track.items()))
-    summary = save_results(Path(a.out) / f"{name}_{a.subset}.json", name, a.subset, per_track,
+    summary = save_results(Path(a.out) / f"{name}_{subset}.json", name, subset, per_track,
                            {"tflite": str(tflite), "frames": cfg.frames, "overlap": a.overlap,
                             "reference_kernels": a.reference_kernels})
     if a.float:
