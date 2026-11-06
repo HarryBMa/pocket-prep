@@ -6,6 +6,9 @@
     # add teacher stems from your own music (half of the stems drawn from them)
     python train.py --musdb ... --teacher E:\\needle-data\\teacher --teacher-share 0.5 --name b16_f32_kd
 
+    # add real stems from import_stems.py (a quarter of the stems drawn from them)
+    python train.py --musdb ... --stems E:\\needle-data\\stems\\ni --stems E:\\needle-data\\stems\\mshoxx --stems-share 0.25 --name ...
+
     # continue a run that was stopped (time limit, reboot, Ctrl+C)
     python train.py --musdb ... --name b16_f32 --resume
 
@@ -123,6 +126,8 @@ def main():
     ap.add_argument("--musdb", required=True, help="MUSDB18-HQ root (with train/ and test/)")
     ap.add_argument("--teacher", action="append", default=[], help="distill.py cache folder (repeatable)")
     ap.add_argument("--teacher-share", type=float, default=0.5, help="fraction of stems drawn from teacher tracks")
+    ap.add_argument("--stems", action="append", default=[], help="import_stems.py folder of real stems (repeatable)")
+    ap.add_argument("--stems-share", type=float, default=0.25, help="fraction of stems drawn from --stems tracks")
     ap.add_argument("--name", required=True)
     ap.add_argument("--runs", default=str(HERE / "runs"))
     ap.add_argument("--resume", action="store_true", help="continue from runs/<name>/last.pt")
@@ -204,12 +209,16 @@ def main():
     split = musdb_split(a.musdb)
     train = load_musdb(a.musdb, "train", split["train"])
     valid = load_musdb(a.musdb, "train", split["valid"])
-    groups = [(train, 1.0 - (a.teacher_share if a.teacher else 0.0))]
-    teacher = [tr for d in a.teacher for tr in load_teacher(d)]
-    if teacher:
-        groups.append((teacher, a.teacher_share))
+    teacher = [tr for d in a.teacher for tr in load_teacher(d)]       # teacher stems (distill.py)
+    real = [tr for d in a.stems for tr in load_teacher(d)]            # real stems (import_stems.py), same layout
+    share_t = a.teacher_share if teacher else 0.0
+    share_r = a.stems_share if real else 0.0
+    assert share_t + share_r < 1, "MUSDB needs a share too"
+    groups = [(train, 1.0 - share_t - share_r)] + ([(teacher, share_t)] if teacher else []) + ([(real, share_r)] if real else [])
     print(f"data in RAM after {time.time() - t:.0f} s: MUSDB train {len(train)} tracks ({hours(train):.1f} h), "
-          f"valid {len(valid)} ({hours(valid):.1f} h), teacher {len(teacher)} ({hours(teacher):.1f} h)")
+          f"valid {len(valid)} ({hours(valid):.1f} h), teacher {len(teacher)} ({hours(teacher):.1f} h), "
+          f"real stems {len(real)} ({hours(real):.1f} h); shares MUSDB {1 - share_t - share_r:.2f}, "
+          f"teacher {share_t:.2f}, real {share_r:.2f}")
     bank = StemBank(groups, crop_length(cfg))
     batches = Prefetcher(bank, a.batch, a.remix, seed=a.seed + start)
     spec_norm = torch.hann_window(cfg.n_fft).pow(2).sum().sqrt().item()
