@@ -172,24 +172,49 @@ def pack_songs(zip_paths):
                     yield track_id(f"{pack}/{f}"), nm, [f"{cat}: {nm}"], (lambda f=f: [read(f)]), f"{zp}::{f}"
 
 
+def zipstems_songs(zip_paths):
+    """Multitrack datasets packed as <root>/<song>/... in a .zip, read without unpacking:
+    - MoisesDB: <song>/<stem>/<track id>.wav, where <stem> is vocals, bass, drums, percussion,
+      guitar, piano, other_keys, bowed_strings, wind, other_plucked or other; drums and
+      percussion -> drums, everything that isn't vocals, bass or drums -> other.
+    - SDXDB23 (bleeding / label noise): <song>/{bass,drums,other,vocals}.wav."""
+    import io
+    import zipfile
+    for zp in zip_paths:
+        z = zipfile.ZipFile(zp)
+        songs = {}
+        for n in z.namelist():
+            parts = n.split("/")
+            if n.lower().endswith(".wav") and len(parts) >= 3:
+                songs.setdefault(parts[1], []).append(n)
+        for song, files in sorted(songs.items()):
+            # the stem's name: its folder inside the song (MoisesDB), or the file name (SDX)
+            names = [f.split("/")[2] if len(f.split("/")) > 3 else f.split("/")[-1][:-4] for f in files]
+            load = (lambda files=files, z=z: [read_audio(io.BytesIO(z.read(f)), dtype="float32") for f in files])
+            yield song, song, names, load, f"{zp}::{song}"
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("kind", choices=["ni", "folder", "pack"])
-    ap.add_argument("root", nargs="+", help="a folder (ni, folder) or sample-pack .zip files (pack)")
+    ap.add_argument("kind", choices=["ni", "folder", "pack", "zipstems"])
+    ap.add_argument("root", nargs="+", help="a folder (ni, folder) or .zip files (pack, zipstems)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--test-out", help="every --test-every'th usable song goes here instead (never trained on)")
     ap.add_argument("--test-every", type=int, default=8)
     ap.add_argument("--musdb", help="MUSDB18-HQ root, to skip songs that are also in MUSDB")
     ap.add_argument("--redo", action="store_true", help="rewrite songs that were already imported (e.g. after a mapping fix)")
+    ap.add_argument("--limit", type=int, default=0, help="stop after this many songs (a quick test)")
     a = ap.parse_args()
 
     skip_titles = musdb_titles(a.musdb)
     songs = {"ni": lambda: ni_songs(a.root[0]), "folder": lambda: folder_songs(a.root[0]),
-             "pack": lambda: pack_songs(a.root)}[a.kind]()
+             "pack": lambda: pack_songs(a.root), "zipstems": lambda: zipstems_songs(a.root)}[a.kind]()
     report, usable = [], 0
     for sid, title, names, load, src in songs:
+        if a.limit and len(report) >= a.limit:
+            break
         cats = [category(n) for n in names]
         if norm(title) in skip_titles:
             report.append((sid, "skipped: also in MUSDB18", names, cats))
