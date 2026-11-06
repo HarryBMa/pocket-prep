@@ -3,134 +3,259 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pocket Prep</title>
+<meta name="application-name" content="DKPRP">
+<meta name="description" content="DKPRP: track preparation and export for the DECK001">
+<title>DKPRP</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<!-- Icons, drawn once and reused with <use>. Stroke-only, 20px grid. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-library" viewBox="0 0 20 20"><path d="M3 4h14M3 8h14M3 12h8M3 16h8M14 11v6M14 11l3-1v6"/></symbol>
+    <symbol id="i-export" viewBox="0 0 20 20"><path d="M10 3v9M6.5 6.5 10 3l3.5 3.5M4 12v4h12v-4"/></symbol>
+    <symbol id="i-deck" viewBox="0 0 20 20"><rect x="2.5" y="5" width="15" height="10" rx="1.5"/><circle cx="13" cy="10" r="2.5"/><path d="M5.5 8.5h3M5.5 11.5h3"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 20 20"><path d="M4 5h7M15 5h1M4 10h2M10 10h6M4 15h9M17 15h-1"/><circle cx="13" cy="5" r="1.8"/><circle cx="8" cy="10" r="1.8"/><circle cx="15" cy="15" r="1.8"/></symbol>
+    <symbol id="i-jobs" viewBox="0 0 20 20"><path d="M4 5h12M4 10h12M4 15h7"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 20 20"><circle cx="10" cy="10" r="3.2"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 20 20"><path d="M15.5 12.5A6 6 0 0 1 7.5 4.5a6 6 0 1 0 8 8z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.2 12.2 16.5 16.5"/></symbol>
+    <symbol id="i-play" viewBox="0 0 20 20"><path d="M6 4l10 6-10 6z" fill="currentColor"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 20 20"><path d="M6 4h3v12H6zM11 4h3v12h-3z" fill="currentColor"/></symbol>
+    <symbol id="i-x" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5 5 15"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 20 20"><path d="M2.5 5.5h5l1.5 2h8.5v8h-15z"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 20 20"><path d="M5 4v12" /><path d="M16 4 7 10l9 6z" fill="currentColor"/></symbol>
+    <symbol id="i-next" viewBox="0 0 20 20"><path d="M15 4v12" /><path d="M4 4l9 6-9 6z" fill="currentColor"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 20 20"><rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 20 20"><path d="M3.5 8v4h3l4 3.5v-11l-4 3.5z"/><path d="M13.5 7.5a3.5 3.5 0 0 1 0 5M15.5 5.5a6.5 6.5 0 0 1 0 9"/></symbol>
+    <symbol id="i-check" viewBox="0 0 20 20"><path d="M4.5 10.5l3.5 3.5 7.5-8"/></symbol>
+    <symbol id="i-list" viewBox="0 0 20 20"><path d="M3 5h2M3 10h2M3 15h2M8 5h9M8 10h9M8 15h9"/></symbol>
+  </defs>
+</svg>
+
 <header class="top">
-  <div class="brand">Pocket Prep</div>
-  <nav class="tabs" role="tablist">
-    <button role="tab" data-view="library" aria-selected="true">Library</button>
-    <button role="tab" data-view="export">Export</button>
-    <button role="tab" data-view="deck">Deck</button>
-    <button role="tab" data-view="settings">Settings</button>
-  </nav>
+  <div class="brand" aria-label="DKPRP"><span class="brand-mark" aria-hidden="true"></span>DKPRP</div>
+  <div class="top-sub">Preparation for <b>DECK001</b></div>
   <div class="top-right">
-    <button id="jobsBtn" class="ghost" aria-haspopup="dialog"><span id="jobsDot" class="dot"></span><span id="jobsLabel">No jobs</span></button>
-    <button id="themeBtn" class="ghost" title="Light or dark">Theme</button>
+    <button id="deckPill" class="pill-btn" title="DECK001 status (opens Deck)"><span id="deckDot" class="dot"></span><span id="deckPillLabel">DECK001</span></button>
+    <button id="jobsBtn" class="ghost" aria-haspopup="dialog" aria-controls="jobsPanel" aria-expanded="false"><span id="jobsDot" class="dot"></span><span id="jobsLabel">No jobs</span></button>
+    <button id="themeBtn" class="ghost icon-btn" title="Switch light or dark theme" aria-label="Switch light or dark theme"><svg class="ic"><use href="#i-moon"/></svg></button>
   </div>
 </header>
 
-<main>
-  <!-- LIBRARY -->
-  <section id="view-library" class="view active">
-    <aside class="side">
-      <button class="nav-item active" data-playlist="0">All tracks <span id="allCount" class="count"></span></button>
-      <div class="side-head">
-        <span>Playlists</span>
-        <span class="side-actions">
-          <button class="ghost small" id="newPlaylist">+ Playlist</button>
-          <button class="ghost small" id="newFolder">+ Folder</button>
-        </span>
-      </div>
-      <div id="tree" class="tree"></div>
-      <p class="hint">Drag tracks onto a playlist to add them. Right-click a playlist to rename or delete it. New playlists go in the open folder.</p>
-    </aside>
+<div class="shell">
+  <nav class="tabs rail" role="tablist" aria-label="Views" aria-orientation="vertical">
+    <button role="tab" data-view="library" aria-selected="true" aria-controls="view-library" title="Library (Alt+1)"><svg class="ic"><use href="#i-library"/></svg><span>Library</span></button>
+    <button role="tab" data-view="export" aria-selected="false" aria-controls="view-export" title="Export (Alt+2)" tabindex="-1"><svg class="ic"><use href="#i-export"/></svg><span>Export</span></button>
+    <button role="tab" data-view="deck" aria-selected="false" aria-controls="view-deck" title="Deck (Alt+3)" tabindex="-1"><svg class="ic"><use href="#i-deck"/></svg><span>Deck</span></button>
+    <button role="tab" data-view="settings" aria-selected="false" aria-controls="view-settings" title="Settings (Alt+4)" tabindex="-1"><svg class="ic"><use href="#i-settings"/></svg><span>Settings</span></button>
+  </nav>
 
-    <div class="main-col">
-      <div class="toolbar">
-        <input id="search" type="search" placeholder="Search title, artist, key, 8A…" aria-label="Search">
-        <div id="contextActions" class="context"></div>
-        <div class="spacer"></div>
-        <button id="importFiles" class="ghost">Add files</button>
-        <button id="importFolder" class="primary">Add folder</button>
-      </div>
-      <div class="table-wrap" id="dropZone">
-        <table id="tracks">
-          <thead><tr>
-            <th class="c-col"></th><th>Title</th><th>Artist</th><th class="num">BPM</th><th>Key</th>
-            <th class="num">Energy</th><th class="num">Time</th><th>Stems</th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
-        <div id="empty" class="empty" hidden>
-          <h2>No tracks yet</h2>
-          <p>Add a folder of music. Tracks are analysed automatically: tempo, beat grid, key, energy and phrases.</p>
-          <button class="primary" id="emptyImport">Add folder</button>
+  <main>
+    <!-- LIBRARY -->
+    <section id="view-library" class="view active" role="tabpanel" aria-label="Library">
+      <aside class="side" aria-label="Collection and playlists">
+        <div class="side-head"><span>Collection</span></div>
+        <button class="nav-item active" id="allTracks" data-playlist="0"><svg class="ic sm"><use href="#i-list"/></svg><span class="nm">All tracks</span><span id="allCount" class="count"></span></button>
+        <div class="side-head">
+          <span>Playlists</span>
+          <span class="side-actions">
+            <button class="ghost small" id="newPlaylist" title="New playlist (selected tracks go in it)">+ Playlist</button>
+            <button class="ghost small" id="newFolder" title="New folder">+ Folder</button>
+          </span>
+        </div>
+        <div id="tree" class="tree"></div>
+        <p class="hint">Drag tracks onto a playlist to add them. Right-click a playlist to rename or delete it. New playlists go in the open folder.</p>
+      </aside>
+
+      <div class="main-col">
+        <div id="detail" class="detail" hidden></div>
+        <div class="toolbar">
+          <label class="search"><svg class="ic sm"><use href="#i-search"/></svg>
+            <input id="search" type="search" placeholder="Search title, artist, key, 8A…" aria-label="Search tracks (/)"></label>
+          <div class="seg" id="filters" role="group" aria-label="Filter">
+            <button data-filter="all" aria-pressed="true">All</button>
+            <button data-filter="unanalysed" aria-pressed="false">Not analysed</button>
+            <button data-filter="nostems" aria-pressed="false">No stems</button>
+            <button data-filter="stems" aria-pressed="false">Stems ready</button>
+          </div>
+          <div id="contextActions" class="context" aria-live="polite"></div>
+          <div class="spacer"></div>
+          <button id="importFiles" class="ghost">Add files</button>
+          <button id="importFolder" class="primary">Add folder</button>
+        </div>
+        <div class="table-wrap" id="dropZone">
+          <table id="tracks">
+            <thead><tr>
+              <th class="c-col" aria-label="Colour"></th>
+              <th class="c-idx num" data-sort="index">#</th>
+              <th data-sort="title">Title</th><th data-sort="artist">Artist</th><th data-sort="album" class="c-album">Album</th>
+              <th data-sort="genre" class="c-genre">Genre</th>
+              <th class="num" data-sort="bpm">BPM</th><th data-sort="camelot">Key</th>
+              <th data-sort="energy" class="c-energy">Energy</th><th class="num" data-sort="duration">Time</th>
+              <th data-sort="analysed_at">Analysis</th><th data-sort="stems">Stems</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+          <div id="tableNote" class="table-note" hidden></div>
+          <div id="empty" class="empty" hidden>
+            <h2>No tracks yet</h2>
+            <p>Add a folder of music. Tracks are analysed automatically: tempo, beat grid, key, energy and phrases.</p>
+            <button class="primary" id="emptyImport">Add folder</button>
+          </div>
         </div>
       </div>
-      <div id="detail" class="detail" hidden></div>
-    </div>
-  </section>
 
-  <!-- EXPORT -->
-  <section id="view-export" class="view">
-    <div class="page">
-      <h1>Export to a card or stick</h1>
-      <p class="lede">Writes a rekordbox-format library that the Pocket Deck reads, plus stems and phrase data. CDJs can read the same stick.</p>
-      <h2>1. Choose the drive</h2>
-      <div id="drives" class="cards"></div>
-      <button class="ghost small" id="refreshDrives">Refresh drives</button>
-      <label class="check"><input type="checkbox" id="allDrives"> Show all drives (not only removable)</label>
-      <h2>2. Choose what to export</h2>
-      <label class="radio"><input type="radio" name="scope" value="all" checked> Whole library</label>
-      <label class="radio"><input type="radio" name="scope" value="playlists"> Selected playlists</label>
-      <div id="exportPlaylists" class="checklist" hidden></div>
-      <label class="check"><input type="checkbox" id="includeStems" checked> Include stems (where made)</label>
-      <h2>3. Check and export</h2>
-      <div id="plan" class="plan">Choose a drive to see what will be copied.</div>
-      <button class="primary" id="doExport" disabled>Export</button>
-      <div id="exportJob"></div>
-    </div>
-  </section>
+      <!-- The DECK001 at a glance: device, what an export takes, background jobs. -->
+      <aside class="dock" aria-label="DECK001 overview">
+        <section class="dock-card">
+          <div class="dock-head"><svg class="ic sm"><use href="#i-deck"/></svg><b>Device</b><span class="spacer"></span><span id="dockDeckState" class="dev-state"></span></div>
+          <div id="dockDeck" class="dock-device"></div>
+          <div class="dock-btns">
+            <button class="ghost small" id="dockDeckCheck">Check again</button>
+            <button class="ghost small" id="dockFirmware">Update firmware…</button>
+          </div>
+        </section>
+        <section class="dock-card">
+          <div class="dock-head"><svg class="ic sm"><use href="#i-export"/></svg><b>Export to device</b></div>
+          <ul class="incl">
+            <li><svg class="ic sm"><use href="#i-check"/></svg>Tracks, copied as they are</li>
+            <li><svg class="ic sm"><use href="#i-check"/></svg>Hot cues and memory cues</li>
+            <li><svg class="ic sm"><use href="#i-check"/></svg>Beat grids and waveforms</li>
+            <li><svg class="ic sm"><use href="#i-check"/></svg>Phrases, key and energy</li>
+          </ul>
+          <label class="check"><input type="checkbox" id="dockStems" checked> Stems (where made)</label>
+          <div id="dockExport" class="dock-note"></div>
+          <button class="primary wide-btn" id="dockExportBtn">Export to DECK001…</button>
+        </section>
+        <section class="dock-card dock-jobs">
+          <div class="dock-head"><svg class="ic sm"><use href="#i-jobs"/></svg><b>Jobs</b><span class="spacer"></span><button class="ghost small" id="dockClear">Clear finished</button></div>
+          <div id="dockJobs"></div>
+        </section>
+      </aside>
+    </section>
 
-  <!-- DECK -->
-  <section id="view-deck" class="view">
-    <div class="page">
-      <h1>Deck</h1>
-      <div id="deckStatus" class="plan">Checking…</div>
-      <button class="ghost small" id="deckRefresh">Check again</button>
-      <h2>Update firmware</h2>
-      <ol class="steps">
-        <li>On the deck, open Settings and turn on <b>Wi-Fi Remote</b>.</li>
-        <li>On this PC, join the deck's Wi-Fi network (<b>Pajoniiir</b>).</li>
-        <li>Choose the signed update file (<b>.ddjota</b>). The deck checks the signature before it installs anything, and rolls back by itself if the new firmware doesn't start.</li>
-      </ol>
-      <button class="primary" id="otaPick">Choose update file…</button>
-      <input type="file" id="otaFile" accept=".ddjota" hidden>
-      <div id="otaJob"></div>
-      <details class="recovery">
-        <summary>Wired recovery (USB)</summary>
-        <p>For a first install, or a deck that won't start. Connect the deck's USB-C <b>UART</b> port. This overwrites the deck's firmware.</p>
-        <label>Port <select id="ports"></select></label>
-        <label>ESP-IDF build folder <input id="buildDir" placeholder="C:\…\build"></label>
-        <button class="danger" id="flashBtn">Flash over USB</button>
-        <div id="flashJob"></div>
-      </details>
-    </div>
-  </section>
+    <!-- EXPORT -->
+    <section id="view-export" class="view" role="tabpanel" aria-label="Export">
+      <div class="page wide">
+        <div class="page-head">
+          <h1>Export to DECK001</h1>
+          <p class="lede">Writes a rekordbox-format library the DECK001 reads, plus stems and phrase data. CDJs can read the same card. Audio files are copied as they are, never converted.</p>
+        </div>
+        <div class="export-grid">
+          <div class="export-steps">
+            <section class="panel">
+              <div class="panel-head"><h2><span class="step">1</span>Drive</h2><span class="spacer"></span>
+                <label class="check inline"><input type="checkbox" id="allDrives"> Show all drives</label>
+                <button class="ghost small" id="refreshDrives">Refresh</button></div>
+              <div id="drives" class="cards" role="radiogroup" aria-label="Target drive"></div>
+              <p class="hint">Only removable FAT32 or exFAT drives can be chosen. The system drive is never offered, and a rekordbox library another program wrote is never overwritten.</p>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><h2><span class="step">2</span>Content</h2></div>
+              <div class="scope">
+                <label class="radio"><input type="radio" name="scope" value="all" checked> Whole library</label>
+                <label class="radio"><input type="radio" name="scope" value="playlists"> Selected playlists</label>
+              </div>
+              <div id="exportPlaylists" class="checklist" hidden></div>
+              <label class="check"><input type="checkbox" id="includeStems" checked> Include stems (where made)</label>
+            </section>
+          </div>
+          <aside class="panel export-summary" aria-label="Export plan">
+            <div class="panel-head"><h2><span class="step">3</span>Plan</h2></div>
+            <div id="exportTarget" class="target"></div>
+            <div id="plan" class="plan">Choose a drive to see what will be copied.</div>
+            <button class="primary wide-btn" id="doExport" disabled>Export</button>
+            <div id="exportJob"></div>
+          </aside>
+        </div>
+      </div>
+    </section>
 
-  <!-- SETTINGS -->
-  <section id="view-settings" class="view">
-    <div class="page">
-      <h1>Settings</h1>
-      <form id="settingsForm" class="form">
-        <label class="check"><input type="checkbox" name="auto_analyse"> Analyse tracks when they're added</label>
-        <label>Lowest BPM <input name="bpm_min" type="number" min="40" max="200"></label>
-        <label>Highest BPM <input name="bpm_max" type="number" min="60" max="300"></label>
-        <label>Deck address <input name="deck_address"></label>
-        <button class="primary" type="submit">Save</button>
-      </form>
-      <div id="system" class="plan"></div>
-      <h2>History</h2>
-      <p class="lede">Every change is kept here. Undo any change that can be reversed.</p>
-      <div id="history" class="history"></div>
-    </div>
-  </section>
-</main>
+    <!-- DECK -->
+    <section id="view-deck" class="view" role="tabpanel" aria-label="Deck">
+      <div class="page wide">
+        <div class="page-head"><h1>DECK001</h1>
+          <p class="lede">Status and firmware of the deck over its Wi-Fi Remote. Wired recovery is kept separate below.</p></div>
+        <div class="deck-grid">
+          <section class="panel device">
+            <div class="panel-head"><h2>Device</h2><span class="spacer"></span><button class="ghost small" id="deckRefresh">Check again</button></div>
+            <div id="deckStatus" class="device-status">Checking…</div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>Firmware update</h2><span class="tag">Wi-Fi</span></div>
+            <ol class="steps">
+              <li>On the deck, open Settings and turn on <b>Wi-Fi Remote</b>.</li>
+              <li>On this computer, join the deck's Wi-Fi network (<b>Pajoniiir</b>).</li>
+              <li>Choose the signed update file (<b>.ddjota</b>). The deck checks the signature before it installs anything, and rolls back by itself if the new firmware doesn't start.</li>
+            </ol>
+            <button class="primary" id="otaPick">Choose update file…</button>
+            <input type="file" id="otaFile" accept=".ddjota" hidden>
+            <div id="otaJob"></div>
+          </section>
+        </div>
+        <details class="panel recovery">
+          <summary>USB recovery <span class="tag danger-tag">Overwrites firmware</span></summary>
+          <p>For a first install, or a deck that won't start. Connect the deck's USB-C <b>UART</b> port. This overwrites the deck's firmware, and asks you to type FLASH first.</p>
+          <div class="recovery-form">
+            <label>Port <select id="ports"></select></label>
+            <label>ESP-IDF build folder <input id="buildDir" placeholder="C:\…\build"></label>
+            <button class="danger" id="flashBtn">Flash over USB</button>
+          </div>
+          <div id="flashJob"></div>
+        </details>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="view-settings" class="view" role="tabpanel" aria-label="Settings">
+      <div class="page wide">
+        <div class="page-head"><h1>Settings</h1></div>
+        <div class="settings-grid">
+          <div>
+            <form id="settingsForm" class="panel form">
+              <fieldset>
+                <legend>Analysis</legend>
+                <label class="check"><input type="checkbox" name="auto_analyse"> Analyse tracks when they're added</label>
+                <div class="pair">
+                  <label>Lowest BPM <input name="bpm_min" type="number" min="40" max="200"></label>
+                  <label>Highest BPM <input name="bpm_max" type="number" min="60" max="300"></label>
+                </div>
+                <p class="hint">Detected tempos outside this range are halved or doubled into it.</p>
+              </fieldset>
+              <fieldset>
+                <legend>DECK001</legend>
+                <label>Network address <input name="deck_address" spellcheck="false"></label>
+              </fieldset>
+              <div class="form-foot"><button class="primary" type="submit">Save</button></div>
+            </form>
+            <section class="panel">
+              <div class="panel-head"><h2>System</h2></div>
+              <div id="system" class="kv"></div>
+            </section>
+          </div>
+          <section class="panel history-panel">
+            <div class="panel-head"><h2>History</h2></div>
+            <p class="hint">Every change is kept here. Undo any change that can be reversed (Ctrl+Z undoes the last one).</p>
+            <div id="history" class="history"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<footer class="status-bar" aria-label="Status">
+  <span id="statusLib">Loading library…</span>
+  <span class="sb-sep"></span>
+  <span id="statusJobs"></span>
+  <span class="spacer"></span>
+  <span id="statusDeck"></span>
+  <span id="statusVersion" class="muted"></span>
+</footer>
 
 <div id="jobsPanel" class="drawer" role="dialog" aria-label="Jobs" hidden>
-  <div class="drawer-head"><b>Jobs</b><span class="spacer"></span><button class="ghost small" id="clearJobs">Clear finished</button><button class="ghost small" id="closeJobs">Close</button></div>
+  <div class="drawer-head"><b>Jobs</b><span class="spacer"></span><button class="ghost small" id="clearJobs">Clear finished</button><button class="ghost small icon-btn" id="closeJobs" aria-label="Close jobs"><svg class="ic sm"><use href="#i-x"/></svg></button></div>
   <div id="jobsList"></div>
 </div>
 

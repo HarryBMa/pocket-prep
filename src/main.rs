@@ -64,7 +64,7 @@ fn main() {
     drop(db::conn());                                       // create or upgrade the library now
     let url = start_server();
     server::startup_jobs();
-    println!("Pocket Prep running at {url}  (data: {})", config::data_dir().display());
+    println!("DKPRP running at {url}  (data: {})", config::data_dir().display());
 
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--browser" || a == "--headless") {
@@ -82,7 +82,7 @@ fn main() {
         .setup(move |app| {
             let _ = server::APP.set(app.handle().clone());
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url.parse().unwrap()))
-                .title("Pocket Prep")
+                .title("DKPRP")
                 .inner_size(1400.0, 880.0)
                 .min_inner_size(980.0, 640.0)
                 .disable_drag_drop_handler()                // keeps HTML drag and drop (tracks onto playlists)
@@ -90,5 +90,5 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running Pocket Prep");
+        .expect("error while running DKPRP");
 }

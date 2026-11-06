@@ -1,6 +1,6 @@
-# Pocket Prep: handover
+# DKPRP (formerly Pocket Prep): handover
 
-Companion prep app for the Pocket Deck: library, analysis, Demucs stems, rekordbox-format
+Preparation app for the DECK001 (formerly "Pocket Deck"): library, analysis, Demucs stems, rekordbox-format
 export to SD/USB, deck firmware updates. Rewritten from Python to Rust + Tauri on 2026-11-04
 so it ships as a normal app on Windows and macOS. Keep the code readable and commented,
 and explain choices.
@@ -35,7 +35,9 @@ existing library carries over. Old MP3 stems are marked "not made" and need rema
 - `export/`: pdb.rs, anlz.rs (our writers; rekordcrate can't create a PDB yet, but the tests parse
   our output with it), usb.rs (card layout; removable drives only unless "Show all"; never the
   system drive; FAT32/exFAT only; deck-decodability warnings).
-- `ui/`: vanilla JS; waveform = wavesurfer.js 7 (vendored, BSD-3).
+- `ui/`: vanilla JS; waveform = wavesurfer.js 7 (vendored, BSD-3). Redesigned as DKPRP on
+  2026-11-05: see docs/DKPRP_REDESIGN.md for the DOM ids app.js relies on and what kept its old name
+  (crate, bundle id, data folder, env vars, and the `"app": "Pocket Prep"` marker in export.json).
 - `deck.rs`: OTA over Wi-Fi (reqwest), wired flash with the espflash library (no Python/esptool).
 - `jobs.rs`: cpu / gpu / io worker lanes.
 
