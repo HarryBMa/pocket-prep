@@ -496,7 +496,7 @@ function renderDetail() {
       h("b", {}, letter), h("small", {}, cue ? (cue.label || fmtMs(cue.start_ms)) : "–"), cue ? h("span", { class: "x", title: "Clear" }, "×") : null);
     pad.addEventListener("click", (e) => {
       if (cue && !e.target.classList.contains("x")) { player.currentTime = cue.start_ms / 1000; return; }
-      setCue(i + 1, cue && e.target.classList.contains("x") ? null : player.currentTime * 1000).catch(fail);
+      setCue(i + 1, cue && e.target.classList.contains("x") ? null : heardMs()).catch(fail);
     });
     pad.addEventListener("contextmenu", (e) => { e.preventDefault(); if (cue) setCue(i + 1, null).catch(fail); });
     return pad;
@@ -530,7 +530,7 @@ function renderDetail() {
   seek.addEventListener("input", () => { state.seeking = true; player.currentTime = +seek.value; });
   seek.addEventListener("change", () => { state.seeking = false; });
   const vol = h("input", { type: "range", class: "vol", min: 0, max: 1, step: 0.01, value: state.volume, "aria-label": "Preview volume" });
-  vol.addEventListener("input", () => { state.volume = +vol.value; player.volume = state.volume; try { localStorage.setItem("volume", vol.value); } catch {} });
+  vol.addEventListener("input", () => { state.volume = +vol.value; setVolume(); try { localStorage.setItem("volume", vol.value); } catch {} });
   const tbtn = (label, ic, onclick, extra = {}) => h("button", { class: "ghost icon-btn t-btn", "aria-label": label, title: label, onclick, ...extra }, icon(ic));
   const transport = h("div", { class: "transport-bar" },
     h("button", { class: "play-btn", id: "playBtn", onclick: togglePlay, "aria-label": playing ? "Pause (Space)" : "Play (Space)", title: "Play or pause (Space)" }, icon(playing ? "pause" : "play")),
@@ -544,6 +544,10 @@ function renderDetail() {
       h("button", { class: "ghost small", "aria-label": "Tempo up 0.5%", title: "Tempo up", onclick: () => setTempo((state.tempo || 0) + 0.5) }, "+")),
     tbtn(state.keyLock ? "Key lock on" : "Key lock off", "lock", () => { state.keyLock = !state.keyLock; applyRate(); renderDetail(); },
          { "aria-pressed": String(!!state.keyLock), class: "ghost icon-btn t-btn" + (state.keyLock ? " on" : "") }),
+    h("span", { class: "t-group", role: "group", "aria-label": "Preview key shift" },
+      h("button", { class: "ghost small", "aria-label": "Key down one semitone", title: "Key down one semitone", onclick: () => setKeyShift(state.shift - 1) }, "−"),
+      h("button", { class: "ghost small tempo", id: "shiftLabel", title: "Preview key shift in semitones (click to reset). Playback only: nothing is saved.", onclick: () => setKeyShift(0) }, fmtShift()),
+      h("button", { class: "ghost small", "aria-label": "Key up one semitone", title: "Key up one semitone", onclick: () => setKeyShift(state.shift + 1) }, "+")),
     h("span", { class: "t-vol" }, icon("volume", "ic sm"), vol),
     h("span", { class: "spacer" }),
     h("span", { class: "legend", "aria-label": "Waveform colours" },
@@ -563,12 +567,12 @@ function renderDetail() {
         h("div", { class: "d-meta" }, [t.artist || "Unknown artist", t.album, t.genre].filter(Boolean).join(" · ")),
         h("div", { class: "stats" },
           h("div", { class: "stat" }, h("small", {}, "BPM"), h("b", { id: "bpmStat" }, bpmText(t))),
-          stat("Key", t.camelot ? `${t.camelot} ${t.musical_key || ""}` : null),
+          h("div", { class: "stat" }, h("small", {}, "Key"), h("b", { id: "keyStat" }, keyText(t))),
           stat("Energy", t.energy != null ? `${t.energy}/10` : null), stat("Length", fmtTime(t.duration)))),
       h("div", { class: "spacer" }),
       h("div", { class: "d-cues" },
         h("div", { class: "d-cues-head" }, h("span", {}, "Hot cues"), h("span", { class: "muted" }, "keys 1–8"), h("span", { class: "spacer" }),
-          h("button", { class: "ghost small", onclick: () => addMemory(player.currentTime * 1000).catch(fail), title: "Add a memory cue at the playhead (M)" }, "+ Memory cue")),
+          h("button", { class: "ghost small", onclick: () => addMemory(heardMs()).catch(fail), title: "Add a memory cue at the playhead (M)" }, "+ Memory cue")),
         pads),
       h("button", { class: "ghost small icon-btn d-close", onclick: closeDetail, "aria-label": "Close track", title: "Close" }, icon("x", "ic sm"))),
     splitSuggestion(t),
@@ -579,7 +583,7 @@ function renderDetail() {
     h("div", { class: "d-row", id: "dRow", hidden: !!state.editorHidden },
       h("div", { class: "d-sec" },
         h("h3", {}, "Memory cues", h("span", { class: "spacer" }),
-          h("button", { class: "ghost small", onclick: () => addMemory(player.currentTime * 1000).catch(fail), title: "Add at the playhead (M)" }, "+ At playhead")),
+          h("button", { class: "ghost small", onclick: () => addMemory(heardMs()).catch(fail), title: "Add at the playhead (M)" }, "+ At playhead")),
         memList),
       h("div", { class: "d-sec" }, h("h3", {}, "Track"),
         h("div", { class: "fields" },
@@ -625,8 +629,62 @@ function applyRate() {
   const r = 1 + state.tempo / 100;
   player.defaultPlaybackRate = r; player.playbackRate = r;
   player.preservesPitch = !!state.keyLock;
-  player.volume = state.volume;
+  setVolume();
 }
+function setVolume() {
+  // Once the key-shift graph exists the element feeds it, and the master gain carries the volume.
+  player.volume = shifter ? 1 : state.volume;
+  if (shifter) shifter.master.gain.value = state.volume;
+}
+
+// Preview key shift (playback only, nothing saved), ±12 semitones. The <audio> element still does tempo and key
+// lock; behind it, Signalsmith Stretch (vendor/signalsmith-stretch, the algorithm the DECK001 runs) shifts the
+// pitch. At 0 the element goes straight to the speakers, so there is no delay or CPU cost, and the first shift
+// builds the graph (an AudioContext must start from a click). With key lock off the heard pitch is the varispeed
+// pitch plus the shift, as on the deck.
+state.shift = 0;
+let shifter = null, shifterLoading = null;
+const fmtShift = () => `Key ${state.shift > 0 ? "+" : state.shift < 0 ? "−" : "±"}${Math.abs(state.shift)}`;
+async function buildShifter() {
+  const ctx = new AudioContext();
+  const node = await SignalsmithStretch(ctx);
+  const master = ctx.createGain(), direct = ctx.createGain(), shifted = ctx.createGain();
+  shifted.gain.value = 0;
+  const src = ctx.createMediaElementSource(player);
+  src.connect(direct).connect(master);
+  src.connect(node); node.connect(shifted).connect(master);
+  master.connect(ctx.destination);
+  shifter = { ctx, node, master, direct, shifted, latency: await node.latency() };
+  setVolume();
+}
+async function setKeyShift(v) {
+  state.shift = Math.max(-12, Math.min(12, Math.round(v)));
+  const l = $("#shiftLabel"); if (l) l.textContent = fmtShift();
+  const k = $("#keyStat"); if (k && state.current) k.textContent = keyText(state.current);
+  try {
+    if (!shifter && state.shift !== 0) await (shifterLoading ??= buildShifter().catch((e) => { shifterLoading = null; throw e; }));
+    if (!shifter) return;
+    const { ctx, node, direct, shifted } = shifter, t = ctx.currentTime;
+    if (ctx.state === "suspended") await ctx.resume();
+    const on = state.shift !== 0;
+    if (on) node.schedule({ active: true, semitones: state.shift });
+    direct.gain.setTargetAtTime(on ? 0 : 1, t, 0.015);
+    shifted.gain.setTargetAtTime(on ? 1 : 0, t, 0.015);
+    if (!on) setTimeout(() => { if (state.shift === 0) node.schedule({ active: false }); }, 300); // stop the DSP while idle
+  } catch (e) { state.shift = 0; const l2 = $("#shiftLabel"); if (l2) l2.textContent = fmtShift(); fail(new Error("Key shift is not available here: " + (e.message || e))); }
+}
+// Where the playhead is in what you hear: the shifter delays the sound, the element's clock doesn't.
+const heardMs = () => Math.max(0, player.currentTime * 1000 - (shifter && state.shift !== 0 && !player.paused ? shifter.latency * 1000 * player.playbackRate : 0));
+// The track's key after the shift. Camelot: one semitone up is seven steps round the wheel.
+const NOTE_NAMES = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+function shiftedKey(t) {
+  const m = /^(\d{1,2})([AB])$/.exec(t.camelot || "");
+  if (!m || !state.shift) return null;
+  const n = (((+m[1] - 1 + 7 * state.shift) % 12) + 12) % 12 + 1, minor = m[2] === "A";
+  const major = (((n - 8) * 7) % 12 + 12) % 12, pc = minor ? (major + 9) % 12 : major;
+  return `${n}${m[2]} ${NOTE_NAMES[pc]}${minor ? "m" : ""}`;
+}
+const keyText = (t) => (t.camelot ? shiftedKey(t) ?? `${t.camelot} ${t.musical_key || ""}` : "–");
 function setTempo(v) {
   state.tempo = Math.max(-8, Math.min(8, Math.round(v * 2) / 2));
   applyRate();
@@ -1179,9 +1237,9 @@ addEventListener("keydown", (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (state.current && e.key >= "1" && e.key <= "8") {
     const slot = +e.key, cue = state.current.cues.find((c) => c.slot === slot);
-    cue ? (player.currentTime = cue.start_ms / 1000) : setCue(slot, player.currentTime * 1000).catch(fail);
+    cue ? (player.currentTime = cue.start_ms / 1000) : setCue(slot, heardMs()).catch(fail);
   }
-  if (state.current && (e.key === "m" || e.key === "M")) addMemory(player.currentTime * 1000).catch(fail);
+  if (state.current && (e.key === "m" || e.key === "M")) addMemory(heardMs()).catch(fail);
   if (state.current && (e.code === "BracketLeft" || e.code === "BracketRight")) {
     e.preventDefault();
     gridNudge((e.code === "BracketLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1));
