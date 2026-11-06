@@ -37,7 +37,8 @@ def read_audio(path, sample_rate=SAMPLE_RATE, dtype="int16"):
     """Audio file -> array (2, N) at `sample_rate`. Mono is duplicated to stereo, more than two
     channels are cut to the first two. Anything not at 44.1 kHz is resampled in memory
     (the file on disk is never touched)."""
-    wav, sr = sf.read(str(path), dtype="float32", always_2d=True)       # (N, C)
+    src = path if hasattr(path, "read") else str(path)                   # a path, or a file-like (e.g. from a zip)
+    wav, sr = sf.read(src, dtype="float32", always_2d=True)              # (N, C)
     wav = torch.from_numpy(wav.T.copy())
     if wav.shape[0] == 1:
         wav = wav.repeat(2, 1)

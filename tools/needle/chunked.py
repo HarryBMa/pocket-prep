@@ -1,4 +1,4 @@
-"""Device-style chunked inference, shared by train.py (validation), eval.py and eval_tflite.py.
+r"""Device-style chunked inference, shared by train.py (validation), eval.py and eval_tflite.py.
 
 On the deck the Cortex-M85 runs the STFT continuously and the NPU sees one chunk of `frames`
 STFT frames at a time. Neighbouring chunks overlap by `overlap` frames, and inside the overlap

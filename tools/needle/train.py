@@ -31,7 +31,6 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 

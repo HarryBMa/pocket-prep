@@ -8,6 +8,9 @@
     # one folder per song with one file per instrument (e.g. mshoxxDB: <song>/<song>_<instrument>.flac)
     python import_stems.py folder E:\\needle-data\\stems_raw\\mshoxxDB --out E:\\needle-data\\stems\\mshoxx --musdb ...
 
+    # sample packs (.zip): construction kits become songs, loop libraries single-stem tracks
+    python import_stems.py pack "C:\\Users\\Harry\\Downloads\\Ghosthack_...zip" ... --out E:\\needle-data\\stems\\packs
+
 How a stem is assigned to drums / bass / other / vocals: by its name (NI stores names such as
 "Drums", "Sub", "Chords", "Vox" inside the file; folder packs use file names). Anything that
 isn't clearly drums, bass or vocals is "other", as in MUSDB18.
@@ -21,6 +24,7 @@ MUSDB test song would make the test scores meaningless.
 a test set with real stems in the deck's own genres.
 """
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -32,10 +36,10 @@ import soundfile as sf
 from data import SAMPLE_RATE, read_audio
 from needle import SOURCES
 
-PATTERNS = [("vocals", r"vox|vocal|voice|choir|acapell|sing|chant"),
-            ("drums", r"drum|perc|kick|snare|hat|clap|cymbal|break|\brim|\btoms?\b|shaker|tamb|\bride\b|crash|open half"),
-            ("bass", r"bass|sub|808")]
-UNKNOWN = r"chops|metal|more|mix|full"                 # can't tell what these hold
+PATTERNS = [("vocals", r"vox|vocal|voice|choir|acapell|\bsing(er|ing)?\b|chant|harmony (left|right)"),
+            ("drums", r"drum|perc|kick|snare|\bhats?\b|hi-?hats?|clap|cymbal|breakbeat|\brim|\btoms?\b|shaker|tamb|\bride\b|crash|open half"),
+            ("bass", r"bass|\bsub\b|808")]
+UNKNOWN = r"chops|metal|more|\bmix\b"                  # can't tell what these hold
 
 
 def category(name):
@@ -51,6 +55,12 @@ def category(name):
 
 def norm(s):
     return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def track_id(rel: str):
+    """A folder name that is readable, unique and stable for the same source (as in distill.py)."""
+    slug = re.sub(r"[^\w\-]+", "_", rel).strip("_")[-80:]
+    return f"{slug}-{hashlib.sha1(rel.encode('utf-8')).hexdigest()[:8]}"
 
 
 def musdb_titles(root):
@@ -98,12 +108,76 @@ def folder_songs(root):
         yield d.name, d.name.rsplit("_v", 1)[0], names, (lambda files=files: [read_audio(f, dtype="float32") for f in files]), str(d)
 
 
+PACK_SKIP = r"one[ -]?shots?|oneshot|\bfx\b|foley|demo|midi|__macosx|^\._"
+PACK_KIT = r"construction kit|(^|/)stems$|wav loops|(^|/)(wet|dry)$"
+PACK_LOOPS = r"loop|phrase"
+
+
+def pack_songs(zip_paths):
+    """Sample packs, read straight from their .zip files.
+
+    - Construction kits (a folder of stems of one short song: ".../STEMS", "Construction Kit ...",
+      "WAV Loops", ".../Wet") become one song; shorter loops are repeated to the kit's length when
+      they fit a whole number of times, as a producer would loop them. A "Dry" folder is skipped
+      when a "Wet" copy of the same kit exists.
+    - Loop libraries ("Bass Loops", "Vocal Phrases", ...) are unrelated loops of one instrument
+      each; every loop becomes its own single-stem track (remixing pairs it with other stems).
+    - One-shots, FX, foley, demo mixes and MIDI are skipped (a hit shorter than a training crop
+      teaches little, and a demo is a mix, not a stem)."""
+    import io
+    import zipfile
+    for zp in zip_paths:
+        z = zipfile.ZipFile(zp)
+        pack = Path(zp).stem
+        audio = [n for n in z.namelist() if n.lower().endswith((".wav", ".aif", ".aiff", ".flac"))]
+        folders = {}
+        for n in audio:
+            folders.setdefault(n.rsplit("/", 1)[0] if "/" in n else "", []).append(n)
+        for folder, files in sorted(folders.items()):
+            low = folder.lower()
+            if any(re.search(PACK_SKIP, seg) for seg in low.split("/")):
+                continue
+            files = [f for f in files if not re.search(MIXDOWN + "|demo", f.rsplit("/", 1)[-1], re.I)]
+            vocal_folder = re.search(r"vocal|acapell|\bvox\b", low)
+
+            def read(name):
+                return read_audio(io.BytesIO(z.read(name)), dtype="float32")
+
+            def stem_name(f):
+                return re.sub(r"\.(wav|aiff?|flac)$", "", f.rsplit("/", 1)[-1], flags=re.I)
+
+            if re.search(PACK_KIT, low):
+                if low.endswith("/dry") and any(k.lower() == low[:-3] + "wet" for k in folders):
+                    continue
+                if len(files) < 2:
+                    continue
+                names = [("vocals " if vocal_folder else "") + stem_name(f) for f in files]
+
+                def load(files=files):
+                    xs = [read(f) for f in files]
+                    n = max(x.shape[-1] for x in xs)
+                    out = []
+                    for x in xs:
+                        k = n / x.shape[-1]
+                        if round(k) > 1 and abs(k - round(k)) < 0.01 * k:   # a loop that fits a whole number of times
+                            x = np.tile(x, (1, int(round(k))))[:, :n]
+                        out.append(np.pad(x, ((0, 0), (0, n - x.shape[-1]))))   # anything else plays once
+                    return out
+                kit = folder.split("/")[-2] if folder.lower().endswith(("/stems", "/wet", "/dry", "wav loops")) else folder.split("/")[-1]
+                yield track_id(f"{pack}/{kit}"), kit, names, load, f"{zp}::{folder}"
+            elif re.search(PACK_LOOPS, low) or vocal_folder:
+                for f in files:
+                    nm = stem_name(f)
+                    cat = category(f"{folder.split('/')[-1]} {nm}") or "other"
+                    yield track_id(f"{pack}/{f}"), nm, [f"{cat}: {nm}"], (lambda f=f: [read(f)]), f"{zp}::{f}"
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("kind", choices=["ni", "folder"])
-    ap.add_argument("root")
+    ap.add_argument("kind", choices=["ni", "folder", "pack"])
+    ap.add_argument("root", nargs="+", help="a folder (ni, folder) or sample-pack .zip files (pack)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--test-out", help="every --test-every'th usable song goes here instead (never trained on)")
     ap.add_argument("--test-every", type=int, default=8)
@@ -112,7 +186,8 @@ def main():
     a = ap.parse_args()
 
     skip_titles = musdb_titles(a.musdb)
-    songs = ni_songs(a.root) if a.kind == "ni" else folder_songs(a.root)
+    songs = {"ni": lambda: ni_songs(a.root[0]), "folder": lambda: folder_songs(a.root[0]),
+             "pack": lambda: pack_songs(a.root)}[a.kind]()
     report, usable = [], 0
     for sid, title, names, load, src in songs:
         cats = [category(n) for n in names]
@@ -130,6 +205,9 @@ def main():
             continue
         audio = load()
         n = min(x.shape[-1] for x in audio)
+        if n < 2 * SAMPLE_RATE:
+            report.append((sid, f"skipped: only {n / SAMPLE_RATE:.1f} s", names, cats))
+            continue
         stems = np.zeros((len(SOURCES), 2, n), np.float32)
         for x, c in zip(audio, cats):
             stems[SOURCES.index(c)] += x[:, :n]
