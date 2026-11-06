@@ -418,6 +418,7 @@ dz.addEventListener("drop", (e) => {
 // ── Track preparation: player, waveform, cues, tags, stems ───────────────────
 const player = $("#player");
 async function openTrack(id, play) {
+  if (state.gridPending && state.gridPending.id !== id) await saveGrid().catch(fail);
   const t = await api(`/api/tracks/${id}`);
   const same = state.current?.id === id;
   state.current = t;
@@ -585,7 +586,18 @@ function renderDetail() {
           field("Genre", "genre"), field("BPM", "bpm", "number"), field("Year", "year", "number"),
           h("label", {}, "Colour", color), h("label", {}, "Rating", rating), field("Comment", "comment"))),
       h("div", { class: "d-sec d-stems" },
-        h("div", {}, h("h3", {}, "Stems"), stemRow),
+        h("div", {}, h("h3", {}, "Beat grid", h("span", { class: "muted", style: "text-transform:none;letter-spacing:0;font-weight:400" }, "[ ] 1 ms, Shift 10 ms")),
+          t.grid ? h("div", { class: "grid-row" },
+            h("span", { class: "t-group", role: "group", "aria-label": "Nudge the beat grid" },
+              h("button", { class: "ghost small", title: "Earlier by 10 ms (Shift+[)", onclick: () => gridNudge(-10) }, "«"),
+              h("button", { class: "ghost small", title: "Earlier by 1 ms ([)", onclick: () => gridNudge(-1) }, "‹"),
+              h("button", { class: "ghost small", title: "Later by 1 ms (])", onclick: () => gridNudge(1) }, "›"),
+              h("button", { class: "ghost small", title: "Later by 10 ms (Shift+])", onclick: () => gridNudge(10) }, "»")),
+            h("span", { class: "grid-val", id: "gridReadout", "aria-live": "polite" }, fmtNudge(gridNow(t))),
+            h("button", { class: "ghost small", title: "Move the bar start one beat later", onclick: () => gridNudge(0, 1) }, "Downbeat +1"),
+            h("button", { class: "ghost small", title: "Back to the analysis grid", onclick: gridReset }, "Reset"))
+          : h("div", { class: "muted" }, "Appears after analysis")),
+        h("div", {}, h("h3", { style: "margin-top:10px" }, "Stems"), stemRow),
         h("div", {}, h("h3", { style: "margin-top:10px" }, "Phrases"),
           ph ? h("dl", { class: "kv" },
             h("dt", {}, "First downbeat"), h("dd", {}, fmtMs(ph.first_downbeat_ms)),
@@ -661,11 +673,52 @@ function removeMemory(cue) {
   return putCues(state.current.cues.filter((c) => c !== cue).map((c) => ({ ...c })), "Memory cue deleted");
 }
 function snapToBeat(ms) {
-  const g = state.current?.grid;
+  const g = effectiveGrid(state.current);
   if (!g) return ms;
   const n = Math.round((ms - g.first_beat_ms) / g.period_ms);
   const snapped = g.first_beat_ms + n * g.period_ms;
   return Math.abs(snapped - ms) < g.period_ms / 4 ? snapped : ms;
+}
+// ── Beat grid nudge ──────────────────────────────────────────────────────────
+// The saved nudge (grid_offset_ms, downbeat_shift) is already in t.grid from the server. While
+// the user is nudging, the change shows at once and is saved 0.6 s after the last step, as one
+// edit with one undo. The export writes the same grid to the card.
+function shiftGrid(g, dOff, dShift) {
+  if (!g || !g.period_ms || (!dOff && !dShift)) return g;
+  const moved = g.first_beat_ms + dOff, k = Math.floor(moved / g.period_ms);
+  return { ...g, first_beat_ms: moved - k * g.period_ms, downbeat_index: (((g.downbeat_index + k + dShift) % 4) + 4) % 4 };
+}
+function effectiveGrid(t) {
+  const p = state.gridPending;
+  if (!t?.grid || !p || p.id !== t.id) return t?.grid;
+  return shiftGrid(t.grid, p.off - (t.grid_offset_ms || 0), p.shift - (t.downbeat_shift || 0));
+}
+const gridNow = (t) => (state.gridPending?.id === t.id ? state.gridPending : { off: t.grid_offset_ms || 0, shift: t.downbeat_shift || 0 });
+const fmtNudge = (n) => `${n.off > 0 ? "+" : n.off < 0 ? "−" : "±"}${Math.abs(n.off).toFixed(1)} ms` + (n.shift ? ` · downbeat +${n.shift}` : "");
+function gridNudge(dMs, dBeat = 0) {
+  const t = state.current;
+  if (!t?.grid) return toast("Analyse the track first: there's no beat grid to nudge", null, true);
+  const p = state.gridPending?.id === t.id ? state.gridPending : (state.gridPending = { id: t.id, ...gridNow(t) });
+  p.off = Math.max(-1000, Math.min(1000, Math.round((p.off + dMs) * 10) / 10));
+  p.shift = (((p.shift + dBeat) % 4) + 4) % 4;
+  syncMarkers();
+  const r = $("#gridReadout"); if (r) r.textContent = fmtNudge(p);
+  clearTimeout(state.gridT); state.gridT = setTimeout(() => saveGrid().catch(fail), 600);
+}
+function gridReset() {
+  const t = state.current;
+  if (!t) return;
+  const n = gridNow(t);
+  gridNudge(-n.off, -n.shift);
+}
+async function saveGrid() {
+  clearTimeout(state.gridT);
+  const p = state.gridPending;
+  if (!p) return;
+  state.gridPending = null;
+  const r = await api(`/api/tracks/${p.id}`, { method: "PATCH", body: { grid_offset_ms: p.off, downbeat_shift: p.shift } });
+  toast(`Beat grid ${fmtNudge(p)}`, r.undo);
+  if (state.current?.id === p.id) await openTrack(p.id);   // fetch the grid as saved (and exported)
 }
 function togglePlay() { player.paused ? player.play().catch(() => {}) : player.pause(); }
 function soloStem(name) {
@@ -779,12 +832,13 @@ function zoomWave(f) {
 
 // Beat grid (thin beats, solid downbeats), then hot cues (A-H) and memory cues (M) on top.
 function syncMarkers() {
-  const t = state.current, g = t?.grid, reg = state.regions;
+  const t = state.current, g = effectiveGrid(t), reg = state.regions;
   if (!reg || !state.wave) return;
   reg.clearRegions();
   if (g && g.period_ms > 0) {
-    // Background colour, so grid lines cut through the waveform in light and dark themes.
-    const bg = cssVar("--wave-bg"), beat = withAlpha(bg, 0.45);
+    // Lines in the text colour (light on dark, dark on light), over the coloured waveform:
+    // downbeats strong, other beats faint, so a nudge can be lined up with the kicks.
+    const ink = cssVar("--ink"), bg = withAlpha(ink, 0.7), beat = withAlpha(ink, 0.22);
     const beats = Math.floor((g.duration_ms - g.first_beat_ms) / g.period_ms) + 1;
     const everyBeat = beats < 3000;           // very long files (mixes): downbeats only
     for (let k = 0; k < beats; k++) {
@@ -1127,6 +1181,10 @@ addEventListener("keydown", (e) => {
     cue ? (player.currentTime = cue.start_ms / 1000) : setCue(slot, player.currentTime * 1000).catch(fail);
   }
   if (state.current && (e.key === "m" || e.key === "M")) addMemory(player.currentTime * 1000).catch(fail);
+  if (state.current && (e.code === "BracketLeft" || e.code === "BracketRight")) {
+    e.preventDefault();
+    gridNudge((e.code === "BracketLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1));
+  }
   if (state.current && (e.key === "e" || e.key === "E")) toggleEditor();
 });
 

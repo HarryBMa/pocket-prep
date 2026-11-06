@@ -75,6 +75,15 @@ pub fn conn() -> MutexGuard<'static, Connection> {
         c.pragma_update(None, "locking_mode", "EXCLUSIVE").expect("can't open the library database");
         c.pragma_update(None, "journal_mode", "WAL").expect("can't open the library database");
         c.execute_batch(SCHEMA).unwrap();
+        // Columns added after the first schema (older libraries get them here, empty).
+        // grid_offset_ms / downbeat_shift: the user's beat grid nudge on top of the analysis grid.
+        for (col, decl) in [("grid_offset_ms", "REAL DEFAULT 0"), ("downbeat_shift", "INTEGER DEFAULT 0")] {
+            let has: bool = c.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name=?").unwrap()
+                .exists([col]).unwrap();
+            if !has {
+                c.execute_batch(&format!("ALTER TABLE tracks ADD COLUMN {col} {decl}")).unwrap();
+            }
+        }
         // Stems from the Python app were separate MP3s; the new format is one 8-channel WAV.
         // MP3 encoder delay makes the old files drift from the track, so they must be remade.
         let mut st = c.prepare("SELECT id FROM tracks WHERE stems='done'").unwrap();
@@ -162,7 +171,8 @@ pub fn marks(n: usize) -> String {
     vec!["?"; n].join(",")
 }
 
-const TRACK_EDITABLE: &[&str] = &["title", "artist", "album", "genre", "comment", "year", "rating", "color", "bpm", "musical_key"];
+const TRACK_EDITABLE: &[&str] = &["title", "artist", "album", "genre", "comment", "year", "rating", "color", "bpm", "musical_key",
+                                    "grid_offset_ms", "downbeat_shift"];
 
 pub fn update_track(id: i64, fields: &Row) -> Result<()> {
     let fields: Vec<(&String, &Value)> = fields.iter().filter(|(k, _)| TRACK_EDITABLE.contains(&k.as_str())).collect();

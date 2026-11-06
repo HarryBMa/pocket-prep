@@ -322,7 +322,7 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
         let cue = |q: &Row| anlz::Cue { start_ms: q["start_ms"].as_u64().unwrap_or(0) as u32,
                                         end_ms: q["end_ms"].as_u64().map(|v| v as u32), hot: q["slot"].as_u64().unwrap_or(0) as u32 };
         let ta = anlz::TrackAnalysis {
-            path: audio_path.clone(), beats: analysis::beats_from_grid(&a),
+            path: audio_path.clone(), beats: analysis::beats_from_grid(&analysis::user_grid(&a, &t)),
             pwav: analysis::waveform_bytes(&a, "pwav"), pwv2: analysis::waveform_bytes(&a, "pwv2"),
             pwv3: analysis::waveform_bytes(&a, "pwv3"), pwv4: analysis::waveform_bytes(&a, "pwv4"),
             pwv5: analysis::waveform_bytes(&a, "pwv5"),
@@ -559,6 +559,25 @@ mod export_tests {
                 }
             }
         }
+
+        // A beat grid nudge (+7 ms, downbeat one beat later) reaches the card's PQTZ on the next export.
+        let grid = |card: &Path| -> Vec<(u16, u32)> {
+            let bytes = std::fs::read(card.join(anlz_rel(*pdb_id)).join("ANLZ0000.DAT")).unwrap();
+            let anlz = ANLZ::read(&mut std::io::Cursor::new(&bytes)).unwrap();
+            anlz.sections.iter().find_map(|s| match &s.content {
+                Content::BeatGrid(g) => Some(g.beats.iter().map(|b| (b.beat_number, b.time)).collect()),
+                _ => None,
+            }).unwrap()
+        };
+        let before = grid(&card);
+        db::update_track(tid, &json!({"grid_offset_ms": 7.0, "downbeat_shift": 1}).as_object().unwrap().clone()).unwrap();
+        export_to(&card.to_string_lossy(), None, true, &|_, _| {}, &|| false).unwrap();
+        let after = grid(&card);
+        let down = |g: &[(u16, u32)]| g.iter().find(|b| b.0 == 1).unwrap().1 as i64;
+        let period = (before[1].1 - before[0].1) as i64;
+        assert!((after[0].1 as i64 - before[0].1 as i64 - 7).rem_euclid(period) <= 1, "{before:?} -> {after:?}");
+        assert!((down(&after) - (down(&before) + 7 + period)).abs() <= 1 || (down(&after) - (down(&before) + 7 + period - 4 * period)).abs() <= 1,
+                "downbeat {} -> {}", down(&before), down(&after));
 
         // stems.json: keyed by the PDB path, pointing at a decodable 8-channel FLAC of the right length.
         let manifest: Value = serde_json::from_slice(&std::fs::read(card.join("POCKETDECK/stems.json")).unwrap()).unwrap();

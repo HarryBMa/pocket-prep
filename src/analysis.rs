@@ -169,6 +169,26 @@ fn waveforms(peak: &[f64], lo: &[f64], mid: &[f64], hi: &[f64]) -> Value {
     json!({"pwav": b64(&pwav), "pwv2": b64(&pwv2), "pwv3": b64(&pwv3), "pwv4": b64(&pwv4), "pwv5": b64(&pwv5)})
 }
 
+/// The analysis grid with the user's nudge from the track row applied: `grid_offset_ms` moves
+/// every beat (positive = later), `downbeat_shift` moves the bar start by whole beats (positive =
+/// later). The result is normalised the way the analysis writes it: the first beat in
+/// [0, period), and `downbeat_index` (0-3) the index of the first downbeat. Without a nudge the
+/// analysis comes back unchanged.
+pub fn user_grid(a: &Value, track: &db::Row) -> Value {
+    let off = track.get("grid_offset_ms").and_then(Value::as_f64).unwrap_or(0.0);
+    let shift = track.get("downbeat_shift").and_then(Value::as_i64).unwrap_or(0);
+    let period = a["period_ms"].as_f64().unwrap_or(0.0);
+    if (off == 0.0 && shift == 0) || period <= 0.0 {
+        return a.clone();
+    }
+    let moved = a["first_beat_ms"].as_f64().unwrap_or(0.0) + off;
+    let k = (moved / period).floor();                  // whole beats the first beat moved past 0
+    let mut out = a.clone();
+    out["first_beat_ms"] = json!(moved - k * period);
+    out["downbeat_index"] = json!((a["downbeat_index"].as_i64().unwrap_or(0) + k as i64 + shift).rem_euclid(4));
+    out
+}
+
 /// Every beat as (beat number 1-4, time in ms, bpm) for the ANLZ PQTZ section.
 pub fn beats_from_grid(a: &Value) -> Vec<(u16, u32, f64)> {
     let (mut t, period, dur) = (a["first_beat_ms"].as_f64().unwrap_or(0.0), a["period_ms"].as_f64().unwrap_or(500.0), a["duration_ms"].as_f64().unwrap_or(0.0));
@@ -264,12 +284,26 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
     });
     progress(0.3, if stems_ref.is_some() { "Analysing (with stems)" } else { "Analysing" });
     let range = (config::setting_f64("bpm_min").max(40.0), config::setting_f64("bpm_max").max(60.0));
+    let before = load_analysis(track_id);
     let mut a = analyse_audio(&audio, stems_ref.as_ref(), range);
+    // A grid nudge is relative to the grid it was made on. If the new analysis moved the grid
+    // (anchor or tempo), the old nudge would now be wrong, so it is cleared and that is logged.
+    let grid_moved = before.as_ref().is_some_and(|b| {
+        let d = |k: &str| (b[k].as_f64().unwrap_or(0.0) - a[k].as_f64().unwrap_or(0.0)).abs();
+        d("first_beat_ms") > 1.0 || d("period_ms") > 0.01 || b["downbeat_index"] != a["downbeat_index"]
+    });
     a["track_id"] = json!(track_id);
     a["analysed_at"] = json!(db::now());
     std::fs::write(config::analysis_dir().join(format!("{track_id}.json")), a.to_string())?;
 
     db::tx(|c| {
+        if grid_moved {
+            let n = c.execute("UPDATE tracks SET grid_offset_ms=0, downbeat_shift=0 WHERE id=? AND (grid_offset_ms<>0 OR downbeat_shift<>0)",
+                              [track_id])?;
+            if n > 0 {
+                db::log(c, "grid_nudge_reset", json!({"track_id": track_id, "why": "re-analysis moved the beat grid"}), None)?;
+            }
+        }
         c.execute("UPDATE tracks SET bpm=?, musical_key=?, camelot=?, energy=?, duration=?, analysed_at=? WHERE id=?",
                   params![a["bpm"].as_f64(), a["key"].as_str(), a["camelot"].as_str(), a["energy"].as_i64(),
                           a["duration_ms"].as_f64().map(|d| d / 1000.0), a["analysed_at"].as_f64(), track_id])?;
@@ -291,6 +325,31 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The nudge moves every exported beat by the offset, keeps the grid normalised, and shifts
+    /// the bar start by whole beats.
+    #[test]
+    fn user_grid_nudge() {
+        let a = json!({"first_beat_ms": 100.0, "period_ms": 500.0, "downbeat_index": 1, "duration_ms": 4000.0, "bpm": 120.0});
+        let row = |off: f64, shift: i64| -> db::Row {
+            json!({"grid_offset_ms": off, "downbeat_shift": shift}).as_object().unwrap().clone()
+        };
+        assert_eq!(user_grid(&a, &row(0.0, 0)), a);
+        // +12 ms: same beats, 12 ms later; downbeats unchanged.
+        let b = beats_from_grid(&user_grid(&a, &row(12.0, 0)));
+        let base = beats_from_grid(&a);
+        assert_eq!(b[0].1, 112);
+        assert_eq!(b.iter().find(|x| x.0 == 1).unwrap().1, base.iter().find(|x| x.0 == 1).unwrap().1 + 12);
+        // -150 ms pushes the first beat below 0: it wraps to 450 and the beat numbers follow.
+        let g = user_grid(&a, &row(-150.0, 0));
+        assert_eq!(g["first_beat_ms"].as_f64().unwrap(), 450.0);
+        let down_before = base.iter().find(|x| x.0 == 1).unwrap().1 as f64 - 150.0;
+        assert!(beats_from_grid(&g).iter().any(|x| x.0 == 1 && (x.1 as f64 - down_before).abs() < 1.0));
+        // Downbeat one beat later.
+        let s = beats_from_grid(&user_grid(&a, &row(0.0, 1)));
+        let first_down = |v: &[(u16, u32, f64)]| v.iter().find(|x| x.0 == 1).unwrap().1;
+        assert_eq!(first_down(&s), first_down(&base) + 500);
+    }
 
     /// A click track at a known tempo: the grid must come back at that tempo, on the clicks,
     /// at 44.1 and 48 kHz (no resampling), and our first-beat/downbeat mapping must hold.

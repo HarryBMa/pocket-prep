@@ -63,3 +63,8 @@ Work Sans 400/500/600 and Fugaz One are bundled in `ui/fonts`.
 - **Dock** (Library, windows 1480 px and wider): DECK001 status, what an export writes, the stems
   switch (the same setting as in Export), and recent jobs. Export itself still happens in the Export
   view, behind the drive checks.
+- **Beat grid nudge** (editor, "Beat grid"; keys `[` `]` 1 ms, Shift 10 ms): moves every beat,
+  and "Downbeat +1" moves the bar start one beat. Saved per track (`grid_offset_ms`,
+  `downbeat_shift`), one undo per burst of nudges, written to the card's PQTZ by the next export.
+  A re-analysis that moves the grid clears the nudge (logged in History). Cues stay where they
+  are in the audio; phrase sections in POCKETDECK/analysis are not shifted.

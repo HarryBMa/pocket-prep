@@ -12,3 +12,7 @@ models/*.onnx
 *.log
 gen/
 .impeccable/
+tools/needle/build/
+tools/needle/.venv/
+tools/needle/listening/
+__pycache__/
