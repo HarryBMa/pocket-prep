@@ -25,7 +25,6 @@
     <symbol id="i-play" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></symbol>
     <symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></symbol>
     <!-- deck: key (KEYLOCK) -->
-    <symbol id="i-lock" viewBox="0 0 24 24"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4m2-2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></symbol>
     <!-- app only (no deck equivalent), lucide-static 0.460.0 -->
     <symbol id="i-jobs" viewBox="0 0 24 24"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></symbol>
     <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
@@ -38,110 +37,107 @@
     <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
     <symbol id="i-list" viewBox="0 0 24 24"><path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/></symbol>
+      <!-- app only, lucide-static 0.460.0 -->
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
   </defs>
 </svg>
 
-<header class="top">
-  <div class="brand" aria-label="DKPRP"><span class="brand-mark" aria-hidden="true"></span>DKPRP</div>
-  <div class="top-sub">Preparation for <b>DECK001</b></div>
-  <div class="top-right">
-    <button id="deckPill" class="pill-btn" title="DECK001 status (opens Deck)"><span id="deckDot" class="dot"></span><span id="deckPillLabel">DECK001</span></button>
-    <button id="jobsBtn" class="ghost" aria-haspopup="dialog" aria-controls="jobsPanel" aria-expanded="false"><span id="jobsDot" class="dot"></span><span id="jobsLabel">No jobs</span></button>
-    <button id="themeBtn" class="ghost icon-btn" title="Switch light or dark theme" aria-label="Switch light or dark theme"><svg class="ic"><use href="#i-moon"/></svg></button>
-  </div>
-</header>
-
-<div class="shell">
-  <nav class="tabs rail" role="tablist" aria-label="Views" aria-orientation="vertical">
-    <button role="tab" data-view="library" aria-selected="true" aria-controls="view-library" title="Library (Alt+1)"><svg class="ic"><use href="#i-library"/></svg><span>Library</span></button>
-    <button role="tab" data-view="export" aria-selected="false" aria-controls="view-export" title="Export (Alt+2)" tabindex="-1"><svg class="ic"><use href="#i-export"/></svg><span>Export</span></button>
-    <button role="tab" data-view="deck" aria-selected="false" aria-controls="view-deck" title="Deck (Alt+3)" tabindex="-1"><svg class="ic"><use href="#i-deck"/></svg><span>Deck</span></button>
-    <button role="tab" data-view="settings" aria-selected="false" aria-controls="view-settings" title="Settings (Alt+4)" tabindex="-1"><svg class="ic"><use href="#i-settings"/></svg><span>Settings</span></button>
+<div class="app">
+  <!-- Sidebar: logo, views, playlists -->
+  <nav class="sidebar" aria-label="Main">
+    <div class="brand" aria-label="DKPRP">
+      <!-- The logo: DECK001's solid bar contour waveform -->
+      <svg class="brand-mark" viewBox="0 0 48 30" aria-hidden="true"><path d="M2,9.12h6v11.76h-6ZM11.5,4.08h6v21.84h-6ZM21,1h6v28h-6ZM30.5,6.32h6v17.36h-6ZM40,2.96h6v24.08h-6Z"/></svg>
+      <span class="brand-text"><b>DKPRP</b><small>PREP FOR DECK001</small></span>
+    </div>
+    <div class="tabs" role="tablist" aria-label="Views" aria-orientation="vertical">
+      <button role="tab" data-view="library" aria-selected="true" aria-controls="view-library" title="Library (Alt+1)"><svg class="ic"><use href="#i-library"/></svg><span>Library</span></button>
+    </div>
+    <button class="side-item" id="playlistsToggle" aria-expanded="true" aria-controls="playlistsBox"><svg class="ic"><use href="#i-list"/></svg><span class="nm">Playlists</span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
+    <div id="playlistsBox" class="playlists">
+      <button class="nav-item active" id="allTracks" data-playlist="0"><span class="nm">All tracks</span><span id="allCount" class="count"></span></button>
+      <div id="tree" class="tree"></div>
+      <div class="side-actions">
+        <button class="ghost small" id="newPlaylist" title="New playlist (selected tracks go in it)"><svg class="ic sm"><use href="#i-plus"/></svg>Playlist</button>
+        <button class="ghost small" id="newFolder" title="New folder"><svg class="ic sm"><use href="#i-plus"/></svg>Folder</button>
+      </div>
+    </div>
+    <button class="side-item" id="jobsBtn" aria-haspopup="dialog" aria-controls="jobsPanel" aria-expanded="false"><svg class="ic"><use href="#i-jobs"/></svg><span class="nm">Analysis queue</span><span id="jobsDot" class="dot"></span><span id="jobsLabel" class="count"></span></button>
+    <div class="tabs" role="tablist" aria-label="More views" aria-orientation="vertical">
+      <button role="tab" data-view="export" aria-selected="false" aria-controls="view-export" title="Export (Alt+2)" tabindex="-1"><svg class="ic"><use href="#i-export"/></svg><span>Export</span></button>
+      <div class="side-sep" aria-hidden="true"></div>
+      <button role="tab" data-view="deck" aria-selected="false" aria-controls="view-deck" title="Deck (Alt+3)" tabindex="-1"><svg class="ic"><use href="#i-deck"/></svg><span>Deck</span></button>
+      <button role="tab" data-view="settings" aria-selected="false" aria-controls="view-settings" title="Settings (Alt+4)" tabindex="-1"><svg class="ic"><use href="#i-settings"/></svg><span>Settings</span></button>
+    </div>
   </nav>
 
-  <main>
-    <!-- LIBRARY -->
-    <section id="view-library" class="view active" role="tabpanel" aria-label="Library">
-      <aside class="side" aria-label="Collection and playlists">
-        <div class="side-head"><span>Collection</span></div>
-        <button class="nav-item active" id="allTracks" data-playlist="0"><svg class="ic sm"><use href="#i-list"/></svg><span class="nm">All tracks</span><span id="allCount" class="count"></span></button>
-        <div class="side-head">
-          <span>Playlists</span>
-          <span class="side-actions">
-            <button class="ghost small" id="newPlaylist" title="New playlist (selected tracks go in it)">+ Playlist</button>
-            <button class="ghost small" id="newFolder" title="New folder">+ Folder</button>
-          </span>
-        </div>
-        <div id="tree" class="tree"></div>
-        <p class="hint">Drag tracks onto a playlist to add them. Right-click a playlist to rename or delete it. New playlists go in the open folder.</p>
-      </aside>
-
-      <div class="main-col">
-        <div id="detail" class="detail" hidden></div>
-        <div class="toolbar">
-          <label class="search"><svg class="ic sm"><use href="#i-search"/></svg>
-            <input id="search" type="search" placeholder="Search title, artist, key, 8A…" aria-label="Search tracks (/)"></label>
-          <div class="seg" id="filters" role="group" aria-label="Filter">
-            <button data-filter="all" aria-pressed="true">All</button>
-            <button data-filter="unanalysed" aria-pressed="false">Not analysed</button>
-            <button data-filter="nostems" aria-pressed="false">No stems</button>
-            <button data-filter="stems" aria-pressed="false">Stems ready</button>
-          </div>
-          <div id="contextActions" class="context" aria-live="polite"></div>
-          <div class="spacer"></div>
-          <button id="importFiles" class="ghost">Add files</button>
-          <button id="importFolder" class="primary">Add folder</button>
-        </div>
-        <div class="table-wrap" id="dropZone">
-          <table id="tracks">
-            <thead><tr>
-              <th class="c-col" aria-label="Colour"></th>
-              <th class="c-idx num" data-sort="index">#</th>
-              <th data-sort="title">Title</th><th data-sort="artist">Artist</th><th data-sort="album" class="c-album">Album</th>
-              <th data-sort="genre" class="c-genre">Genre</th>
-              <th class="num" data-sort="bpm">BPM</th><th data-sort="camelot">Key</th>
-              <th data-sort="energy" class="c-energy">Energy</th><th class="num" data-sort="duration">Time</th>
-              <th data-sort="analysed_at">Analysis</th><th data-sort="stems">Stems</th>
-            </tr></thead>
-            <tbody></tbody>
-          </table>
-          <div id="tableNote" class="table-note" hidden></div>
-          <div id="empty" class="empty" hidden>
-            <h2>No tracks yet</h2>
-            <p>Add a folder of music. Tracks are analysed automatically: tempo, beat grid, key, energy and phrases.</p>
-            <button class="primary" id="emptyImport">Add folder</button>
-          </div>
+  <div class="content">
+    <header class="top">
+      <label class="search"><svg class="ic sm"><use href="#i-search"/></svg>
+        <input id="search" type="search" placeholder="Search tracks, artists, keys (8A)…" aria-label="Search tracks (/)"><kbd>/</kbd></label>
+      <span class="spacer"></span>
+      <button id="importFiles" class="ghost">Add files</button>
+      <button id="importFolder" class="primary"><svg class="ic sm"><use href="#i-download"/></svg>Import</button>
+      <div class="top-right">
+        <button id="deckPill" class="deck-pill" title="DECK001 status (opens Deck)"><svg class="ic"><use href="#i-deck"/></svg><span class="dp-text"><b>DECK001</b><span><span id="deckDot" class="dot"></span><span id="deckPillLabel">Checking</span></span></span><svg class="ic sm"><use href="#i-chevron"/></svg></button>
+        <div class="theme-switch" role="group" aria-label="Theme">
+          <button id="themeBtn" class="theme-btn" aria-label="Switch light or dark theme" title="Switch light or dark theme"><svg class="ic sm sun"><use href="#i-sun"/></svg><svg class="ic sm moon"><use href="#i-moon"/></svg></button>
         </div>
       </div>
+    </header>
 
-      <!-- The DECK001 at a glance: device, what an export takes, background jobs. -->
-      <aside class="dock" aria-label="DECK001 overview">
-        <section class="dock-card">
-          <div class="dock-head"><svg class="ic sm"><use href="#i-deck"/></svg><b>Device</b><span class="spacer"></span><span id="dockDeckState" class="dev-state"></span></div>
-          <div id="dockDeck" class="dock-device"></div>
-          <div class="dock-btns">
-            <button class="ghost small" id="dockDeckCheck">Check again</button>
-            <button class="ghost small" id="dockFirmware">Update firmware…</button>
+    <main>
+      <!-- LIBRARY -->
+      <section id="view-library" class="view active" role="tabpanel" aria-label="Library">
+        <div class="lib">
+          <div class="lib-head">
+            <h1>Library</h1>
+            <div id="statusLib" class="lib-count">Loading library…</div>
           </div>
-        </section>
-        <section class="dock-card">
-          <div class="dock-head"><svg class="ic sm"><use href="#i-export"/></svg><b>Export to device</b></div>
-          <ul class="incl">
-            <li><svg class="ic sm"><use href="#i-check"/></svg>Tracks, copied as they are</li>
-            <li><svg class="ic sm"><use href="#i-check"/></svg>Hot cues and memory cues</li>
-            <li><svg class="ic sm"><use href="#i-check"/></svg>Beat grids and waveforms</li>
-            <li><svg class="ic sm"><use href="#i-check"/></svg>Phrases, key and energy</li>
-          </ul>
-          <label class="check"><input type="checkbox" id="dockStems" checked> Stems (where made)</label>
-          <div id="dockExport" class="dock-note"></div>
-          <button class="primary wide-btn" id="dockExportBtn">Export to DECK001…</button>
-        </section>
-        <section class="dock-card dock-jobs">
-          <div class="dock-head"><svg class="ic sm"><use href="#i-jobs"/></svg><b>Jobs</b><span class="spacer"></span><button class="ghost small" id="dockClear">Clear finished</button></div>
-          <div id="dockJobs"></div>
-        </section>
-      </aside>
-    </section>
+          <div class="toolbar">
+            <div class="chips" id="filters" role="group" aria-label="Filter">
+              <button data-filter="all" aria-pressed="true">All</button>
+              <button data-filter="analysed" aria-pressed="false">Analysed</button>
+              <button data-filter="unanalysed" aria-pressed="false">Not analysed</button>
+              <button data-filter="stems" aria-pressed="false">Stems</button>
+              <button data-filter="attention" aria-pressed="false" class="attn">Needs attention <span id="attnCount"></span></button>
+            </div>
+            <div id="contextActions" class="context" aria-live="polite"></div>
+            <span class="spacer"></span>
+            <label class="sort"><span class="sr">Sort</span>
+              <select id="sortSel">
+                <option value="index">Playlist order</option><option value="added_at:-1">Date added</option>
+                <option value="title">Title</option><option value="artist">Artist</option>
+                <option value="bpm">BPM</option><option value="camelot">Key</option><option value="energy:-1">Energy</option>
+              </select>
+            </label>
+          </div>
+          <div class="table-wrap" id="dropZone">
+            <table id="tracks">
+              <thead><tr>
+                <th class="c-idx num" data-sort="index">#</th>
+                <th class="c-art">Artwork</th>
+                <th data-sort="title">Track</th><th data-sort="artist">Artist</th>
+                <th class="num" data-sort="bpm">BPM</th><th data-sort="camelot">Key</th>
+                <th class="num" data-sort="energy">Energy</th><th class="c-stems" data-sort="stems">Stems</th>
+                <th data-sort="analysed_at">Analysis</th><th class="c-menu"><span class="sr">Actions</span></th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+            <div id="tableNote" class="table-note" hidden></div>
+            <div id="empty" class="empty" hidden>
+              <h2>No tracks yet</h2>
+              <p>Import a folder of music. Tracks are analysed automatically: tempo, beat grid, key, energy and phrases.</p>
+              <button class="primary" id="emptyImport">Import a folder</button>
+            </div>
+          </div>
+        </div>
+        <!-- Track prep panel (filled by app.js) -->
+        <aside id="detail" class="track-panel" aria-label="Track prep"></aside>
+      </section>
 
     <!-- EXPORT -->
     <section id="view-export" class="view" role="tabpanel" aria-label="Export">
@@ -237,6 +233,15 @@
               </fieldset>
               <div class="form-foot"><button class="primary" type="submit">Save</button></div>
             </form>
+            <section class="panel" aria-label="Waveforms">
+              <div class="panel-head"><h2>Waveforms</h2></div>
+              <div class="pair">
+                <label class="field">Colour theme <select id="waveTheme"></select></label>
+                <label class="field">Style <select id="waveStyle"></select></label>
+              </div>
+              <canvas id="wavePreview" class="wave-preview" width="840" height="120" aria-label="Preview of the chosen waveform theme"></canvas>
+              <p class="hint">The same themes and styles as the DECK001 waveform settings, so a track looks the same here and on the deck.</p>
+            </section>
             <section class="panel">
               <div class="panel-head"><h2>System</h2></div>
               <div id="system" class="kv"></div>
@@ -250,18 +255,26 @@
         </div>
       </div>
     </section>
-  </main>
+    </main>
+  </div>
+
+  <!-- Preview: check a track by ear. Not a performance transport. -->
+  <footer class="preview-bar" aria-label="Preview">
+    <span id="pvArt" class="pv-art" aria-hidden="true"></span>
+    <div class="pv-id"><b id="pvTitle">No track selected</b><span id="pvArtist"></span></div>
+    <div class="pv-ctl">
+      <button class="icon-btn plain" id="pvPrev" aria-label="Previous track (or back to the start)" title="Previous track"><svg class="ic"><use href="#i-prev"/></svg></button>
+      <button class="play-ring" id="playBtn" aria-label="Play (Space)" title="Play or pause (Space)"><svg class="ic"><use href="#i-play"/></svg></button>
+      <button class="icon-btn plain" id="pvNext" aria-label="Next track" title="Next track"><svg class="ic"><use href="#i-next"/></svg></button>
+    </div>
+    <span id="timeLabel" class="pv-time">0:00</span>
+    <input type="range" id="seek" class="seek" min="0" max="0" step="0.1" value="0" aria-label="Position">
+    <span id="durLabel" class="pv-time">0:00</span>
+    <label class="pv-vol"><svg class="ic"><use href="#i-volume"/></svg><span class="sr">Preview volume</span><input type="range" id="vol" min="0" max="1" step="0.01" value="1"></label>
+  </footer>
 </div>
 
-<footer class="status-bar" aria-label="Status">
-  <span id="statusLib">Loading library…</span>
-  <span class="sb-sep"></span>
-  <span id="statusJobs"></span>
-  <span class="spacer"></span>
-  <span id="statusDeck"></span>
-  <span id="statusVersion" class="muted"></span>
-</footer>
-
+<div id="menu" class="menu" role="menu" hidden></div>
 <div id="jobsPanel" class="drawer" role="dialog" aria-label="Jobs" hidden>
   <div class="drawer-head"><b>Jobs</b><span class="spacer"></span><button class="ghost small" id="clearJobs">Clear finished</button><button class="ghost small icon-btn" id="closeJobs" aria-label="Close jobs"><svg class="ic sm"><use href="#i-x"/></svg></button></div>
   <div id="jobsList"></div>

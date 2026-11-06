@@ -90,27 +90,34 @@ function ask(title, value = "", okLabel = "OK") {
 // ── Views (rail) and theme ───────────────────────────────────────────────────
 const tabs = () => $$(".tabs button");
 tabs().forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)));
-$(".tabs").addEventListener("keydown", (e) => {       // arrow keys move between views (roving tabindex)
+$$(".tabs").forEach((t) => t.addEventListener("keydown", (e) => {   // arrow keys move between views (roving tabindex)
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
   e.preventDefault();
   const list = tabs(), i = list.indexOf(document.activeElement);
   const n = e.key === "Home" ? 0 : e.key === "End" ? list.length - 1 : (i + (e.key === "ArrowDown" ? 1 : -1) + list.length) % list.length;
   list[n].focus(); showView(list[n].dataset.view);
-});
+}));
+// Playlists open and close under their sidebar entry (the choice is remembered).
+function setPlaylistsOpen(open) {
+  $("#playlistsToggle").setAttribute("aria-expanded", String(open));
+  $("#playlistsBox").hidden = !open;
+  try { localStorage.setItem("playlistsOpen", open ? "1" : "0"); } catch {}
+}
+$("#playlistsToggle").addEventListener("click", () => setPlaylistsOpen($("#playlistsBox").hidden));
+try { if (localStorage.getItem("playlistsOpen") === "0") setPlaylistsOpen(false); } catch {}
 function showView(v) {
   tabs().forEach((b) => { const on = b.dataset.view === v; b.setAttribute("aria-selected", on); b.tabIndex = on ? 0 : -1; });
   $$(".view").forEach((s) => s.classList.toggle("active", s.id === `view-${v}`));
   if (v === "export") loadExport();
   if (v === "deck") loadDeck();
-  if (v === "settings") loadSettings();
+  if (v === "settings") { loadSettings(); requestAnimationFrame(drawWavePreview); }   // sized once it is visible
 }
 let cssCache = {};   // colours read from CSS variables; reading them every animation frame is slow
 function applyTheme(t) {
   cssCache = {};
   if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
-  const dark = isDark();
-  $("#themeBtn use").setAttribute("href", dark ? "#i-sun" : "#i-moon");
-  $("#themeBtn").setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
+  const dark = isDark();   // the switch shows both icons; CSS highlights the current one
+  $("#themeBtn").setAttribute("aria-label", dark ? "Dark theme on: switch to light" : "Light theme on: switch to dark");
   $("#themeBtn").title = $("#themeBtn").getAttribute("aria-label");
 }
 const isDark = () => (document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")) === "dark";
@@ -190,10 +197,22 @@ async function loadTracks() {
 // Filters and sorting only change what is shown; playlist order (the # column) stays the data.
 const FILTERS = {
   all: () => true,
+  analysed: (t) => !!t.analysed_at,
   unanalysed: (t) => !t.analysed_at,
-  nostems: (t) => t.stems !== "done",
   stems: (t) => t.stems === "done",
+  attention: (t) => issues(t).length > 0,
 };
+// What would go wrong at the booth, from what the track list already knows. The track panel adds
+// the server's own check of the file (deck_problem: e.g. 24-bit WAV).
+const DECK_FORMATS = ["mp3", "wav", "flac"];
+function issues(t) {
+  const out = [], ext = (t.path || "").split(".").pop().toLowerCase();
+  if (!DECK_FORMATS.includes(ext)) out.push(`${ext.toUpperCase()} won't play on the DECK001`);
+  if (!t.artist) out.push("No artist");
+  if (!t.analysed_at && jobFor(t.id, "analyse")?.status === "failed") out.push("Analysis failed");
+  if (t.stems === "failed") out.push("Stems failed");
+  return out;
+}
 function visibleTracks() {
   const list = state.tracks.map((t, i) => ({ t, i })).filter(({ t }) => FILTERS[state.filter](t));
   if (state.sort) {
@@ -212,19 +231,30 @@ const canReorder = () => state.playlist && !state.sort && state.filter === "all"
 
 // Latest job of a kind for a track (the jobs list is newest first).
 const jobFor = (id, kind) => state.jobs.find((j) => j.track_id === id && j.kind === kind);
+const dotCell = (text, dot, cls = "", title = null) => h("span", { class: `an ${cls}`, title }, h("span", { class: `dot ${dot}` }), text);
 function analysisCell(t) {
-  const j = jobFor(t.id, "analyse");
-  if (j?.status === "running") return h("span", { class: "pill running" }, `Analysing ${Math.round(j.progress * 100)}%`);
-  if (j?.status === "queued") return h("span", { class: "pill queued" }, "Queued");
-  if (t.analysed_at) return h("span", { class: "muted" }, "Analysed");
-  if (j?.status === "failed") return h("span", { class: "pill failed", title: j.message }, "Failed");
-  return h("span", { class: "muted" }, "Not analysed");
+  const j = jobFor(t.id, "analyse"), why = issues(t);
+  if (j?.status === "running") return dotCell(`Analysing ${Math.round(j.progress * 100)}%`, "busy");
+  if (j?.status === "queued") return dotCell("Queued", "queued");
+  if (why.length) return dotCell("Needs attention", "bad", "attn", why.join(" · "));
+  if (t.analysed_at) return dotCell("Analysed", "ok");
+  return dotCell("Not analysed", "");
 }
 function stemPill(t) {
   const j = jobFor(t.id, "stems");
-  if (t.stems === "running" || j?.status === "running") return h("span", { class: "pill running" }, j?.status === "running" ? `Making ${Math.round(j.progress * 100)}%` : "Making");
-  const label = { queued: "Queued", done: "Ready", failed: "Failed" }[t.stems];
-  return label ? h("span", { class: `pill ${t.stems}` }, label) : h("span", { class: "muted" }, "–");
+  const st = j?.status === "running" ? "running" : t.stems;
+  const label = { done: "Stems ready", running: j?.status === "running" ? `Making stems ${Math.round(j.progress * 100)}%` : "Making stems",
+                  queued: "Stems queued", failed: "Stems failed" }[st] || "No stems";
+  const svg = icon("deck", `ic stem-ic ${st}`);
+  svg.setAttribute("role", "img"); svg.removeAttribute("aria-hidden"); svg.setAttribute("aria-label", label);
+  return h("span", { title: label }, svg);
+}
+// Key in the track colours by Camelot number, so neighbouring keys look related.
+const keyColor = (camelot) => COLORS[1 + ((parseInt(camelot, 10) || 1) - 1) % 8];
+function artCell(t) {
+  if (t.has_artwork) return h("img", { class: "art", src: `/api/tracks/${t.id}/artwork`, alt: "", loading: "lazy" });
+  const c = t.camelot ? keyColor(t.camelot) : "#46464c";
+  return h("span", { class: "art", style: `background:linear-gradient(150deg, ${c} 0%, var(--surface-2) 85%)` });
 }
 function renderTracks() {
   const body = $("#tracks tbody");
@@ -235,18 +265,17 @@ function renderTracks() {
   const rows = vis.map(({ t, i }, vi) => {
     const tr = h("tr", { "data-id": t.id, draggable: "true", tabindex: "-1", "aria-selected": String(state.selected.has(t.id)),
                          class: (state.selected.has(t.id) ? "sel" : "") + (state.current?.id === t.id ? " playing" : "") },
-      h("td", { class: "c-col" }, t.color ? h("span", { class: "swatch", style: `background:${COLORS[t.color]}`, title: COLOR_NAMES[t.color] }) : null),
       h("td", { class: "c-idx num" }, String(i + 1)),
-      h("td", { class: "c-title", title: t.path }, t.title || ""),
-      h("td", {}, t.artist || h("span", { class: "muted" }, "Unknown")),
-      h("td", {}, t.album || ""),
-      h("td", {}, t.genre || ""),
+      h("td", { class: "c-art" }, artCell(t)),
+      h("td", { class: "c-title", title: t.path }, t.color ? h("span", { class: "swatch", style: `background:${COLORS[t.color]}`, title: COLOR_NAMES[t.color] }) : null, t.title || ""),
+      h("td", { class: "c-artist" }, t.artist || h("span", { class: "muted" }, "Unknown")),
       h("td", { class: "num" }, t.bpm ? fmtBpm(t.bpm) : h("span", { class: "muted" }, t.analysed_at ? "?" : "…")),
-      h("td", {}, t.camelot ? h("span", { class: "key" }, h("b", {}, t.camelot), h("span", {}, t.musical_key || "")) : ""),
-      h("td", {}, t.energy != null ? h("span", { class: "meter", title: `Energy ${t.energy}/10` }, h("i", { style: `--v:${Math.min(100, t.energy * 10)}%` }), h("span", {}, String(t.energy))) : ""),
-      h("td", { class: "num" }, fmtTime(t.duration)),
+      h("td", {}, t.camelot ? h("span", { class: "key", style: `color:${keyColor(t.camelot)}` }, h("b", {}, t.camelot), h("span", {}, t.musical_key || "")) : ""),
+      h("td", { class: "num" }, t.energy != null ? String(t.energy) : ""),
+      h("td", { class: "c-st c-stems" }, stemPill(t)),
       h("td", { class: "c-an" }, analysisCell(t)),
-      h("td", { class: "c-st" }, stemPill(t)));
+      h("td", { class: "c-menu" }, h("button", { class: "row-menu", "aria-label": `Actions for ${t.title || "track"}`, title: "Actions",
+        onclick: (e) => { e.stopPropagation(); rowMenu(e.currentTarget, t); } }, icon("more", "ic sm"))));
     tr.addEventListener("click", (e) => clickRow(e, t.id, vi));
     tr.addEventListener("dblclick", () => openTrack(t.id, true));
     tr.addEventListener("dragstart", (e) => {
@@ -274,7 +303,9 @@ function renderTracks() {
   $$("#tracks thead th[data-sort]").forEach((th) => th.setAttribute("aria-sort", state.sort?.key === th.dataset.sort ? (state.sort.dir > 0 ? "ascending" : "descending") : "none"));
   renderContext();
   renderLibStatus();
-  renderDockExport();
+  $("#sortSel").value = state.sort ? (state.sort.dir < 0 ? `${state.sort.key}:-1` : state.sort.key) : "index";
+  if (!$("#sortSel").value) $("#sortSel").value = "index";
+  if (!state.current) renderDetail();    // the empty panel shows library counts
 }
 // Status cells refresh in place on each jobs poll, so dragging and hovering aren't disturbed.
 function updateStatusCells() {
@@ -289,7 +320,48 @@ function renderLibStatus() {
   const n = state.tracks.length, secs = state.tracks.reduce((a, t) => a + (t.duration || 0), 0);
   const pl = state.playlists.find((p) => p.id === state.playlist);
   $("#statusLib").textContent = !state.loaded ? "Loading library…"
-    : `${pl ? pl.name + ": " : ""}${plural(n, "track")} · ${fmtDur(secs)}` + (state.view.length !== n ? ` · ${state.view.length} shown` : "");
+    : `${pl ? pl.name + " · " : ""}${plural(n, "track")} · ${fmtDur(secs)}` + (state.view.length !== n ? ` · ${state.view.length} shown` : "");
+  const attn = state.tracks.filter((t) => issues(t).length).length;
+  $("#attnCount").textContent = attn ? String(attn) : "";
+}
+$("#sortSel").addEventListener("change", () => {
+  const [key, d] = $("#sortSel").value.split(":");
+  state.sort = key === "index" ? null : { key, dir: d === "-1" ? -1 : 1 };
+  renderTracks();
+});
+
+// ── Small menus (row and panel "⋮") ─────────────────────────────────────────
+function openMenu(anchor, items) {
+  const m = $("#menu");
+  fill(m, items.filter(Boolean).map((it) => it === "-" ? h("hr") :
+    h("button", { role: "menuitem", class: it.danger ? "danger-item" : "", onclick: () => { closeMenu(); it.run(); } }, it.label)));
+  m.hidden = false;
+  const r = anchor.getBoundingClientRect(), mw = m.offsetWidth, mh = m.offsetHeight;
+  m.style.left = `${Math.max(8, Math.min(innerWidth - mw - 8, r.right - mw))}px`;
+  m.style.top = `${r.bottom + mh + 8 > innerHeight ? r.top - mh - 4 : r.bottom + 4}px`;
+  m.querySelector("button")?.focus();
+  state.menuFrom = anchor;
+}
+function closeMenu() { const m = $("#menu"); if (!m.hidden) { m.hidden = true; state.menuFrom?.focus?.(); } }
+addEventListener("mousedown", (e) => { if (!$("#menu").hidden && !$("#menu").contains(e.target)) closeMenu(); });
+$("#menu").addEventListener("keydown", (e) => {
+  const b = $$("#menu button"), i = b.indexOf(document.activeElement);
+  if (e.key === "Escape") { e.stopPropagation(); closeMenu(); }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); b[(i + (e.key === "ArrowDown" ? 1 : -1) + b.length) % b.length]?.focus(); }
+});
+function trackMenuItems(t) {
+  const ids = [t.id];
+  return [
+    { label: t.analysed_at ? "Re-analyse" : "Analyse", run: () => api("/api/analyse", { body: { ids } }).then(() => { toast("Analysing"); pollJobs(); }).catch(fail) },
+    t.stems !== "done" && t.stems !== "running" && t.stems !== "queued" ? { label: "Make stems", run: () => api("/api/stems", { body: { ids } }).then(() => { toast("Making stems"); loadTracks(); pollJobs(); }).catch(fail) } : null,
+    ...state.playlists.filter((p) => !p.is_folder).slice(0, 8).map((p) => ({ label: `Add to "${p.name}"`, run: () => addToPlaylist(p.id, ids).catch(fail) })),
+    "-",
+    { label: "Remove from library", danger: true, run: () => { state.selected = new Set(ids); removeSelected().catch(fail); } },
+  ];
+}
+function rowMenu(btn, t) {
+  if (!state.selected.has(t.id)) { state.selected = new Set([t.id]); state.anchor = t.id; renderTracks(); }
+  openMenu(btn, trackMenuItems(t));
 }
 function clickRow(e, id, vi) {
   const view = state.view;
@@ -425,16 +497,31 @@ async function openTrack(id, play) {
   state.current = t;
   if (!same) {
     state.stemSolo = null;
+    state.stemPeaks = null;
     player.src = `/api/tracks/${id}/audio`;
     state.wave = null;
     buildWaves();
     api(`/api/tracks/${id}/waveform`).then((w) => { if (state.current?.id === id) { state.wave = decodeWave(w); buildWaves(); } }).catch(() => {});
-  }
+    if (t.stem_files.length) loadStemPeaks(id);
+  } else if (t.stem_files.length && !state.stemPeaks) loadStemPeaks(id);
   renderDetail();
+  updatePreviewBar();
   if (play) player.play().catch(() => {});
   renderTracks();
 }
-function closeDetail() { player.pause(); state.ws?.destroy(); state.ws = null; state.current = null; state.wave = null; $("#detail").hidden = true; renderTracks(); }
+function loadStemPeaks(id) {
+  api(`/api/tracks/${id}/stems/peaks`).then((p) => {
+    if (state.current?.id !== id) return;
+    const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+    state.stemPeaks = Object.fromEntries(Object.entries(p.peaks).map(([k, v]) => [k, Float32Array.from(b64(v), (x) => x / 255)]));
+    if (state.wave) buildWaves();
+  }).catch(() => {});
+}
+function closeDetail() {
+  player.pause(); destroyWaves();
+  state.current = null; state.wave = null; state.stemPeaks = null;
+  renderDetail(); renderTracks(); updatePreviewBar();
+}
 
 function decodeWave(w) {
   const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
@@ -470,12 +557,35 @@ function splitSuggestion(t) {
     h("button", { class: "ghost small", onclick: no }, "No thanks"));
 }
 
-const stat = (label, value) => h("div", { class: "stat" }, h("small", {}, label), h("b", {}, value || "–"));
+// ── Track panel ──────────────────────────────────────────────────────────────
+// Phrase colours: drops in the accent, builds in the cue orange, breaks in the cue blue.
+function phraseColor(kind) {
+  const k = String(kind || "").toLowerCase();
+  if (k.includes("drop") || k.includes("chorus")) return "var(--accent)";
+  if (k.includes("build") || k === "up") return withAlpha(CUE_COLORS[1], 0.7);
+  if (k.includes("break") || k.includes("bridge")) return withAlpha(CUE_COLORS[5], 0.7);
+  return "var(--line-strong)";
+}
+const secH = (title, ...rest) => h("div", { class: "sec-h" }, title, ...rest);
+function exportCard() {
+  const list = state.tracks, attn = list.filter((t) => issues(t).length).length;
+  const ready = list.filter((t) => t.analysed_at && !issues(t).length).length;
+  return h("button", { class: "export-card" + (attn ? " warn" : ""), onclick: () => showView("export"), title: "Open Export" },
+    h("span", { class: "ec-ic", "aria-hidden": "true" }, attn ? h("b", {}, "!") : icon("check")),
+    h("span", { class: "ec-text" },
+      h("b", {}, attn ? `${plural(attn, "track")} need${attn === 1 ? "s" : ""} attention` : "USB export ready"),
+      h("span", {}, `${plural(ready, "track")} ready${state.playlist ? " in this playlist" : ""}`)),
+    h("span", { class: "ec-note" }, "rekordbox compatible"), icon("chevron", "ic sm"));
+}
 function renderDetail() {
   const t = state.current;
   const d = $("#detail");
-  if (!t) { d.hidden = true; return; }
-  d.hidden = false;
+  if (!t) {
+    fill(d, h("div", { class: "tp-empty" },
+      h("p", {}, h("b", {}, "Select a track to prepare it.")),
+      h("p", { class: "hint" }, "Check the beat grid against the waveform, set cues, fix tags and make stems.")), exportCard());
+    return;
+  }
   const field = (label, key, type = "text") => {
     const inp = h("input", { type, value: t[key] ?? "", step: key === "bpm" ? "0.01" : null });
     inp.addEventListener("change", () => saveField(key, type === "number" ? (inp.value === "" ? null : +inp.value) : inp.value));
@@ -486,23 +596,23 @@ function renderDetail() {
   const rating = h("select", {}, [0, 1, 2, 3, 4, 5].map((r) => h("option", { value: r, selected: (t.rating || 0) === r }, r ? "★".repeat(r) : "No rating")));
   rating.addEventListener("change", () => saveField("rating", +rating.value));
 
-  // Hot cues A-H, each with its own colour (as on the waveform): click jumps, or sets at the
-  // playhead when empty; right-click or × clears. Colours are a DKPRP display aid only.
+  // Hot cues A-H in the DECK001 slot colours: click jumps (or sets at the playhead when empty);
+  // right-click, or × in Edit, clears.
   const pads = h("div", { class: "pads", role: "group", "aria-label": "Hot cues (keys 1 to 8)" }, [...PAD].map((letter, i) => {
     const cue = t.cues.find((c) => c.slot === i + 1);
     const pad = h("button", { class: "pad" + (cue ? " set" : ""), style: `--cue:${CUE_COLORS[i]}`,
                               title: cue ? `Jump to ${letter} (key ${i + 1}; right-click to clear)` : `Set ${letter} at the playhead (key ${i + 1})`,
-                              "aria-label": cue ? `Hot cue ${letter} at ${fmtMs(cue.start_ms)}` : `Set hot cue ${letter}` },
-      h("b", {}, letter), h("small", {}, cue ? (cue.label || fmtMs(cue.start_ms)) : "–"), cue ? h("span", { class: "x", title: "Clear" }, "×") : null);
-    pad.addEventListener("click", (e) => {
-      if (cue && !e.target.classList.contains("x")) { player.currentTime = cue.start_ms / 1000; return; }
-      setCue(i + 1, cue && e.target.classList.contains("x") ? null : player.currentTime * 1000).catch(fail);
-    });
+                              "aria-label": cue ? `Hot cue ${letter} at ${fmtMs(cue.start_ms)}` : `Set hot cue ${letter}` }, letter);
+    pad.addEventListener("click", () => { if (cue) player.currentTime = cue.start_ms / 1000; else setCue(i + 1, player.currentTime * 1000).catch(fail); });
     pad.addEventListener("contextmenu", (e) => { e.preventDefault(); if (cue) setCue(i + 1, null).catch(fail); });
-    return pad;
+    return h("div", { class: "pad-w" }, pad, h("span", { class: "pad-t" }, cue ? (cue.label || fmtMs(cue.start_ms)) : "–"),
+      cue && state.cueEdit ? h("button", { class: "pad-x", "aria-label": `Clear hot cue ${letter}`, title: "Clear", onclick: () => setCue(i + 1, null).catch(fail) }, "×") : null);
   }));
   const mems = t.cues.filter((c) => !c.slot).sort((a, b) => a.start_ms - b.start_ms);
-  const memList = h("div", { class: "mem" }, mems.length ? mems.map((c) => h("div", { class: "mem-row" },
+  const memList = h("div", { class: "mem" },
+    secH("Memory cues", h("span", { class: "spacer" }),
+      h("button", { class: "ghost small", onclick: () => addMemory(player.currentTime * 1000).catch(fail), title: "Add at the playhead (M)" }, "+ At playhead")),
+    mems.length ? mems.map((c) => h("div", { class: "mem-row" },
       h("span", { class: "m" }, "M"),
       h("span", { class: "t" }, fmtMs(c.start_ms), c.label ? h("span", { class: "muted" }, ` · ${c.label}`) : null),
       h("button", { class: "ghost small", onclick: () => { player.currentTime = c.start_ms / 1000; } }, "Jump"),
@@ -512,129 +622,98 @@ function renderDetail() {
 
   // Stems: solo one at a time through the same player, or make them.
   const sj = jobFor(t.id, "stems");
-  const stemRow = h("div", { class: "stems-row" });
+  let stems;
   if (t.stem_files.length) {
-    stemRow.append(h("button", { class: "ghost small" + (!state.stemSolo ? " on" : ""), "aria-pressed": String(!state.stemSolo), onclick: () => soloStem(null) }, "Full mix"));
-    t.stem_files.forEach((s) => stemRow.append(h("button", { class: "ghost small stem" + (state.stemSolo === s ? " on" : ""), "aria-pressed": String(state.stemSolo === s),
-                                                             onclick: () => soloStem(s) }, s === "other" ? "melody" : s)));
+    stems = [h("div", { class: "ok-text" }, icon("check", "ic sm"), "Ready · 4 stems"),
+      h("div", { class: "row-btns stem-btns", role: "group", "aria-label": "Listen to" },
+        h("button", { class: "ghost small", "aria-pressed": String(!state.stemSolo), onclick: () => soloStem(null) }, "Full"),
+        STEM_ORDER.filter((s) => t.stem_files.includes(s)).map((s) => h("button", { class: "ghost small", "aria-pressed": String(state.stemSolo === s), onclick: () => soloStem(s) }, s === "other" ? "melody" : s)))];
   } else {
     const running = sj?.status === "running";
-    stemRow.append(h("span", { class: "muted" }, running ? `Making… ${Math.round(sj.progress * 100)}%` : { none: "Not made", queued: "Queued", running: "Making…", failed: "Failed" }[t.stems] || ""),
-      t.stems === "none" || t.stems === "failed" ? h("button", { class: "ghost small", onclick: () => api("/api/stems", { body: { ids: [t.id] } }).then(() => { pollJobs(); loadTracks(); openTrack(t.id); }).catch(fail) }, "Make stems") : null);
-    if (running) stemRow.append(h("div", { class: "progress", style: "width:100%" }, h("i", { style: `width:${sj.progress * 100}%` })));
+    stems = [h("span", { class: "muted stem-state" }, running ? `Making… ${Math.round(sj.progress * 100)}%` : { none: "Not made", queued: "Queued", running: "Making…", failed: "Failed" }[t.stems] || ""),
+      t.stems === "none" || t.stems === "failed" ? h("button", { class: "ghost", onclick: () => api("/api/stems", { body: { ids: [t.id] } }).then(() => { pollJobs(); loadTracks(); openTrack(t.id); }).catch(fail) }, icon("deck", "ic sm"), "Generate stems") : null,
+      running ? h("div", { class: "progress" }, h("i", { style: `width:${sj.progress * 100}%` })) : null];
   }
 
-  // Transport: play, previous/next track, position, preview tempo (±8 %, key lock), volume, zoom.
-  const playing = !player.paused;
-  const seek = h("input", { type: "range", class: "seek", id: "seek", min: 0, max: t.duration || 0, step: 0.1, value: player.currentTime || 0, "aria-label": "Position" });
-  seek.addEventListener("input", () => { state.seeking = true; player.currentTime = +seek.value; });
-  seek.addEventListener("change", () => { state.seeking = false; });
-  const vol = h("input", { type: "range", class: "vol", min: 0, max: 1, step: 0.01, value: state.volume, "aria-label": "Preview volume" });
-  vol.addEventListener("input", () => { state.volume = +vol.value; player.volume = state.volume; try { localStorage.setItem("volume", vol.value); } catch {} });
-  const tbtn = (label, ic, onclick, extra = {}) => h("button", { class: "ghost icon-btn t-btn", "aria-label": label, title: label, onclick, ...extra }, icon(ic));
-  const transport = h("div", { class: "transport-bar" },
-    h("button", { class: "play-btn", id: "playBtn", onclick: togglePlay, "aria-label": playing ? "Pause (Space)" : "Play (Space)", title: "Play or pause (Space)" }, icon(playing ? "pause" : "play")),
-    tbtn("Previous track (or back to the start)", "prev", () => stepTrack(-1)),
-    tbtn("Next track", "next", () => stepTrack(1)),
-    h("span", { class: "time", id: "timeLabel" }, `${fmtTime(player.currentTime || 0)} / ${fmtTime(t.duration)}`),
-    seek,
-    h("span", { class: "t-group", role: "group", "aria-label": "Preview tempo" },
-      h("button", { class: "ghost small", "aria-label": "Tempo down 0.5%", title: "Tempo down", onclick: () => setTempo((state.tempo || 0) - 0.5) }, "−"),
-      h("button", { class: "ghost small tempo", id: "tempoLabel", title: "Preview tempo (click to reset). Playback only: nothing is saved.", onclick: () => setTempo(0) }, fmtTempo()),
-      h("button", { class: "ghost small", "aria-label": "Tempo up 0.5%", title: "Tempo up", onclick: () => setTempo((state.tempo || 0) + 0.5) }, "+")),
-    tbtn(state.keyLock ? "Key lock on" : "Key lock off", "lock", () => { state.keyLock = !state.keyLock; applyRate(); renderDetail(); },
-         { "aria-pressed": String(!!state.keyLock), class: "ghost icon-btn t-btn" + (state.keyLock ? " on" : "") }),
-    h("span", { class: "t-vol" }, icon("volume", "ic sm"), vol),
-    h("span", { class: "spacer" }),
-    h("span", { class: "legend", "aria-label": "Waveform colours" },
-      h("i", { style: "background:var(--wave-low)" }), "Low", h("i", { style: "background:var(--wave-mid)" }), "Mid", h("i", { style: "background:var(--wave-high)" }), "High"),
-    h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
-      h("button", { class: "ghost small", "aria-label": "Zoom out", title: "Zoom out", onclick: () => zoomWave(0.5) }, "−"),
-      h("button", { class: "ghost small", "aria-label": "Zoom in", title: "Zoom in", onclick: () => zoomWave(2) }, "+")),
-    h("button", { class: "ghost small", "aria-expanded": String(!state.editorHidden), "aria-controls": "dRow", onclick: toggleEditor,
-                  title: "Show or hide memory cues, tags and stems (E)" }, state.editorHidden ? "Show editor" : "Hide editor"));
-
-  const ph = t.phrases;
+  const ph = t.phrases, why = [...issues(t), ...(t.deck_problem ? [`${t.deck_problem}. It's still exported (CDJs play it)`] : [])];
+  const meta = [t.bpm ? `${fmtBpm(t.bpm)} BPM` : null, t.camelot ? `${t.camelot} ${t.musical_key || ""}`.trim() : null,
+                t.energy != null ? `${t.energy} energy` : null, fmtTime(t.duration)].filter(Boolean).join(" · ");
   fill(d,
-    h("div", { class: "d-head" },
-      t.has_artwork ? h("img", { class: "d-art", src: `/api/tracks/${t.id}/artwork`, alt: "" }) : h("div", { class: "d-art", "aria-hidden": "true" }, icon("library")),
-      h("div", { class: "d-id" },
-        h("div", { class: "d-title", title: t.path }, t.title || ""),
-        h("div", { class: "d-meta" }, [t.artist || "Unknown artist", t.album, t.genre].filter(Boolean).join(" · ")),
-        h("div", { class: "stats" },
-          h("div", { class: "stat" }, h("small", {}, "BPM"), h("b", { id: "bpmStat" }, bpmText(t))),
-          stat("Key", t.camelot ? `${t.camelot} ${t.musical_key || ""}` : null),
-          stat("Energy", t.energy != null ? `${t.energy}/10` : null), stat("Length", fmtTime(t.duration)))),
-      h("div", { class: "spacer" }),
-      h("div", { class: "d-cues" },
-        h("div", { class: "d-cues-head" }, h("span", {}, "Hot cues"), h("span", { class: "muted" }, "keys 1–8"), h("span", { class: "spacer" }),
-          h("button", { class: "ghost small", onclick: () => addMemory(player.currentTime * 1000).catch(fail), title: "Add a memory cue at the playhead (M)" }, "+ Memory cue")),
-        pads),
-      h("button", { class: "ghost small icon-btn d-close", onclick: closeDetail, "aria-label": "Close track", title: "Close" }, icon("x", "ic sm"))),
+    h("div", { class: "tp-head" },
+      t.has_artwork ? h("img", { class: "tp-art", src: `/api/tracks/${t.id}/artwork`, alt: "" }) : h("div", { class: "tp-art", "aria-hidden": "true" }, icon("library")),
+      h("div", { class: "tp-id" },
+        h("div", { class: "tp-title", title: t.path }, t.title || ""),
+        h("div", { class: "tp-artist" }, t.artist || "Unknown artist"),
+        h("div", { class: "tp-meta" }, meta)),
+      h("button", { class: "ghost icon-btn", "aria-label": "Track actions", title: "Actions",
+        onclick: (e) => openMenu(e.currentTarget, [...trackMenuItems(t), { label: "Close track", run: closeDetail }]) }, icon("more", "ic sm"))),
     splitSuggestion(t),
-    t.deck_problem ? h("div", { class: "warn-line" }, `Won't play on the DECK001: ${t.deck_problem}. It's still exported (CDJs play it).`) : null,
-    waveBox,
-    phraseStrip(t),
-    transport,
-    h("div", { class: "d-row", id: "dRow", hidden: !!state.editorHidden },
-      h("div", { class: "d-sec" },
-        h("h3", {}, "Memory cues", h("span", { class: "spacer" }),
-          h("button", { class: "ghost small", onclick: () => addMemory(player.currentTime * 1000).catch(fail), title: "Add at the playhead (M)" }, "+ At playhead")),
-        memList),
-      h("div", { class: "d-sec" }, h("h3", {}, "Track"),
-        h("div", { class: "fields" },
-          field("Title", "title"), field("Artist", "artist"), field("Album", "album"),
-          field("Genre", "genre"), field("BPM", "bpm", "number"), field("Year", "year", "number"),
-          h("label", {}, "Colour", color), h("label", {}, "Rating", rating), field("Comment", "comment"))),
-      h("div", { class: "d-sec d-stems" },
-        h("div", {}, h("h3", {}, "Beat grid", h("span", { class: "muted", style: "text-transform:none;letter-spacing:0;font-weight:400" }, "[ ] 1 ms, Shift 10 ms")),
-          t.grid ? h("div", { class: "grid-row" },
-            h("span", { class: "t-group", role: "group", "aria-label": "Nudge the beat grid" },
-              h("button", { class: "ghost small", title: "Earlier by 10 ms (Shift+[)", onclick: () => gridNudge(-10) }, "«"),
-              h("button", { class: "ghost small", title: "Earlier by 1 ms ([)", onclick: () => gridNudge(-1) }, "‹"),
-              h("button", { class: "ghost small", title: "Later by 1 ms (])", onclick: () => gridNudge(1) }, "›"),
-              h("button", { class: "ghost small", title: "Later by 10 ms (Shift+])", onclick: () => gridNudge(10) }, "»")),
-            h("span", { class: "grid-val", id: "gridReadout", "aria-live": "polite" }, fmtNudge(gridNow(t))),
-            h("button", { class: "ghost small", title: "Move the bar start one beat later", onclick: () => gridNudge(0, 1) }, "Downbeat +1"),
-            h("button", { class: "ghost small", title: "Back to the analysis grid", onclick: gridReset }, "Reset"))
-          : h("div", { class: "muted" }, "Appears after analysis")),
-        h("div", {}, h("h3", { style: "margin-top:10px" }, "Stems"), stemRow),
-        h("div", {}, h("h3", { style: "margin-top:10px" }, "Phrases"),
-          ph ? h("dl", { class: "kv" },
-            h("dt", {}, "First downbeat"), h("dd", {}, fmtMs(ph.first_downbeat_ms)),
-            h("dt", {}, "Intro ends"), h("dd", {}, fmtMs(ph.intro_end_ms)),
-            h("dt", {}, "Outro starts"), h("dd", {}, fmtMs(ph.outro_start_ms)),
-            h("dt", {}, plural(ph.drops.length, "drop")), h("dd", {}, ph.drops.map(fmtMs).join(", ") || "–"))
-          : h("div", { class: "muted" }, "Not analysed yet")))));
+    why.length ? h("div", { class: "warn-line" }, "Needs attention: ", why.join(" · ")) : null,
+    h("section", { "aria-label": "Waveforms", class: "tp-waves" },
+      secH("Waveform", h("span", { class: "spacer" }), h("span", { class: "muted" }, `${WAVE_THEMES[waveTheme].name} · ${WAVE_STYLES[waveStyle].name}`),
+        h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
+          h("button", { class: "ghost small", "aria-label": "Zoom out", title: "Zoom out", onclick: () => zoomWave(0.5) }, "−"),
+          h("button", { class: "ghost small", "aria-label": "Zoom in", title: "Zoom in", onclick: () => zoomWave(2) }, "+"))),
+      waveStack),
+    h("section", { "aria-label": "Hot cues", class: "tp-cues" },
+      secH("Hot cues", h("span", { class: "muted" }, "keys 1–8"), h("span", { class: "spacer" }),
+        h("button", { class: "ghost small", "aria-pressed": String(!!state.cueEdit), onclick: () => { state.cueEdit = !state.cueEdit; renderDetail(); } }, state.cueEdit ? "Done" : "Edit")),
+      pads, state.cueEdit ? memList : null),
+    t.sections?.length ? h("section", { "aria-label": "Sections and phrases" },
+      secH("Section / phrases"),
+      h("div", { class: "phrases" }, t.sections.map((s) => h("button", { class: "phrase", style: `flex:${Math.max(1, s.end_ms - s.start_ms)} 1 0`,
+          title: `${s.kind} at ${fmtMs(s.start_ms)}${s.bars ? ` · ${s.bars} bars` : ""}`, onclick: () => { player.currentTime = s.start_ms / 1000; } },
+        h("i", { style: `background:${phraseColor(s.kind)}` }), h("b", {}, s.kind), h("span", {}, s.bars ? `${s.bars} bars` : fmtMs(s.start_ms)))))) : null,
+    h("div", { class: "grid2" },
+      h("section", { "aria-label": "Beat grid" },
+        secH("Beat grid"),
+        t.grid ? h("div", { class: "row-btns" },
+          h("div", { class: "nudge", role: "group", "aria-label": "Nudge the beat grid" },
+            h("button", { "aria-label": "Earlier by 1 ms ([, Shift for 10 ms)", title: "Earlier by 1 ms ([, Shift+[ for 10 ms)", onclick: (e) => gridNudge(e.shiftKey ? -10 : -1) }, "‹"),
+            h("span", { id: "gridReadout", "aria-live": "polite" }, fmtNudge(gridNow(t))),
+            h("button", { "aria-label": "Later by 1 ms (], Shift for 10 ms)", title: "Later by 1 ms (], Shift+] for 10 ms)", onclick: (e) => gridNudge(e.shiftKey ? 10 : 1) }, "›")),
+          h("button", { class: "ghost small", title: "Back to the analysis grid", onclick: gridReset }, "Reset"),
+          h("button", { class: "ghost small", title: "Move the bar start one beat later", onclick: () => gridNudge(0, 1) }, "Downbeat +1"))
+        : h("div", { class: "muted" }, "Appears after analysis")),
+      h("section", { "aria-label": "Stems", class: "tp-stems" }, secH("Stems"), stems)),
+    h("details", { class: "details", open: state.detailsOpen ? true : null, ontoggle: (e) => { state.detailsOpen = e.currentTarget.open; } },
+      h("summary", { class: "sec-h" }, "Track details", h("span", { class: "spacer" }), h("span", { class: "muted" }, "tags, rating, phrases")),
+      h("div", { class: "fields" },
+        field("Title", "title"), field("Artist", "artist"), field("Album", "album"),
+        field("Genre", "genre"), field("BPM", "bpm", "number"), field("Year", "year", "number"),
+        h("label", {}, "Colour", color), h("label", {}, "Rating", rating), field("Comment", "comment")),
+      ph ? h("dl", { class: "kv", style: "margin-top:10px" },
+        h("dt", {}, "First downbeat"), h("dd", {}, fmtMs(ph.first_downbeat_ms)),
+        h("dt", {}, "Intro ends"), h("dd", {}, fmtMs(ph.intro_end_ms)),
+        h("dt", {}, "Outro starts"), h("dd", {}, fmtMs(ph.outro_start_ms)),
+        h("dt", {}, plural(ph.drops.length, "drop")), h("dd", {}, ph.drops.map(fmtMs).join(", ") || "–")) : null),
+    exportCard());
   syncMarkers();
 }
-// The editor row (cues, tags, stems) can be folded away to give the track table more room.
-try { state.editorHidden = localStorage.getItem("editorHidden") === "1"; } catch {}
-function toggleEditor() {
-  state.editorHidden = !state.editorHidden;
-  try { localStorage.setItem("editorHidden", state.editorHidden ? "1" : "0"); } catch {}
-  renderDetail();
-}
-// Preview tempo (playback only, nothing saved): ±8 % like a deck's pitch fader, optional key lock.
+
+// ── Preview bar: listen to check a track; it never changes anything ─────────
 try { state.volume = Math.max(0, Math.min(1, +(localStorage.getItem("volume") ?? 1))); } catch { state.volume = 1; }
 if (!Number.isFinite(state.volume)) state.volume = 1;
-state.keyLock = true; state.tempo = 0;
-const fmtTempo = () => `${state.tempo > 0 ? "+" : state.tempo < 0 ? "−" : "±"}${Math.abs(state.tempo).toFixed(1)}%`;
-const bpmText = (t) => (t.bpm ? fmtBpm(Math.round(t.bpm * (1 + state.tempo / 100) * 100) / 100) : "–");
-function applyRate() {
-  const r = 1 + state.tempo / 100;
-  player.defaultPlaybackRate = r; player.playbackRate = r;
-  player.preservesPitch = !!state.keyLock;
-  player.volume = state.volume;
-}
-function setTempo(v) {
-  state.tempo = Math.max(-8, Math.min(8, Math.round(v * 2) / 2));
-  applyRate();
-  const l = $("#tempoLabel"); if (l) l.textContent = fmtTempo();
-  const b = $("#bpmStat"); if (b && state.current) b.textContent = bpmText(state.current);
-}
-player.addEventListener("loadedmetadata", applyRate);   // a new source resets the rate
+function applyRate() { player.playbackRate = player.defaultPlaybackRate = 1; player.volume = state.volume; }
+player.addEventListener("loadedmetadata", applyRate);
 applyRate();
+$("#vol").value = state.volume;
+$("#vol").addEventListener("input", () => { state.volume = +$("#vol").value; player.volume = state.volume; try { localStorage.setItem("volume", String(state.volume)); } catch {} });
+$("#seek").addEventListener("input", () => { state.seeking = true; if (state.current) player.currentTime = +$("#seek").value; });
+$("#seek").addEventListener("change", () => { state.seeking = false; });
+$("#playBtn").addEventListener("click", () => { if (state.current) togglePlay(); });
+$("#pvPrev").addEventListener("click", () => stepTrack(-1));
+$("#pvNext").addEventListener("click", () => stepTrack(1));
+function updatePreviewBar() {
+  const t = state.current;
+  $(".preview-bar").classList.toggle("idle", !t);
+  $("#pvTitle").textContent = t ? (t.title || "Untitled") : "No track selected";
+  $("#pvArtist").textContent = t ? (t.artist || "Unknown artist") : "";
+  $("#pvArt").style.backgroundImage = t?.has_artwork ? `url(/api/tracks/${t.id}/artwork)` : "";
+  $("#durLabel").textContent = fmtTime(t?.duration || 0);
+  $("#seek").max = t?.duration || 0;
+  if (!t) { $("#seek").value = 0; $("#timeLabel").textContent = "0:00"; }
+}
 // Previous goes back to the start first (after 3 s), like a deck; both follow the table's order.
 function stepTrack(dir) {
   if (dir < 0 && player.currentTime > 3) { player.currentTime = 0; return; }
@@ -732,44 +811,56 @@ function soloStem(name) {
 }
 function setPlayIcon() {
   const b = $("#playBtn");
-  if (!b) return;
   b.querySelector("use").setAttribute("href", player.paused ? "#i-play" : "#i-pause");
   b.setAttribute("aria-label", player.paused ? "Play (Space)" : "Pause (Space)");
 }
 player.addEventListener("play", setPlayIcon);
 player.addEventListener("pause", setPlayIcon);
 player.addEventListener("timeupdate", () => {
-  const l = $("#timeLabel");
-  if (l && state.current) l.textContent = `${fmtTime(player.currentTime)} / ${fmtTime(state.current.duration)}`;
-  const sk = $("#seek"); if (sk && !state.seeking) sk.value = player.currentTime;
-  const c = $("#phraseCursor"), dur = state.current?.duration;
-  if (c && dur) c.style.left = `${Math.min(100, (player.currentTime / dur) * 100)}%`;
+  if (!state.current) return;
+  $("#timeLabel").textContent = fmtTime(player.currentTime);
+  if (!state.seeking) $("#seek").value = player.currentTime;
 });
 
-// Phrase strip: the analysis sections across the whole track; click one to jump to it.
-function phraseStrip(t) {
-  const dur = (t.grid?.duration_ms || (t.duration || 0) * 1000);
-  if (!t.sections?.length || !dur) return null;
-  const strip = h("div", { class: "phrases", role: "group", "aria-label": "Phrases" },
-    t.sections.map((s) => {
-      const kind = String(s.kind || "").toLowerCase();
-      return h("button", { class: `k-${kind.replace(/[^a-z]/g, "")}`, style: `left:${(s.start_ms / dur) * 100}%;width:${((s.end_ms - s.start_ms) / dur) * 100}%`,
-                           title: `${s.kind} · ${fmtMs(s.start_ms)}${s.bars ? ` · ${s.bars} bars` : ""}`,
-                           onclick: () => { player.currentTime = s.start_ms / 1000; } }, s.kind);
-    }),
-    h("i", { id: "phraseCursor", "aria-hidden": "true", style: "position:absolute;top:0;bottom:0;width:2px;background:var(--ink);pointer-events:none;left:0" }));
-  return strip;
+// ── Waveforms ────────────────────────────────────────────────────────────────
+// wavesurfer.js (ui/vendor/wavesurfer, BSD-3-Clause) scrolls the detail view and the overview
+// (Minimap plugin) and follows the shared <audio> player; beat grid and cues are Regions markers.
+// The look follows the DECK001 waveform settings: a colour theme and a style, the same names
+// and colours as the deck ("DECK001 Waveform Themes"), so a track looks the same on both.
+const WAVE_THEMES = {
+  coral_teal: { name: "Coral / Teal", solid: "#f0574c", frequency: ["#19b5bd", "#f0574c", "#fff4ef"], rainbow: ["#f0574c", "#19b5bd", "#ffffff"] },
+  graphite:   { name: "Graphite",     solid: "#c9c6c0", frequency: ["#4a4845", "#8f8b85", "#f4f1ea"], rainbow: ["#6b6864", "#b4b0a9", "#ffffff"] },
+  valve:      { name: "Valve",        solid: "#e8a33d", frequency: ["#a8452a", "#d9762b", "#f6d58e"], rainbow: ["#b4432a", "#f0a03a", "#fbeac0"] },
+};
+// Contour styles draw separate bars, the others one column per pixel. Band palettes are
+// [bass, mids, highs]; "Contour · frequency" uses the rainbow colours, as on the deck.
+const WAVE_STYLES = {
+  contour_solid:     { name: "Contour · solid",     bars: true,  palette: "solid" },
+  contour_frequency: { name: "Contour · frequency", bars: true,  palette: "rainbow" },
+  frequency:         { name: "Frequency",           bars: false, palette: "frequency" },
+  rainbow:           { name: "Rainbow",             bars: false, palette: "rainbow" },
+};
+let waveTheme = "coral_teal", waveStyle = "contour_frequency";
+try {
+  if (WAVE_THEMES[localStorage.getItem("waveTheme")]) waveTheme = localStorage.getItem("waveTheme");
+  if (WAVE_STYLES[localStorage.getItem("waveStyle")]) waveStyle = localStorage.getItem("waveStyle");
+} catch {}
+function wavePalette() {
+  const th = WAVE_THEMES[waveTheme], st = WAVE_STYLES[waveStyle];
+  return { bars: st.bars, solid: st.palette === "solid" ? th.solid : null, bands: st.palette === "solid" ? null : th[st.palette] };
 }
+// Stem rows: each stem in its own colour (the DECK001 cue colours), in the chosen style.
+const STEM_ORDER = ["drums", "bass", "other", "vocals"];
+const STEM_LABEL = { drums: "DRUMS", bass: "BASS", other: "MELODY", vocals: "VOCALS" };
+const STEM_COLORS = { drums: CUE_COLORS[1], bass: CUE_COLORS[2], other: CUE_COLORS[5], vocals: CUE_COLORS[6] };
 
-// Waveforms: wavesurfer.js (ui/vendor/wavesurfer, BSD-3-Clause) draws the scrolling detail
-// view and the whole-track overview (Minimap plugin) from the analysis peaks, and follows
-// the shared <audio> player. Beat grid and cues are Regions-plugin markers.
 function cssVar(n) { return cssCache[n] ??= getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+const waveStack = h("div", { class: "wstack" });
 const waveBox = h("div", { class: "waves", id: "waves" });
+const overviewBox = h("div", { class: "waves overview" });
 const withAlpha = (hex, a) => { const m = hex.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i); return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : hex; };
 
-// PWV5 (150 columns per second: height plus a 3-bit bass/mid/high mix) as three coloured
-// layers drawn over each other, rekordbox "3 band" style: lows, then mids, then highs on top.
+// PWV5 (150 columns per second: height plus a 3-bit bass/mid/high mix) as three bands.
 function wavePeaks(w) {
   const n = w.detail.length / 2, lo = new Float32Array(n), md = new Float32Array(n), hi = new Float32Array(n);
   for (let i = 0; i < n; i++) {
@@ -781,81 +872,128 @@ function wavePeaks(w) {
   return [lo, md, hi];
 }
 
-// rekordbox "3 band" drawing: per pixel column, the tallest band is drawn first (behind) and the
-// smallest last, so lows, mids and highs all stay visible wherever they are present.
-// WaveSurfer passes a custom renderer at most two channels (top and bottom halves), so it gets
-// one "channel" holding each column's position (index / (N-1), as WaveSurfer keeps peaks in 0-1),
-// and the bands are read from state.bands at that index.
+// Draw `bands` (one array per band, 0-1) into a canvas. In each column or bar the tallest band
+// is drawn first and the smallest last, so all bands stay visible (the deck draws the same way).
+// WaveSurfer passes a custom renderer at most two channels, so it gets one channel of column
+// positions (index / (N-1); WaveSurfer keeps peaks in 0-1) and the bands are looked up by index.
 // That keeps WaveSurfer's slicing for scrolling, zoom and the minimap.
-function drawBands(channels, ctx) {
-  const idx = channels[0], W = ctx.canvas.width, H = ctx.canvas.height, c = H / 2, n = idx?.length || 0;
-  const [lo, md, hi] = state.bands || [];
-  if (!n || !W || !lo) return;
-  const last = lo.length - 1;
-  const colors = [cssVar("--wave-low"), cssVar("--wave-mid"), cssVar("--wave-high")];
-  const paths = [[new Path2D(), new Path2D(), new Path2D()], [new Path2D(), new Path2D(), new Path2D()], [new Path2D(), new Path2D(), new Path2D()]];
-  for (let x = 0; x < W; x++) {
-    const a = Math.floor((x * n) / W), b = Math.max(a + 1, Math.floor(((x + 1) * n) / W));
-    let v0 = 0, v1 = 0, v2 = 0;
-    for (let k = a; k < b && k < n; k++) { const i = Math.round(idx[k] * last); if (lo[i] > v0) v0 = lo[i]; if (md[i] > v1) v1 = md[i]; if (hi[i] > v2) v2 = hi[i]; }
-    const v = [v0, v1, v2], order = [0, 1, 2].sort((p, q) => v[q] - v[p]);
-    order.forEach((band, rank) => { const hh = Math.max(v[band] * c, 0); if (hh > 0.5) paths[rank][band].rect(x, c - hh, 1, hh * 2); });
+function drawWave(idx, ctx, bands, pal) {
+  const W = ctx.canvas.width, H = ctx.canvas.height, c = H / 2, n = idx?.length || 0;
+  if (!n || !W || !bands?.[0]?.length) return;
+  const last = bands[0].length - 1, dpr = Math.max(1, Math.round(devicePixelRatio || 1));
+  const pitch = pal.bars ? 5 * dpr : 1, bw = pal.bars ? 3 * dpr : 1, scale = pal.bars ? 0.9 : 1;
+  const k = bands.length, colors = pal.solid ? [pal.solid] : pal.bands;
+  const paths = Array.from({ length: k }, () => Array.from({ length: k }, () => new Path2D()));
+  const v = new Float32Array(k);
+  for (let x = 0; x < W; x += pitch) {
+    const a = Math.floor((x * n) / W), b = Math.max(a + 1, Math.floor((Math.min(W, x + pitch) * n) / W));
+    v.fill(0);
+    for (let j = a; j < b && j < n; j++) { const i = Math.round(idx[j] * last); for (let q = 0; q < k; q++) if (bands[q][i] > v[q]) v[q] = bands[q][i]; }
+    if (pal.solid) {
+      const hh = Math.max(...v) * c * scale;
+      if (hh > 0.5) paths[0][0].rect(x, c - hh, bw, hh * 2);
+      continue;
+    }
+    const order = [...Array(k).keys()].sort((p, q) => v[q] - v[p]);
+    order.forEach((band, rank) => { const hh = v[band] * c * scale; if (hh > 0.5) paths[rank][band].rect(x, c - hh, bw, hh * 2); });
   }
-  for (const rank of [0, 1, 2]) for (const band of [0, 1, 2]) { ctx.fillStyle = colors[band]; ctx.fill(paths[rank][band]); }
+  if (pal.solid) { ctx.fillStyle = pal.solid; ctx.fill(paths[0][0]); return; }
+  for (let rank = 0; rank < k; rank++) for (let band = 0; band < k; band++) { ctx.fillStyle = colors[band]; ctx.fill(paths[rank][band]); }
 }
 
+function destroyWaves() {
+  state.ws?.destroy(); (state.stemWs || []).forEach((w) => w.destroy());
+  state.ws = null; state.stemWs = []; state.regions = null;
+}
 function buildWaves() {
-  state.ws?.destroy(); state.ws = null; state.regions = null;
-  const t = state.current, w = state.wave;
-  if (!w) { waveBox.replaceChildren(h("div", { class: "wave-empty muted" }, t?.analysed_at ? "Loading waveform…" : "Waveform appears after analysis")); return; }
-  waveBox.replaceChildren();
-  const compact = innerHeight < 860;
-  // The three bands go in as three "channels" and drawBands paints them. The played part keeps
-  // its colours (a transparent progress colour leaves the drawing as it is).
+  destroyWaves();
+  const t = state.current, w = state.wave, pal = wavePalette();
+  fill(waveStack, h("span", { class: "wlabel", style: `color:${pal.solid || pal.bands[0]}` }, "FULL"), waveBox);
+  if (!w) { waveBox.replaceChildren(h("div", { class: "wave-empty" }, t?.analysed_at ? "Loading waveform…" : "Waveform appears after analysis")); return; }
+  waveBox.replaceChildren(); overviewBox.replaceChildren();
   state.bands = wavePeaks(w);
-  const N = state.bands[0].length;
-  const index = Float32Array.from({ length: N }, (_, i) => i / Math.max(1, N - 1));
-  const bands = { renderFunction: drawBands, waveColor: cssVar("--wave-low"), progressColor: "rgba(0,0,0,0)" };
+  const positions = (n) => Float32Array.from({ length: n }, (_, i) => i / Math.max(1, n - 1));
+  // The played part is dimmed, like the deck (the progress layer is the drawing filled in 50 % black).
+  const base = (renderFunction, height) => ({ media: player, duration: w.duration, renderFunction, waveColor: "#888888", progressColor: "rgba(0,0,0,0.5)",
+    height, minPxPerSec: state.zoom, autoScroll: true, autoCenter: true, hideScrollbar: true, dragToSeek: true, normalize: false,
+    cursorColor: PLAYHEAD, cursorWidth: 2 });
+  const full = (ch, ctx) => drawWave(ch[0], ctx, state.bands, pal);
   state.regions = WaveSurfer.Regions.create();
-  state.ws = WaveSurfer.create({
-    container: waveBox, media: player, peaks: [index], duration: w.duration, ...bands,
-    height: compact ? 96 : 128, minPxPerSec: state.zoom, autoScroll: true, autoCenter: true, hideScrollbar: true,
-    dragToSeek: true, normalize: false, cursorColor: PLAYHEAD, cursorWidth: 2,
-    plugins: [state.regions, WaveSurfer.Minimap.create({ height: compact ? 34 : 42, ...bands, dragToSeek: true,
-      cursorColor: PLAYHEAD, overlayColor: "rgba(128,128,128,.22)" })],
-  });
+  state.ws = WaveSurfer.create({ container: waveBox, peaks: [positions(state.bands[0].length)], ...base(full, 104),
+    plugins: [state.regions, WaveSurfer.Minimap.create({ container: overviewBox, height: 26, renderFunction: full, waveColor: "#888888", progressColor: "rgba(0,0,0,0.5)",
+      dragToSeek: true, cursorColor: PLAYHEAD, overlayColor: "rgba(255,255,255,.12)" })] });
   state.ws.on("ready", syncMarkers);
+  const overviewRow = () => waveStack.append(h("span", { class: "wlabel", style: "color:#8a8a90" }, "OVERVIEW"), overviewBox);
+  if (!state.stemPeaks) return overviewRow();
+  for (const name of STEM_ORDER) {
+    const peaks = state.stemPeaks[name];
+    if (!peaks) continue;
+    const box = h("div", { class: "waves" });
+    waveStack.append(h("span", { class: "wlabel", style: `color:${STEM_COLORS[name]}` }, STEM_LABEL[name]), box);
+    const sp = { bars: pal.bars, solid: STEM_COLORS[name] };
+    state.stemWs.push(WaveSurfer.create({ container: box, peaks: [positions(peaks.length)], ...base((ch, ctx) => drawWave(ch[0], ctx, [peaks], sp), 38) }));
+  }
+  overviewRow();
 }
 function zoomWave(f) {
   state.zoom = Math.max(25, Math.min(800, state.zoom * f));
-  try { state.ws?.zoom(state.zoom); } catch {}
+  for (const w of [state.ws, ...(state.stemWs || [])]) { try { w?.zoom(state.zoom); } catch {} }
 }
 
-// Beat grid (thin beats, solid downbeats), then hot cues (A-H) and memory cues (M) on top.
+// Beat grid (faint beats, solid downbeats, bar numbers every 8 bars), then hot cues (A-H) and
+// memory cues (M). The waveform panel is always dark, so the lines are light.
 function syncMarkers() {
   const t = state.current, g = effectiveGrid(t), reg = state.regions;
   if (!reg || !state.wave) return;
   reg.clearRegions();
   if (g && g.period_ms > 0) {
-    // Lines in the text colour (light on dark, dark on light), over the coloured waveform:
-    // downbeats strong, other beats faint, so a nudge can be lined up with the kicks.
-    const ink = cssVar("--ink"), bg = withAlpha(ink, 0.7), beat = withAlpha(ink, 0.22);
+    const down = "rgba(242,242,242,0.55)", beat = "rgba(242,242,242,0.16)";
     const beats = Math.floor((g.duration_ms - g.first_beat_ms) / g.period_ms) + 1;
     const everyBeat = beats < 3000;           // very long files (mixes): downbeats only
+    let bar = 0;
     for (let k = 0; k < beats; k++) {
       const isDown = ((k - g.downbeat_index) % 4 + 4) % 4 === 0;
+      if (isDown) bar++;
       if (!isDown && !everyBeat) continue;
-      reg.addRegion({ start: (g.first_beat_ms + k * g.period_ms) / 1000, color: isDown ? bg : beat, drag: false, resize: false });
+      const label = isDown && bar % 8 === 1 ? h("span", { style: "font:600 10px var(--f-text);color:#b6b6bb;padding:0 3px" }, String(bar)) : undefined;
+      reg.addRegion({ start: (g.first_beat_ms + k * g.period_ms) / 1000, color: isDown ? down : beat, content: label, drag: false, resize: false });
     }
   }
   for (const c of t.cues) {
     // The waveform lives in a shadow root, so the label is styled inline.
-    const col = c.slot ? CUE_COLORS[c.slot - 1] : cssVar("--ink");
-    const label = h("span", { style: `display:inline-block;font:600 11px var(--f-text);padding:0 4px;border-radius:0 2px 2px 0;` +
-      `background:${col};color:${c.slot ? "#111112" : cssVar("--panel")}` }, c.slot ? PAD[c.slot - 1] : "M");
+    const col = c.slot ? CUE_COLORS[c.slot - 1] : "#f2f2f2";
+    const label = h("span", { style: `display:inline-block;font:600 11px var(--f-text);padding:0 4px;border-radius:0 2px 2px 0;background:${col};color:#111112` },
+      c.slot ? PAD[c.slot - 1] : "M");
     reg.addRegion({ start: c.start_ms / 1000, color: col, content: label, drag: false, resize: false });
   }
 }
+
+// Settings: waveform theme and style, with a preview drawn the same way as the real waveform.
+function drawWavePreview() {
+  const cv = $("#wavePreview"), N = 420, dpr = devicePixelRatio || 1;
+  if (cv.clientWidth) { cv.width = Math.round(cv.clientWidth * dpr); cv.height = Math.round(cv.clientHeight * dpr); }  // real pixels, so bars match the waveform
+  const ctx = cv.getContext("2d");
+  const env = (t) => (t < 0.15 ? 0.4 : t < 0.3 ? 0.62 : t < 0.55 ? 0.95 : t < 0.68 ? 0.38 : t < 0.9 ? 0.97 : 0.45);
+  const wob = (i, s) => 0.55 + 0.45 * Math.abs(Math.sin(i * 0.9 + s) * Math.cos(i * 0.23 + s * 2));
+  const bands = [0, 1, 2].map((q) => Float32Array.from({ length: N }, (_, i) => env(i / N) * wob(i, q * 1.7) * [1, 0.7, 0.35][q]));
+  ctx.fillStyle = "#0b0b0d"; ctx.fillRect(0, 0, cv.width, cv.height);
+  drawWave(Float32Array.from({ length: N }, (_, i) => i / (N - 1)), ctx, bands, wavePalette());
+}
+function initWaveSettings() {
+  fill($("#waveTheme"), Object.entries(WAVE_THEMES).map(([k, v]) => h("option", { value: k, selected: k === waveTheme }, v.name)));
+  fill($("#waveStyle"), Object.entries(WAVE_STYLES).map(([k, v]) => h("option", { value: k, selected: k === waveStyle }, v.name)));
+  const apply = () => {
+    waveTheme = $("#waveTheme").value; waveStyle = $("#waveStyle").value;
+    try { localStorage.setItem("waveTheme", waveTheme); localStorage.setItem("waveStyle", waveStyle); } catch {}
+    drawWavePreview();
+    if (state.current) { buildWaves(); renderDetail(); }
+  };
+  $("#waveTheme").addEventListener("change", apply);
+  $("#waveStyle").addEventListener("change", apply);
+  drawWavePreview();
+  addEventListener("resize", () => { if ($("#view-settings").classList.contains("active")) drawWavePreview(); });
+}
+initWaveSettings();
 
 // ── Jobs ─────────────────────────────────────────────────────────────────────
 let pollTimer = null, lastActive = 0;
@@ -866,14 +1004,11 @@ async function pollJobs() {
   const active = state.jobs.filter(isActive);
   const running = active.filter((j) => j.status === "running");
   $("#jobsDot").classList.toggle("busy", active.length > 0);
-  $("#jobsLabel").textContent = !active.length ? "No jobs"
+  $("#jobsLabel").textContent = active.length ? String(active.length) : "";
+  $("#jobsBtn").title = !active.length ? "No jobs running"
     : [running.length ? `${running.length} running` : null, active.length - running.length ? `${active.length - running.length} queued` : null].filter(Boolean).join(" · ");
-  const r0 = running[0];
-  $("#statusJobs").textContent = r0 ? `${r0.title} · ${Math.round(r0.progress * 100)}%${active.length > 1 ? ` (+${active.length - 1} more)` : ""}`
-    : active.length ? `${plural(active.length, "job")} queued` : "No background jobs";
   if (!$("#jobsPanel").hidden) renderJobs();
   renderInlineJobs();
-  renderDockJobs();
   updateStatusCells();
   if (lastActive && active.length < lastActive) {     // something finished
     loadTracks();
@@ -886,7 +1021,7 @@ async function pollJobs() {
 }
 // Stem progress of the open track, without re-rendering the whole workspace (keeps edits in fields).
 function renderStemProgress() {
-  const j = jobFor(state.current.id, "stems"), bar = $("#detail .d-stems .progress > i"), lbl = $("#detail .d-stems .stems-row .muted");
+  const j = jobFor(state.current.id, "stems"), bar = $("#detail .tp-stems .progress > i"), lbl = $("#detail .tp-stems .stem-state");
   if (!j || j.status !== "running") return;
   if (bar) bar.style.width = `${j.progress * 100}%`;
   if (lbl) lbl.textContent = `Making… ${Math.round(j.progress * 100)}%`;
@@ -936,31 +1071,6 @@ function toggleJobs(show = $("#jobsPanel").hidden) {
 $("#jobsBtn").addEventListener("click", () => toggleJobs());
 $("#closeJobs").addEventListener("click", () => toggleJobs(false));
 $("#clearJobs").addEventListener("click", () => api("/api/jobs/clear", { body: {} }).then(pollJobs));
-
-// ── Dock (Library view): device, export summary, jobs ──────────────────────────
-const jobLabel = (j) => ({ queued: "Queued", running: `${Math.round(j.progress * 100)}%`, done: "Done", failed: "Failed", cancelled: "Cancelled" }[j.status]);
-function renderDockJobs() {
-  const box = $("#dockJobs");
-  const list = [...state.jobs.filter(isActive), ...state.jobs.filter((j) => !isActive(j))].slice(0, 6);
-  fill(box, list.length ? list.map((j) => h("div", { class: `dj ${j.status}`, title: j.message || j.title },
-      h("div", { class: "dj-row" }, h("span", { class: `dot ${j.status === "running" ? "busy" : j.status === "done" ? "ok" : j.status === "failed" ? "bad" : ""}` }),
-        h("span", { class: "dj-t" }, j.title), h("span", { class: `pill ${j.status}` }, jobLabel(j))),
-      j.status === "running" ? h("div", { class: "progress" }, h("i", { style: `width:${j.progress * 100}%` })) : null,
-      j.status === "failed" && j.message ? h("div", { class: "dj-msg" }, j.message) : null))
-    : h("div", { class: "dock-note" }, "Nothing running."));
-}
-function renderDockExport() {
-  const d = exp.drives.find((x) => x.root === exp.root);
-  const n = +$("#allCount").textContent || 0, stems = state.playlist === 0 ? state.tracks.filter((t) => t.stems === "done").length : null;
-  fill($("#dockExport"), h("div", {}, `Library: ${plural(n, "track")}` + (stems != null ? `, ${stems} with stems` : "")),
-    h("div", {}, d ? `Card: ${driveName(d)}` : "Card: choose it in Export"));
-}
-$("#dockStems").addEventListener("change", () => { $("#includeStems").checked = $("#dockStems").checked; updatePlan(); });
-$("#includeStems").addEventListener("change", () => { $("#dockStems").checked = $("#includeStems").checked; });
-$("#dockExportBtn").addEventListener("click", () => showView("export"));
-$("#dockFirmware").addEventListener("click", () => showView("deck"));
-$("#dockDeckCheck").addEventListener("click", () => checkDeck());
-$("#dockClear").addEventListener("click", () => api("/api/jobs/clear", { body: {} }).then(pollJobs));
 
 // ── Export view ──────────────────────────────────────────────────────────────
 const exp = { root: null, drives: [], plan: null };
@@ -1077,13 +1187,9 @@ function renderDeckPill() {
   const s = state.deck, ok = !!s?.reachable;
   const f = s?.firmware || {}, ver = f.version || f.app_version;
   $("#deckDot").className = "dot" + (s ? (ok ? " ok" : "") : " busy");
-  $("#deckPillLabel").textContent = !s ? "DECK001 · checking" : ok ? `DECK001 · connected${ver ? " · " + ver : ""}` : "DECK001 · not connected";
-  $("#statusDeck").replaceChildren(h("span", { class: "dot" + (ok ? " ok" : "") }), !s ? "DECK001 …" : ok ? "DECK001 connected" : "DECK001 offline");
-  fill($("#dockDeckState"), h("span", { class: "dot" + (s ? (ok ? " ok" : "") : " busy") }), !s ? "Checking" : ok ? "Connected" : "Not connected");
-  fill($("#dockDeck"),
-    h("div", { class: "dev-id" + (ok ? " ok" : "") }, h("span", { class: "glyph", "aria-hidden": "true" }),
-      h("div", {}, h("b", {}, "DECK001"), h("div", { class: "muted" }, ok ? `Firmware ${ver || "?"}` : "Firmware unknown until connected"))),
-    h("div", { class: "dock-note" }, s?.address || ""));
+  $("#deckPillLabel").textContent = !s ? "Checking" : ok ? `Connected${ver ? " · " + ver : ""}` : "Not connected";
+  $("#deckPill").classList.toggle("ok", ok);
+  $("#deckPill").title = `DECK001 ${!s ? "checking" : ok ? "connected" : "not connected"}${s?.address ? " at " + s.address : ""} (opens Deck)`;
 }
 async function loadDeck() {
   const box = $("#deckStatus");
@@ -1148,7 +1254,6 @@ function renderSystem() {
   $("#system").replaceChildren(h("span", { class: "k" }, "Application"), h("span", {}, `DKPRP ${s.version || ""}`),
     h("span", { class: "k" }, "Device"), h("span", {}, "DECK001"),
     h("span", { class: "k" }, "Library and stems"), h("span", {}, s.data_dir || ""));
-  $("#statusVersion").textContent = s.version ? `DKPRP ${s.version}` : "";
 }
 $("#settingsForm").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1186,7 +1291,6 @@ addEventListener("keydown", (e) => {
     e.preventDefault();
     gridNudge((e.code === "BracketLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1));
   }
-  if (state.current && (e.key === "e" || e.key === "E")) toggleEditor();
 });
 
 async function refreshAll() { await loadPlaylists(); await loadTracks(); if (state.current) openTrack(state.current.id); }
