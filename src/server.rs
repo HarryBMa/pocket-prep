@@ -29,7 +29,7 @@ pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 struct Ui;
 
 const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
-    rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork";
+    rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -155,6 +155,8 @@ async fn get_track(P(tid): P<i64>) -> R {
         t.insert("phrases".into(), a.as_ref().map(|a| a["phrases"].clone()).unwrap_or(Value::Null));
         // Phrase sections (intro, build, drop...) for the phrase strip under the waveform.
         t.insert("sections".into(), a.as_ref().map(|a| a["sections"].clone()).unwrap_or(json!([])));
+        // The grid as the deck will get it: the analysis grid plus the user's nudge.
+        let a = a.map(|a| analysis::user_grid(&a, &t));
         t.insert("grid".into(), a.as_ref().map(|a| json!({
             "bpm": a["bpm"], "first_beat_ms": a["first_beat_ms"], "period_ms": a["period_ms"],
             "downbeat_index": a["downbeat_index"], "duration_ms": a["duration_ms"]})).unwrap_or(Value::Null));
