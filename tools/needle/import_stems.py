@@ -179,19 +179,30 @@ def zipstems_songs(zip_paths):
       percussion -> drums, everything that isn't vocals, bass or drums -> other.
     - SDXDB23 (bleeding / label noise): <song>/{bass,drums,other,vocals}.wav."""
     import io
+    import posixpath
     import zipfile
     for zp in zip_paths:
         z = zipfile.ZipFile(zp)
+        entries = z.namelist()
+        wavs = [n for n in entries if n.lower().endswith(".wav")]
+        # A song folder holds MoisesDB's data.json; without any (SDX) it's the folder of the wavs.
+        roots = sorted({posixpath.dirname(n) for n in entries if n.endswith("data.json")}) or \
+            sorted({posixpath.dirname(n) for n in wavs})
         songs = {}
-        for n in z.namelist():
-            parts = n.split("/")
-            if n.lower().endswith(".wav") and len(parts) >= 3:
-                songs.setdefault(parts[1], []).append(n)
-        for song, files in sorted(songs.items()):
+        for n in wavs:
+            root = next((r for r in roots if n.startswith(r + "/")), None)
+            if root is not None:
+                songs.setdefault(root, []).append(n)
+        for root, files in sorted(songs.items()):
+            song = posixpath.basename(root)
+            if len(files) > 60:                       # a layout we don't understand: never sum a whole dataset
+                yield song, song, [], (lambda: []), f"{zp}::{root} ({len(files)} files: unexpected layout)"
+                continue
             # the stem's name: its folder inside the song (MoisesDB), or the file name (SDX)
-            names = [f.split("/")[2] if len(f.split("/")) > 3 else f.split("/")[-1][:-4] for f in files]
+            rel = [f[len(root) + 1:] for f in files]
+            names = [r.split("/")[0] if "/" in r else r[:-4] for r in rel]
             load = (lambda files=files, z=z: [read_audio(io.BytesIO(z.read(f)), dtype="float32") for f in files])
-            yield song, song, names, load, f"{zp}::{song}"
+            yield song, song, names, load, f"{zp}::{root}"
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -219,7 +230,10 @@ def main():
         if norm(title) in skip_titles:
             report.append((sid, "skipped: also in MUSDB18", names, cats))
             continue
-        if not names or None in cats:
+        if not names:
+            report.append((sid, f"skipped: no usable stems in {src}", names, cats))
+            continue
+        if None in cats:
             report.append((sid, "skipped: ambiguous stem " + ", ".join(n for n, c in zip(names, cats) if c is None), names, cats))
             continue
         usable += 1

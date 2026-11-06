@@ -80,29 +80,33 @@ Two virtual environments, because TensorFlow 2.18 needs an older numpy than the 
 
 `.venv` trains, distills and evaluates float models (GPU); `.venv-export` exports and evaluates TFLite models (CPU).
 
-### Data (outside the repository, never committed)
+### Data (in F:\needle\data, outside the repository, never committed)
 - MUSDB18-HQ (https://zenodo.org/records/3338373, non-commercial research licence) unzipped to
-  `E:\needle-data\musdb18hq` (`train\`, `test\`). 86 training tracks, 14 validation tracks (musdb's
+  `F:\needle\data\musdb18hq` (`train\`, `test\`). 86 training tracks, 14 validation tracks (musdb's
   official split, taken from the training set), 50 test tracks (only for the final numbers).
-- Teacher stems: `E:\needle-data\teacher` (your music) and `E:\needle-data\teacher_musdb_test` (baseline, listening set).
+- Teacher stems: `F:\needle\data\teacher` (your music) and `F:\needle\data\teacher_musdb_test` (baseline, listening set).
+- Real stems (import_stems.py, same layout as teacher stems) in `F:\needle\data\stems\<source>`:
+  NI free Stems, mshoxxDB, sample-pack construction kits and loops, MoisesDB; held-out test sets in
+  `*_test` folders (never trained on). Deliberately imperfect sets (SDXDB23 bleeding / label noise)
+  in `F:\needle\data\stems_noisy\` so they never mix into a clean run by accident.
 
 ### Commands
     # teacher stems (htdemucs_ft on the GPU; resumable, failures in <out>\failed.tsv)
-    .venv\Scripts\python distill.py --musdb E:\needle-data\musdb18hq --subset test --out E:\needle-data\teacher_musdb_test
-    .venv\Scripts\python distill.py --input "<music folder>" --out E:\needle-data\teacher
+    .venv\Scripts\python distill.py --musdb F:\needle\data\musdb18hq --subset test --out F:\needle\data\teacher_musdb_test
+    .venv\Scripts\python distill.py --input "<music folder>" --out F:\needle\data\teacher
 
     # train (writes runs\<name>\best.pt, last.pt, log.csv, val.csv, TensorBoard events)
-    .venv\Scripts\python train.py --musdb E:\needle-data\musdb18hq --base 16 --frames 32 --name b16_f32
-    .venv\Scripts\python train.py ... --teacher E:\needle-data\teacher --teacher-share 0.5 --name b16_f32_kd
+    .venv\Scripts\python train.py --musdb F:\needle\data\musdb18hq --base 16 --frames 32 --name b16_f32
+    .venv\Scripts\python train.py ... --teacher F:\needle\data\teacher --teacher-share 0.5 --name b16_f32_kd
     .venv\Scripts\python train.py ... --name b16_f32 --resume           # continue a stopped run
     .venv\Scripts\tensorboard --logdir runs                             # loss and validation curves
 
     # float SDR on the 50 test tracks, and the teacher baseline
-    .venv\Scripts\python eval.py --checkpoint runs\b16_f32\best.pt --musdb E:\needle-data\musdb18hq
-    .venv\Scripts\python eval.py --estimates E:\needle-data\teacher_musdb_test --name htdemucs_ft --musdb E:\needle-data\musdb18hq
+    .venv\Scripts\python eval.py --checkpoint runs\b16_f32\best.pt --musdb F:\needle\data\musdb18hq
+    .venv\Scripts\python eval.py --estimates F:\needle\data\teacher_musdb_test --name htdemucs_ft --musdb F:\needle\data\musdb18hq
 
     # quantise (calibrated on training mixtures, never test), compile with Vela, then int8/int16 SDR
     .venv-export\Scripts\python export_vela.py --checkpoint runs\b16_f32\best.pt --frames 32 --out build\b16_f32 `
-        --audio E:\needle-data\musdb18hq\train --audio-glob "*/mixture.wav"
+        --audio F:\needle\data\musdb18hq\train --audio-glob "*/mixture.wav"
     .venv-export\Scripts\python eval_tflite.py --tflite build\b16_f32\needle_b16_f32\needle_int8.tflite `
-        --musdb E:\needle-data\musdb18hq --float results\b16_f32_test.json
+        --musdb F:\needle\data\musdb18hq --float results\b16_f32_test.json
