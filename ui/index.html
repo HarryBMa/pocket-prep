@@ -24,6 +24,11 @@
     <symbol id="i-pause" viewBox="0 0 20 20"><path d="M6 4h3v12H6zM11 4h3v12h-3z" fill="currentColor"/></symbol>
     <symbol id="i-x" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5 5 15"/></symbol>
     <symbol id="i-folder" viewBox="0 0 20 20"><path d="M2.5 5.5h5l1.5 2h8.5v8h-15z"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 20 20"><path d="M5 4v12" /><path d="M16 4 7 10l9 6z" fill="currentColor"/></symbol>
+    <symbol id="i-next" viewBox="0 0 20 20"><path d="M15 4v12" /><path d="M4 4l9 6-9 6z" fill="currentColor"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 20 20"><rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 20 20"><path d="M3.5 8v4h3l4 3.5v-11l-4 3.5z"/><path d="M13.5 7.5a3.5 3.5 0 0 1 0 5M15.5 5.5a6.5 6.5 0 0 1 0 9"/></symbol>
+    <symbol id="i-check" viewBox="0 0 20 20"><path d="M4.5 10.5l3.5 3.5 7.5-8"/></symbol>
     <symbol id="i-list" viewBox="0 0 20 20"><path d="M3 5h2M3 10h2M3 15h2M8 5h9M8 10h9M8 15h9"/></symbol>
   </defs>
 </svg>
@@ -100,6 +105,34 @@
           </div>
         </div>
       </div>
+
+      <!-- The DECK001 at a glance: device, what an export takes, background jobs. -->
+      <aside class="dock" aria-label="DECK001 overview">
+        <section class="dock-card">
+          <div class="dock-head"><svg class="ic sm"><use href="#i-deck"/></svg><b>Device</b><span class="spacer"></span><span id="dockDeckState" class="dev-state"></span></div>
+          <div id="dockDeck" class="dock-device"></div>
+          <div class="dock-btns">
+            <button class="ghost small" id="dockDeckCheck">Check again</button>
+            <button class="ghost small" id="dockFirmware">Update firmware…</button>
+          </div>
+        </section>
+        <section class="dock-card">
+          <div class="dock-head"><svg class="ic sm"><use href="#i-export"/></svg><b>Export to device</b></div>
+          <ul class="incl">
+            <li><svg class="ic sm"><use href="#i-check"/></svg>Tracks, copied as they are</li>
+            <li><svg class="ic sm"><use href="#i-check"/></svg>Hot cues and memory cues</li>
+            <li><svg class="ic sm"><use href="#i-check"/></svg>Beat grids and waveforms</li>
+            <li><svg class="ic sm"><use href="#i-check"/></svg>Phrases, key and energy</li>
+          </ul>
+          <label class="check"><input type="checkbox" id="dockStems" checked> Stems (where made)</label>
+          <div id="dockExport" class="dock-note"></div>
+          <button class="primary wide-btn" id="dockExportBtn">Export to DECK001…</button>
+        </section>
+        <section class="dock-card dock-jobs">
+          <div class="dock-head"><svg class="ic sm"><use href="#i-jobs"/></svg><b>Jobs</b><span class="spacer"></span><button class="ghost small" id="dockClear">Clear finished</button></div>
+          <div id="dockJobs"></div>
+        </section>
+      </aside>
     </section>
 
     <!-- EXPORT -->

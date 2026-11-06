@@ -47,6 +47,8 @@ const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 const COLORS = ["", "#e85d9c", "#e5484d", "#f08c3c", "#e6c84a", "#46a758", "#3fb8c4", "#3e7bd6", "#8e4ec6"];
 const COLOR_NAMES = ["None", "Pink", "Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple"];
 const PAD = "ABCDEFGH";
+// Hot cue colours A-H (pads and waveform markers). Display only: the card doesn't store cue colours.
+const CUE_COLORS = ["#f0574c", "#f08c3c", "#e6c84a", "#46a758", "#3fb8c4", "#3e7bd6", "#8e4ec6", "#e85d9c"];
 
 const state = { tracks: [], view: [], selected: new Set(), anchor: null, playlist: 0, playlists: [], open: new Set(),
                 current: null, wave: null, jobs: [], lastUndo: null, settings: {}, system: {},
@@ -225,6 +227,7 @@ function stemPill(t) {
 }
 function renderTracks() {
   const body = $("#tracks tbody");
+  const focusedId = body.contains(document.activeElement) ? document.activeElement.dataset?.id : null;   // keep keyboard focus across re-renders
   const vis = visibleTracks();
   state.view = vis.map((x) => x.t);
   const reorderOk = canReorder();
@@ -259,6 +262,7 @@ function renderTracks() {
   body.replaceChildren(...rows);
   // Keyboard focus lands on the anchor row (or the first), arrow keys move from there.
   (body.querySelector(`tr[data-id="${state.anchor}"]`) || body.firstElementChild)?.setAttribute("tabindex", "0");
+  if (focusedId) body.querySelector(`tr[data-id="${focusedId}"]`)?.focus({ preventScroll: true });
   const libEmpty = state.tracks.length === 0 && !$("#search").value && state.playlist === 0;
   $("#empty").hidden = !state.loaded || !libEmpty;
   const note = $("#tableNote");
@@ -269,6 +273,7 @@ function renderTracks() {
   $$("#tracks thead th[data-sort]").forEach((th) => th.setAttribute("aria-sort", state.sort?.key === th.dataset.sort ? (state.sort.dir > 0 ? "ascending" : "descending") : "none"));
   renderContext();
   renderLibStatus();
+  renderDockExport();
 }
 // Status cells refresh in place on each jobs poll, so dragging and hovering aren't disturbed.
 function updateStatusCells() {
@@ -479,12 +484,14 @@ function renderDetail() {
   const rating = h("select", {}, [0, 1, 2, 3, 4, 5].map((r) => h("option", { value: r, selected: (t.rating || 0) === r }, r ? "★".repeat(r) : "No rating")));
   rating.addEventListener("change", () => saveField("rating", +rating.value));
 
-  // Hot cues A-H: click jumps (or sets at the playhead when empty), right-click or × clears.
-  const pads = h("div", { class: "pads" }, [...PAD].map((letter, i) => {
+  // Hot cues A-H, each with its own colour (as on the waveform): click jumps, or sets at the
+  // playhead when empty; right-click or × clears. Colours are a DKPRP display aid only.
+  const pads = h("div", { class: "pads", role: "group", "aria-label": "Hot cues (keys 1 to 8)" }, [...PAD].map((letter, i) => {
     const cue = t.cues.find((c) => c.slot === i + 1);
-    const pad = h("button", { class: "pad" + (cue ? " set" : ""), title: cue ? `Jump to ${letter} (key ${i + 1}; right-click to clear)` : `Set ${letter} at the playhead (key ${i + 1})`,
+    const pad = h("button", { class: "pad" + (cue ? " set" : ""), style: `--cue:${CUE_COLORS[i]}`,
+                              title: cue ? `Jump to ${letter} (key ${i + 1}; right-click to clear)` : `Set ${letter} at the playhead (key ${i + 1})`,
                               "aria-label": cue ? `Hot cue ${letter} at ${fmtMs(cue.start_ms)}` : `Set hot cue ${letter}` },
-      letter, h("small", {}, cue ? (cue.label || fmtMs(cue.start_ms)) : "empty"), cue ? h("span", { class: "x", title: "Clear" }, "×") : null);
+      h("b", {}, letter), h("small", {}, cue ? (cue.label || fmtMs(cue.start_ms)) : "–"), cue ? h("span", { class: "x", title: "Clear" }, "×") : null);
     pad.addEventListener("click", (e) => {
       if (cue && !e.target.classList.contains("x")) { player.currentTime = cue.start_ms / 1000; return; }
       setCue(i + 1, cue && e.target.classList.contains("x") ? null : player.currentTime * 1000).catch(fail);
@@ -515,34 +522,61 @@ function renderDetail() {
     if (running) stemRow.append(h("div", { class: "progress", style: "width:100%" }, h("i", { style: `width:${sj.progress * 100}%` })));
   }
 
-  const ph = t.phrases;
+  // Transport: play, previous/next track, position, preview tempo (±8 %, key lock), volume, zoom.
   const playing = !player.paused;
+  const seek = h("input", { type: "range", class: "seek", id: "seek", min: 0, max: t.duration || 0, step: 0.1, value: player.currentTime || 0, "aria-label": "Position" });
+  seek.addEventListener("input", () => { state.seeking = true; player.currentTime = +seek.value; });
+  seek.addEventListener("change", () => { state.seeking = false; });
+  const vol = h("input", { type: "range", class: "vol", min: 0, max: 1, step: 0.01, value: state.volume, "aria-label": "Preview volume" });
+  vol.addEventListener("input", () => { state.volume = +vol.value; player.volume = state.volume; try { localStorage.setItem("volume", vol.value); } catch {} });
+  const tbtn = (label, ic, onclick, extra = {}) => h("button", { class: "ghost icon-btn t-btn", "aria-label": label, title: label, onclick, ...extra }, icon(ic));
+  const transport = h("div", { class: "transport-bar" },
+    h("button", { class: "play-btn", id: "playBtn", onclick: togglePlay, "aria-label": playing ? "Pause (Space)" : "Play (Space)", title: "Play or pause (Space)" }, icon(playing ? "pause" : "play")),
+    tbtn("Previous track (or back to the start)", "prev", () => stepTrack(-1)),
+    tbtn("Next track", "next", () => stepTrack(1)),
+    h("span", { class: "time", id: "timeLabel" }, `${fmtTime(player.currentTime || 0)} / ${fmtTime(t.duration)}`),
+    seek,
+    h("span", { class: "t-group", role: "group", "aria-label": "Preview tempo" },
+      h("button", { class: "ghost small", "aria-label": "Tempo down 0.5%", title: "Tempo down", onclick: () => setTempo((state.tempo || 0) - 0.5) }, "−"),
+      h("button", { class: "ghost small tempo", id: "tempoLabel", title: "Preview tempo (click to reset). Playback only: nothing is saved.", onclick: () => setTempo(0) }, fmtTempo()),
+      h("button", { class: "ghost small", "aria-label": "Tempo up 0.5%", title: "Tempo up", onclick: () => setTempo((state.tempo || 0) + 0.5) }, "+")),
+    tbtn(state.keyLock ? "Key lock on" : "Key lock off", "lock", () => { state.keyLock = !state.keyLock; applyRate(); renderDetail(); },
+         { "aria-pressed": String(!!state.keyLock), class: "ghost icon-btn t-btn" + (state.keyLock ? " on" : "") }),
+    h("span", { class: "t-vol" }, icon("volume", "ic sm"), vol),
+    h("span", { class: "spacer" }),
+    h("span", { class: "legend", "aria-label": "Waveform colours" },
+      h("i", { style: "background:var(--wave-low)" }), "Low", h("i", { style: "background:var(--wave-mid)" }), "Mid", h("i", { style: "background:var(--wave-high)" }), "High"),
+    h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
+      h("button", { class: "ghost small", "aria-label": "Zoom out", title: "Zoom out", onclick: () => zoomWave(0.5) }, "−"),
+      h("button", { class: "ghost small", "aria-label": "Zoom in", title: "Zoom in", onclick: () => zoomWave(2) }, "+")),
+    h("button", { class: "ghost small", "aria-expanded": String(!state.editorHidden), "aria-controls": "dRow", onclick: toggleEditor,
+                  title: "Show or hide memory cues, tags and stems (E)" }, state.editorHidden ? "Show editor" : "Hide editor"));
+
+  const ph = t.phrases;
   fill(d,
     h("div", { class: "d-head" },
-      t.has_artwork ? h("img", { class: "d-art", src: `/api/tracks/${t.id}/artwork`, alt: "" }) : h("div", { class: "d-art" }),
-      h("div", { class: "d-id" }, h("div", { class: "d-title", title: t.path }, t.title || ""),
-        h("div", { class: "d-meta" }, [t.artist || "Unknown artist", t.album, t.genre].filter(Boolean).join(" · "))),
-      h("div", { class: "stats" },
-        stat("BPM", t.bpm ? fmtBpm(t.bpm) : null), stat("Key", t.camelot ? `${t.camelot} ${t.musical_key || ""}` : null),
-        stat("Energy", t.energy != null ? `${t.energy}/10` : null), stat("Length", fmtTime(t.duration))),
+      t.has_artwork ? h("img", { class: "d-art", src: `/api/tracks/${t.id}/artwork`, alt: "" }) : h("div", { class: "d-art", "aria-hidden": "true" }, icon("library")),
+      h("div", { class: "d-id" },
+        h("div", { class: "d-title", title: t.path }, t.title || ""),
+        h("div", { class: "d-meta" }, [t.artist || "Unknown artist", t.album, t.genre].filter(Boolean).join(" · ")),
+        h("div", { class: "stats" },
+          h("div", { class: "stat" }, h("small", {}, "BPM"), h("b", { id: "bpmStat" }, bpmText(t))),
+          stat("Key", t.camelot ? `${t.camelot} ${t.musical_key || ""}` : null),
+          stat("Energy", t.energy != null ? `${t.energy}/10` : null), stat("Length", fmtTime(t.duration)))),
       h("div", { class: "spacer" }),
-      h("div", { class: "transport" },
-        h("button", { class: "play-btn", id: "playBtn", onclick: togglePlay, "aria-label": playing ? "Pause (Space)" : "Play (Space)", title: "Play or pause (Space)" }, icon(playing ? "pause" : "play")),
-        h("span", { class: "time", id: "timeLabel" }, `${fmtTime(player.currentTime || 0)} / ${fmtTime(t.duration)}`),
-        h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
-          h("button", { class: "ghost small", "aria-label": "Zoom out", title: "Zoom out", onclick: () => zoomWave(0.5) }, "−"),
-          h("button", { class: "ghost small", "aria-label": "Zoom in", title: "Zoom in", onclick: () => zoomWave(2) }, "+")),
-        h("button", { class: "ghost small", "aria-expanded": String(!state.editorHidden), "aria-controls": "dRow", onclick: toggleEditor,
-                      title: "Show or hide cues, tags and stems (E)" }, state.editorHidden ? "Show editor" : "Hide editor"),
-        h("button", { class: "ghost small icon-btn", onclick: closeDetail, "aria-label": "Close track", title: "Close" }, icon("x", "ic sm")))),
+      h("div", { class: "d-cues" },
+        h("div", { class: "d-cues-head" }, h("span", {}, "Hot cues"), h("span", { class: "muted" }, "keys 1–8"), h("span", { class: "spacer" }),
+          h("button", { class: "ghost small", onclick: () => addMemory(player.currentTime * 1000).catch(fail), title: "Add a memory cue at the playhead (M)" }, "+ Memory cue")),
+        pads),
+      h("button", { class: "ghost small icon-btn d-close", onclick: closeDetail, "aria-label": "Close track", title: "Close" }, icon("x", "ic sm"))),
     splitSuggestion(t),
     t.deck_problem ? h("div", { class: "warn-line" }, `Won't play on the DECK001: ${t.deck_problem}. It's still exported (CDJs play it).`) : null,
     waveBox,
     phraseStrip(t),
+    transport,
     h("div", { class: "d-row", id: "dRow", hidden: !!state.editorHidden },
       h("div", { class: "d-sec" },
-        h("h3", {}, "Hot cues", h("span", { class: "muted", style: "text-transform:none;letter-spacing:0;font-weight:400" }, "keys 1–8")), pads,
-        h("h3", { style: "margin-top:10px" }, "Memory cues", h("span", { class: "spacer" }),
+        h("h3", {}, "Memory cues", h("span", { class: "spacer" }),
           h("button", { class: "ghost small", onclick: () => addMemory(player.currentTime * 1000).catch(fail), title: "Add at the playhead (M)" }, "+ At playhead")),
         memList),
       h("div", { class: "d-sec" }, h("h3", {}, "Track"),
@@ -567,6 +601,34 @@ function toggleEditor() {
   state.editorHidden = !state.editorHidden;
   try { localStorage.setItem("editorHidden", state.editorHidden ? "1" : "0"); } catch {}
   renderDetail();
+}
+// Preview tempo (playback only, nothing saved): ±8 % like a deck's pitch fader, optional key lock.
+try { state.volume = Math.max(0, Math.min(1, +(localStorage.getItem("volume") ?? 1))); } catch { state.volume = 1; }
+if (!Number.isFinite(state.volume)) state.volume = 1;
+state.keyLock = true; state.tempo = 0;
+const fmtTempo = () => `${state.tempo > 0 ? "+" : state.tempo < 0 ? "−" : "±"}${Math.abs(state.tempo).toFixed(1)}%`;
+const bpmText = (t) => (t.bpm ? fmtBpm(Math.round(t.bpm * (1 + state.tempo / 100) * 100) / 100) : "–");
+function applyRate() {
+  const r = 1 + state.tempo / 100;
+  player.defaultPlaybackRate = r; player.playbackRate = r;
+  player.preservesPitch = !!state.keyLock;
+  player.volume = state.volume;
+}
+function setTempo(v) {
+  state.tempo = Math.max(-8, Math.min(8, Math.round(v * 2) / 2));
+  applyRate();
+  const l = $("#tempoLabel"); if (l) l.textContent = fmtTempo();
+  const b = $("#bpmStat"); if (b && state.current) b.textContent = bpmText(state.current);
+}
+player.addEventListener("loadedmetadata", applyRate);   // a new source resets the rate
+applyRate();
+// Previous goes back to the start first (after 3 s), like a deck; both follow the table's order.
+function stepTrack(dir) {
+  if (dir < 0 && player.currentTime > 3) { player.currentTime = 0; return; }
+  const v = state.view, i = v.findIndex((x) => x.id === state.current?.id), n = v[i + dir];
+  if (!n) return;
+  state.selected = new Set([n.id]); state.anchor = n.id;
+  openTrack(n.id, !player.paused).catch(fail);
 }
 async function saveField(key, value) {
   try {
@@ -625,6 +687,7 @@ player.addEventListener("pause", setPlayIcon);
 player.addEventListener("timeupdate", () => {
   const l = $("#timeLabel");
   if (l && state.current) l.textContent = `${fmtTime(player.currentTime)} / ${fmtTime(state.current.duration)}`;
+  const sk = $("#seek"); if (sk && !state.seeking) sk.value = player.currentTime;
   const c = $("#phraseCursor"), dur = state.current?.duration;
   if (c && dur) c.style.left = `${Math.min(100, (player.currentTime / dur) * 100)}%`;
 });
@@ -651,16 +714,40 @@ function cssVar(n) { return cssCache[n] ??= getComputedStyle(document.documentEl
 const waveBox = h("div", { class: "waves", id: "waves" });
 const withAlpha = (hex, a) => { const m = hex.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i); return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : hex; };
 
-// PWV5 (150 columns per second: height plus a 3-bit bass/mid/high mix) as three layers
-// drawn over each other, rekordbox style: bass colour at full height, mids, then highs.
+// PWV5 (150 columns per second: height plus a 3-bit bass/mid/high mix) as three coloured
+// layers drawn over each other, rekordbox "3 band" style: lows, then mids, then highs on top.
 function wavePeaks(w) {
   const n = w.detail.length / 2, lo = new Float32Array(n), md = new Float32Array(n), hi = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const v = (w.detail[i * 2] << 8) | w.detail[i * 2 + 1];
-    const g = (v >> 10) & 7, b = (v >> 7) & 7, ht = ((v >> 2) & 31) / 31;
-    lo[i] = ht; md[i] = (ht * Math.max(g, b)) / 7; hi[i] = (ht * b) / 7;
+    // Bits: bass 13-15, mids 10-12, highs 7-9 (each 0-7, the loudest band is 7), height 2-6.
+    const r = (v >> 13) & 7, g = (v >> 10) & 7, b = (v >> 7) & 7, ht = ((v >> 2) & 31) / 31;
+    lo[i] = (ht * r) / 7; md[i] = (ht * g) / 7; hi[i] = (ht * b) / 7;
   }
   return [lo, md, hi];
+}
+
+// rekordbox "3 band" drawing: per pixel column, the tallest band is drawn first (behind) and the
+// smallest last, so lows, mids and highs all stay visible wherever they are present.
+// WaveSurfer passes a custom renderer at most two channels (top and bottom halves), so it gets
+// one "channel" holding each column's position (index / (N-1), as WaveSurfer keeps peaks in 0-1),
+// and the bands are read from state.bands at that index.
+// That keeps WaveSurfer's slicing for scrolling, zoom and the minimap.
+function drawBands(channels, ctx) {
+  const idx = channels[0], W = ctx.canvas.width, H = ctx.canvas.height, c = H / 2, n = idx?.length || 0;
+  const [lo, md, hi] = state.bands || [];
+  if (!n || !W || !lo) return;
+  const last = lo.length - 1;
+  const colors = [cssVar("--wave-low"), cssVar("--wave-mid"), cssVar("--wave-high")];
+  const paths = [[new Path2D(), new Path2D(), new Path2D()], [new Path2D(), new Path2D(), new Path2D()], [new Path2D(), new Path2D(), new Path2D()]];
+  for (let x = 0; x < W; x++) {
+    const a = Math.floor((x * n) / W), b = Math.max(a + 1, Math.floor(((x + 1) * n) / W));
+    let v0 = 0, v1 = 0, v2 = 0;
+    for (let k = a; k < b && k < n; k++) { const i = Math.round(idx[k] * last); if (lo[i] > v0) v0 = lo[i]; if (md[i] > v1) v1 = md[i]; if (hi[i] > v2) v2 = hi[i]; }
+    const v = [v0, v1, v2], order = [0, 1, 2].sort((p, q) => v[q] - v[p]);
+    order.forEach((band, rank) => { const hh = Math.max(v[band] * c, 0); if (hh > 0.5) paths[rank][band].rect(x, c - hh, 1, hh * 2); });
+  }
+  for (const rank of [0, 1, 2]) for (const band of [0, 1, 2]) { ctx.fillStyle = colors[band]; ctx.fill(paths[rank][band]); }
 }
 
 function buildWaves() {
@@ -669,13 +756,18 @@ function buildWaves() {
   if (!w) { waveBox.replaceChildren(h("div", { class: "wave-empty muted" }, t?.analysed_at ? "Loading waveform…" : "Waveform appears after analysis")); return; }
   waveBox.replaceChildren();
   const compact = innerHeight < 860;
-  const layers = [cssVar("--wave-low"), cssVar("--wave-mid"), cssVar("--wave-high")].map((c) => ({ waveColor: c, progressColor: c, overlay: true }));
+  // The three bands go in as three "channels" and drawBands paints them. The played part keeps
+  // its colours (a transparent progress colour leaves the drawing as it is).
+  state.bands = wavePeaks(w);
+  const N = state.bands[0].length;
+  const index = Float32Array.from({ length: N }, (_, i) => i / Math.max(1, N - 1));
+  const bands = { renderFunction: drawBands, waveColor: cssVar("--wave-low"), progressColor: "rgba(0,0,0,0)" };
   state.regions = WaveSurfer.Regions.create();
   state.ws = WaveSurfer.create({
-    container: waveBox, media: player, peaks: wavePeaks(w), duration: w.duration,
+    container: waveBox, media: player, peaks: [index], duration: w.duration, ...bands,
     height: compact ? 96 : 128, minPxPerSec: state.zoom, autoScroll: true, autoCenter: true, hideScrollbar: true,
-    dragToSeek: true, normalize: false, splitChannels: layers, cursorColor: cssVar("--ink"), cursorWidth: 2,
-    plugins: [state.regions, WaveSurfer.Minimap.create({ height: compact ? 34 : 42, splitChannels: layers, dragToSeek: true,
+    dragToSeek: true, normalize: false, cursorColor: cssVar("--ink"), cursorWidth: 2,
+    plugins: [state.regions, WaveSurfer.Minimap.create({ height: compact ? 34 : 42, ...bands, dragToSeek: true,
       cursorColor: cssVar("--ink"), overlayColor: "rgba(128,128,128,.22)" })],
   });
   state.ws.on("ready", syncMarkers);
@@ -703,10 +795,10 @@ function syncMarkers() {
   }
   for (const c of t.cues) {
     // The waveform lives in a shadow root, so the label is styled inline.
+    const col = c.slot ? CUE_COLORS[c.slot - 1] : cssVar("--ink");
     const label = h("span", { style: `display:inline-block;font:600 11px var(--f-text);padding:0 4px;border-radius:0 2px 2px 0;` +
-      (c.slot ? `background:${cssVar("--accent")};color:${cssVar("--accent-ink")}` : `background:${cssVar("--ink")};color:${cssVar("--panel")}`) },
-      c.slot ? PAD[c.slot - 1] : "M");
-    reg.addRegion({ start: c.start_ms / 1000, color: c.slot ? cssVar("--accent") : cssVar("--ink"), content: label, drag: false, resize: false });
+      `background:${col};color:${c.slot ? "#111112" : cssVar("--panel")}` }, c.slot ? PAD[c.slot - 1] : "M");
+    reg.addRegion({ start: c.start_ms / 1000, color: col, content: label, drag: false, resize: false });
   }
 }
 
@@ -726,6 +818,7 @@ async function pollJobs() {
     : active.length ? `${plural(active.length, "job")} queued` : "No background jobs";
   if (!$("#jobsPanel").hidden) renderJobs();
   renderInlineJobs();
+  renderDockJobs();
   updateStatusCells();
   if (lastActive && active.length < lastActive) {     // something finished
     loadTracks();
@@ -788,6 +881,31 @@ function toggleJobs(show = $("#jobsPanel").hidden) {
 $("#jobsBtn").addEventListener("click", () => toggleJobs());
 $("#closeJobs").addEventListener("click", () => toggleJobs(false));
 $("#clearJobs").addEventListener("click", () => api("/api/jobs/clear", { body: {} }).then(pollJobs));
+
+// ── Dock (Library view): device, export summary, jobs ──────────────────────────
+const jobLabel = (j) => ({ queued: "Queued", running: `${Math.round(j.progress * 100)}%`, done: "Done", failed: "Failed", cancelled: "Cancelled" }[j.status]);
+function renderDockJobs() {
+  const box = $("#dockJobs");
+  const list = [...state.jobs.filter(isActive), ...state.jobs.filter((j) => !isActive(j))].slice(0, 6);
+  fill(box, list.length ? list.map((j) => h("div", { class: `dj ${j.status}`, title: j.message || j.title },
+      h("div", { class: "dj-row" }, h("span", { class: `dot ${j.status === "running" ? "busy" : j.status === "done" ? "ok" : j.status === "failed" ? "bad" : ""}` }),
+        h("span", { class: "dj-t" }, j.title), h("span", { class: `pill ${j.status}` }, jobLabel(j))),
+      j.status === "running" ? h("div", { class: "progress" }, h("i", { style: `width:${j.progress * 100}%` })) : null,
+      j.status === "failed" && j.message ? h("div", { class: "dj-msg" }, j.message) : null))
+    : h("div", { class: "dock-note" }, "Nothing running."));
+}
+function renderDockExport() {
+  const d = exp.drives.find((x) => x.root === exp.root);
+  const n = +$("#allCount").textContent || 0, stems = state.playlist === 0 ? state.tracks.filter((t) => t.stems === "done").length : null;
+  fill($("#dockExport"), h("div", {}, `Library: ${plural(n, "track")}` + (stems != null ? `, ${stems} with stems` : "")),
+    h("div", {}, d ? `Card: ${driveName(d)}` : "Card: choose it in Export"));
+}
+$("#dockStems").addEventListener("change", () => { $("#includeStems").checked = $("#dockStems").checked; updatePlan(); });
+$("#includeStems").addEventListener("change", () => { $("#dockStems").checked = $("#includeStems").checked; });
+$("#dockExportBtn").addEventListener("click", () => showView("export"));
+$("#dockFirmware").addEventListener("click", () => showView("deck"));
+$("#dockDeckCheck").addEventListener("click", () => checkDeck());
+$("#dockClear").addEventListener("click", () => api("/api/jobs/clear", { body: {} }).then(pollJobs));
 
 // ── Export view ──────────────────────────────────────────────────────────────
 const exp = { root: null, drives: [], plan: null };
@@ -906,6 +1024,11 @@ function renderDeckPill() {
   $("#deckDot").className = "dot" + (s ? (ok ? " ok" : "") : " busy");
   $("#deckPillLabel").textContent = !s ? "DECK001 · checking" : ok ? `DECK001 · connected${ver ? " · " + ver : ""}` : "DECK001 · not connected";
   $("#statusDeck").replaceChildren(h("span", { class: "dot" + (ok ? " ok" : "") }), !s ? "DECK001 …" : ok ? "DECK001 connected" : "DECK001 offline");
+  fill($("#dockDeckState"), h("span", { class: "dot" + (s ? (ok ? " ok" : "") : " busy") }), !s ? "Checking" : ok ? "Connected" : "Not connected");
+  fill($("#dockDeck"),
+    h("div", { class: "dev-id" + (ok ? " ok" : "") }, h("span", { class: "glyph", "aria-hidden": "true" }),
+      h("div", {}, h("b", {}, "DECK001"), h("div", { class: "muted" }, ok ? `Firmware ${ver || "?"}` : "Firmware unknown until connected"))),
+    h("div", { class: "dock-note" }, s?.address || ""));
 }
 async function loadDeck() {
   const box = $("#deckStatus");
