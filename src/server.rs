@@ -29,7 +29,7 @@ pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 struct Ui;
 
 const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
-    rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift";
+    rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -64,7 +64,9 @@ fn ids(v: &Value, key: &str) -> Vec<i64> {
 }
 
 fn track_or_404(tid: i64) -> Result<Row, ApiError> {
-    db::one(&format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE id=?"), &[json!(tid)])?.ok_or_else(|| not_found("No such track"))
+    let mut t = db::one(&format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE id=?"), &[json!(tid)])?.ok_or_else(|| not_found("No such track"))?;
+    analysis::add_shifted_key(&mut t);
+    Ok(t)
 }
 
 // ── Jobs ─────────────────────────────────────────────────────────────────────
@@ -135,6 +137,7 @@ async fn list_tracks(Query(tq): Query<TrackQuery>) -> R {
         } else {
             db::query(&format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE deleted=0 ORDER BY added_at DESC, id DESC"), &[])?
         };
+        tracks.iter_mut().for_each(analysis::add_shifted_key);
         let words: Vec<String> = tq.q.to_lowercase().split_whitespace().map(str::to_string).collect();
         if !words.is_empty() {
             tracks.retain(|t| {

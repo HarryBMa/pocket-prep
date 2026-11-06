@@ -169,6 +169,24 @@ fn waveforms(peak: &[f64], lo: &[f64], mid: &[f64], hi: &[f64]) -> Value {
     json!({"pwav": b64(&pwav), "pwv2": b64(&pwv2), "pwv3": b64(&pwv3), "pwv4": b64(&pwv4), "pwv5": b64(&pwv5)})
 }
 
+/// The key after the track's `key_shift` (semitones): Camelot and name, e.g. ("8B", "Ab"). None when
+/// there is no shift or no key. The deck plays the track shifted; the file and the rekordbox key stay as analysed.
+pub fn shifted_key(camelot: Option<&str>, shift: i64) -> Option<(String, String)> {
+    let k = clubcraft_core::Key::from_camelot(camelot?)?;
+    if shift == 0 {
+        return None;
+    }
+    let s = clubcraft_core::Key::new((k.tonic as i64 + shift).rem_euclid(12) as u8, k.minor);
+    Some((s.camelot(), s.name()))
+}
+
+/// Adds `shifted_camelot` and `shifted_key` to a track row (null without a shift).
+pub fn add_shifted_key(t: &mut crate::db::Row) {
+    let s = shifted_key(t.get("camelot").and_then(Value::as_str), t.get("key_shift").and_then(Value::as_i64).unwrap_or(0));
+    t.insert("shifted_camelot".into(), json!(s.as_ref().map(|s| &s.0)));
+    t.insert("shifted_key".into(), json!(s.as_ref().map(|s| &s.1)));
+}
+
 /// The analysis grid with the user's nudge from the track row applied: `grid_offset_ms` moves
 /// every beat (positive = later), `downbeat_shift` moves the bar start by whole beats (positive =
 /// later). The result is normalised the way the analysis writes it: the first beat in
@@ -325,6 +343,21 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A key shift moves the tonic by semitones and keeps the mode: +3 semitones from C major is Eb major,
+    /// two down from A minor is G minor, 12 is the same key.
+    #[test]
+    fn shifted_keys() {
+        assert_eq!(shifted_key(Some("8B"), 3), Some(("5B".into(), "Eb".into())));
+        assert_eq!(shifted_key(Some("8A"), -2), Some(("6A".into(), "Gm".into())));
+        assert_eq!(shifted_key(Some("5B"), 12), Some(("5B".into(), "Eb".into())));
+        assert_eq!(shifted_key(Some("8B"), 0), None);
+        assert_eq!(shifted_key(None, 3), None);
+        assert_eq!(shifted_key(Some("nonsense"), 3), None);
+        let mut row = json!({"camelot": "8B", "key_shift": 7}).as_object().unwrap().clone();
+        add_shifted_key(&mut row);
+        assert_eq!((row["shifted_camelot"].as_str(), row["shifted_key"].as_str()), (Some("9B"), Some("G")));
+    }
 
     /// The nudge moves every exported beat by the offset, keeps the grid normalised, and shifts
     /// the bar start by whole beats.

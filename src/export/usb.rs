@@ -12,7 +12,7 @@
 //!   POCKETDECK/export.json                 what wrote the stick, when, and any warnings
 //!   POCKETDECK/stems.json                  which stem file belongs to which track
 //!   POCKETDECK/STEMS/xxxxxxxx.flac         8-channel FLAC stems: drums, bass, other, vocals
-//!   POCKETDECK/analysis/xxxxxxxx.json      phrases, energy, key (for autopilot)
+//!   POCKETDECK/analysis/xxxxxxxx.json      phrases, energy, key (for autopilot), key_shift
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Map, Value};
@@ -383,7 +383,9 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
         std::fs::create_dir_all(&extra)?;
         std::fs::write(extra.join(format!("{ext_id}.json")), json!({
             "file_path": audio_path, "bpm": a["bpm"], "key": a["key"], "camelot": a["camelot"],
-            "energy": a["energy"], "phrases": a["phrases"]}).to_string())?;
+            "energy": a["energy"], "phrases": a["phrases"],
+            // Semitones the deck shifts the key by while playing this file (see docs/DECK_KEY_SHIFT.md).
+            "key_shift": t["key_shift"].as_i64().unwrap_or(0)}).to_string())?;
     }
 
     // Name tables
@@ -578,6 +580,19 @@ mod export_tests {
         assert!((after[0].1 as i64 - before[0].1 as i64 - 7).rem_euclid(period) <= 1, "{before:?} -> {after:?}");
         assert!((down(&after) - (down(&before) + 7 + period)).abs() <= 1 || (down(&after) - (down(&before) + 7 + period - 4 * period)).abs() <= 1,
                 "downbeat {} -> {}", down(&before), down(&after));
+
+        // A key shift is a hint for the deck in POCKETDECK/analysis; the rekordbox key stays as analysed.
+        let key_shift = |card: &Path| -> i64 {
+            let f = std::fs::read_dir(card.join("POCKETDECK/analysis")).unwrap().flatten().next().unwrap().path();
+            serde_json::from_slice::<Value>(&std::fs::read(f).unwrap()).unwrap()["key_shift"].as_i64().unwrap()
+        };
+        assert_eq!(key_shift(&card), 0);
+        for bad in [json!(13), json!(-13), json!(1.5), json!("2")] {
+            assert!(db::update_track(tid, &json!({"key_shift": bad}).as_object().unwrap().clone()).is_err(), "{bad}");
+        }
+        db::update_track(tid, &json!({"key_shift": -3}).as_object().unwrap().clone()).unwrap();
+        export_to(&card.to_string_lossy(), None, true, &|_, _| {}, &|| false).unwrap();
+        assert_eq!(key_shift(&card), -3);
 
         // stems.json: keyed by the PDB path, pointing at a decodable 8-channel FLAC of the right length.
         let manifest: Value = serde_json::from_slice(&std::fs::read(card.join("POCKETDECK/stems.json")).unwrap()).unwrap();

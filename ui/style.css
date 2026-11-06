@@ -212,6 +212,7 @@ th.c-col { width: 14px; padding-right: 0; } td.c-col { padding-right: 0; }
 #tracks th:nth-child(11) { width: 96px; } #tracks th:nth-child(12) { width: 96px; }
 .swatch { display: inline-block; width: 4px; height: 18px; border-radius: 1px; vertical-align: middle; }
 .key { font-variant-numeric: tabular-nums; } .key b { font-weight: 600; } .key span { color: var(--ink-3); margin-left: 4px; }
+.key .shift-tag { font-size: 11px; color: var(--accent-text); }
 .meter { display: inline-flex; align-items: center; gap: 6px; width: 100%; }
 .meter i { flex: 1; height: 4px; background: var(--surface-2); border-radius: 2px; position: relative; overflow: hidden; max-width: 46px; }
 .meter i::after { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--v); background: var(--ink-2); }

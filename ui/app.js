@@ -242,7 +242,9 @@ function renderTracks() {
       h("td", {}, t.album || ""),
       h("td", {}, t.genre || ""),
       h("td", { class: "num" }, t.bpm ? fmtBpm(t.bpm) : h("span", { class: "muted" }, t.analysed_at ? "?" : "…")),
-      h("td", {}, t.camelot ? h("span", { class: "key" }, h("b", {}, t.camelot), h("span", {}, t.musical_key || "")) : ""),
+      h("td", {}, t.camelot ? h("span", { class: "key", title: t.key_shift ? `${t.camelot} ${t.musical_key || ""} as analysed, shifted ${fmtShift(t.key_shift)} on the deck` : null },
+        h("b", {}, t.shifted_camelot || t.camelot), h("span", {}, t.shifted_key || t.musical_key || ""),
+        t.key_shift ? h("span", { class: "muted shift-tag" }, fmtShift(t.key_shift)) : null) : ""),
       h("td", {}, t.energy != null ? h("span", { class: "meter", title: `Energy ${t.energy}/10` }, h("i", { style: `--v:${Math.min(100, t.energy * 10)}%` }), h("span", {}, String(t.energy))) : ""),
       h("td", { class: "num" }, fmtTime(t.duration)),
       h("td", { class: "c-an" }, analysisCell(t)),
@@ -563,7 +565,8 @@ function renderDetail() {
         h("div", { class: "d-meta" }, [t.artist || "Unknown artist", t.album, t.genre].filter(Boolean).join(" · ")),
         h("div", { class: "stats" },
           h("div", { class: "stat" }, h("small", {}, "BPM"), h("b", { id: "bpmStat" }, bpmText(t))),
-          stat("Key", t.camelot ? `${t.camelot} ${t.musical_key || ""}` : null),
+          h("div", { class: "stat" }, h("small", {}, t.key_shift ? `Key (${fmtShift(t.key_shift)})` : "Key"),
+            h("b", { id: "keyStat" }, t.camelot ? `${t.shifted_camelot || t.camelot} ${t.shifted_key || t.musical_key || ""}` : "–")),
           stat("Energy", t.energy != null ? `${t.energy}/10` : null), stat("Length", fmtTime(t.duration)))),
       h("div", { class: "spacer" }),
       h("div", { class: "d-cues" },
@@ -585,7 +588,14 @@ function renderDetail() {
         h("div", { class: "fields" },
           field("Title", "title"), field("Artist", "artist"), field("Album", "album"),
           field("Genre", "genre"), field("BPM", "bpm", "number"), field("Year", "year", "number"),
-          h("label", {}, "Colour", color), h("label", {}, "Rating", rating), field("Comment", "comment"))),
+          h("label", {}, "Colour", color), h("label", {}, "Rating", rating), field("Comment", "comment")),
+        h("h3", { style: "margin-top:10px" }, "Key shift", h("span", { class: "muted", style: "text-transform:none;letter-spacing:0;font-weight:400" }, "the deck plays it shifted; the file stays as it is")),
+        h("div", { class: "grid-row" },
+          h("span", { class: "t-group", role: "group", "aria-label": "Key shift in semitones" },
+            h("button", { class: "ghost small", title: "One semitone down", "aria-label": "Key shift down one semitone", onclick: () => keyShiftBy(-1) }, "−"),
+            h("button", { class: "ghost small", title: "One semitone up", "aria-label": "Key shift up one semitone", onclick: () => keyShiftBy(1) }, "+")),
+          h("span", { class: "grid-val", id: "shiftReadout", "aria-live": "polite" }, keyShiftText(t)),
+          h("button", { class: "ghost small", title: "No key shift", onclick: () => keyShiftBy(-keyShiftNow(t)) }, "Reset"))),
       h("div", { class: "d-sec d-stems" },
         h("div", {}, h("h3", {}, "Beat grid", h("span", { class: "muted", style: "text-transform:none;letter-spacing:0;font-weight:400" }, "[ ] 1 ms, Shift 10 ms")),
           t.grid ? h("div", { class: "grid-row" },
@@ -720,6 +730,33 @@ async function saveGrid() {
   const r = await api(`/api/tracks/${p.id}`, { method: "PATCH", body: { grid_offset_ms: p.off, downbeat_shift: p.shift } });
   toast(`Beat grid ${fmtNudge(p)}`, r.undo);
   if (state.current?.id === p.id) await openTrack(p.id);   // fetch the grid as saved (and exported)
+}
+// Key shift: semitones (−12..+12) the deck shifts the track by while it plays it. Saved per track, written to the
+// drive in POCKETDECK/analysis (docs/DECK_KEY_SHIFT.md); the audio file is not changed and nothing plays here.
+const fmtShift = (n) => `${n > 0 ? "+" : n < 0 ? "−" : "±"}${Math.abs(n)}`;
+const keyShiftNow = (t) => (state.keyPending?.id === t.id ? state.keyPending.n : t.key_shift || 0);
+const keyShiftText = (t) => {
+  const n = keyShiftNow(t);
+  const to = state.keyPending ? "" : t.shifted_camelot ? ` → ${t.shifted_camelot} ${t.shifted_key}` : "";
+  return `${fmtShift(n)} semitones${to}`;
+};
+function keyShiftBy(d) {
+  const t = state.current;
+  if (!t) return;
+  const n = Math.max(-12, Math.min(12, keyShiftNow(t) + d));
+  state.keyPending = { id: t.id, n };
+  const r = $("#shiftReadout"); if (r) r.textContent = keyShiftText(t);
+  clearTimeout(state.keyT); state.keyT = setTimeout(() => saveKeyShift().catch(fail), 600);   // one saved edit per burst of clicks
+}
+async function saveKeyShift() {
+  clearTimeout(state.keyT);
+  const p = state.keyPending;
+  if (!p) return;
+  const r = await api(`/api/tracks/${p.id}`, { method: "PATCH", body: { key_shift: p.n } });
+  state.keyPending = null;
+  toast(`Key shift ${fmtShift(p.n)}`, r.undo);
+  loadTracks();
+  if (state.current?.id === p.id) await openTrack(p.id);   // the shifted key as the server worked it out
 }
 function togglePlay() { player.paused ? player.play().catch(() => {}) : player.pause(); }
 function soloStem(name) {
