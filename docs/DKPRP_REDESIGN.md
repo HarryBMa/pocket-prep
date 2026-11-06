@@ -66,12 +66,6 @@ Work Sans 400/500/600 and Fugaz One are bundled in `ui/fonts`.
 - **Dock** (Library, windows 1480 px and wider): DECK001 status, what an export writes, the stems
   switch (the same setting as in Export), and recent jobs. Export itself still happens in the Export
   view, behind the drive checks.
-- **Key shift** (transport bar, "Key", ±12 semitones, playback only): Signalsmith Stretch 1.3.2 (MIT, the official
-  web build in `ui/vendor/signalsmith-stretch`, the same algorithm as the deck's key shift in `deck-stretch`) as a
-  live pitch shifter behind the `<audio>` element, which still does tempo and key lock. At 0 the element plays
-  straight to the speakers; the first shift builds the audio graph (0.12 s delay, so cues set while a shift is
-  playing are moved back by that delay). The Key stat shows the shifted key (Camelot: one semitone is +7 steps).
-  With key lock off the heard pitch is the varispeed pitch plus the shift. Nothing is saved or exported.
 - **Beat grid nudge** (editor, "Beat grid"; keys `[` `]` 1 ms, Shift 10 ms): moves every beat,
   and "Downbeat +1" moves the bar start one beat. Saved per track (`grid_offset_ms`,
   `downbeat_shift`), one undo per burst of nudges, written to the card's PQTZ by the next export.
