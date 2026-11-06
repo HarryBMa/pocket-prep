@@ -71,3 +71,22 @@ Work Sans 400/500/600 and Fugaz One are bundled in `ui/fonts`.
   `downbeat_shift`), one undo per burst of nudges, written to the card's PQTZ by the next export.
   A re-analysis that moves the grid clears the nudge (logged in History). Cues stay where they
   are in the audio; phrase sections in POCKETDECK/analysis are not shifted.
+
+## v3: one prep screen (replaces the transport bar and dock above)
+DKPRP is for preparing tracks, not for playing or mixing, so the Library became one screen:
+- **Sidebar:** the logo, Library, Playlists (folds away), Analysis queue (the jobs drawer), Export,
+  Deck, Settings. **Top bar:** search, Import, the DECK001 status pill, the theme switch.
+- **Track table:** artwork, title, artist, BPM, key (Camelot colour), energy, stems and analysis
+  state, a ⋮ menu per row. Filters: All, Analysed, Unanalysed, With stems, Needs attention, the last
+  counted in the browser: a format the deck can't play, no artist, failed analysis or stems.
+- **Track panel** (right): waveform with stem rows (FULL, DRUMS, BASS, MELODY, VOCALS) and an
+  OVERVIEW strip, hot cues A–H (Edit shows memory cues), phrases, beat grid nudge, stems, tag
+  fields under "Track details", and what an export writes. Stem rows read
+  `GET /api/tracks/{id}/stems/peaks` (new; per-stem peaks from the stem file, 150 columns/s).
+- **Preview bar** (bottom): previous/next, play, seek, volume. The tempo/key lock preview, the dock
+  and the status bar are gone; their information is in the sidebar, top bar and panel.
+- **Waveform themes** (Settings → Waveforms): the DECK001 themes Coral/Teal, Graphite and Valve
+  times the styles Contour solid, Contour frequency (default), Frequency and Rainbow, with a live
+  preview. Saved per computer (browser storage); the deck keeps its own setting.
+- **Logo:** five solid coral bars, the deck's solid contour style. `tools/make_icons.py` (Pillow)
+  draws the app icons from the same geometry.
