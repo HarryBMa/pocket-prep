@@ -47,8 +47,9 @@ const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 const COLORS = ["", "#e85d9c", "#e5484d", "#f08c3c", "#e6c84a", "#46a758", "#3fb8c4", "#3e7bd6", "#8e4ec6"];
 const COLOR_NAMES = ["None", "Pink", "Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple"];
 const PAD = "ABCDEFGH";
-// Hot cue colours A-H (pads and waveform markers). Display only: the card doesn't store cue colours.
-const CUE_COLORS = ["#f0574c", "#f08c3c", "#e6c84a", "#46a758", "#3fb8c4", "#3e7bd6", "#8e4ec6", "#e85d9c"];
+// Hot cue colours A-H, the DECK001 firmware's slot colours (cues_storage.h). The card itself stores none.
+const CUE_COLORS = ["#ff4545", "#ff9f1c", "#ffdf40", "#20d879", "#00c8e8", "#318cff", "#b79bff", "#ff66af"];
+const PLAYHEAD = "#e9b954"; // DECK001 playhead (settings.h kPlayhead)
 
 const state = { tracks: [], view: [], selected: new Set(), anchor: null, playlist: 0, playlists: [], open: new Set(),
                 current: null, wave: null, jobs: [], lastUndo: null, settings: {}, system: {},
@@ -819,9 +820,9 @@ function buildWaves() {
   state.ws = WaveSurfer.create({
     container: waveBox, media: player, peaks: [index], duration: w.duration, ...bands,
     height: compact ? 96 : 128, minPxPerSec: state.zoom, autoScroll: true, autoCenter: true, hideScrollbar: true,
-    dragToSeek: true, normalize: false, cursorColor: cssVar("--ink"), cursorWidth: 2,
+    dragToSeek: true, normalize: false, cursorColor: PLAYHEAD, cursorWidth: 2,
     plugins: [state.regions, WaveSurfer.Minimap.create({ height: compact ? 34 : 42, ...bands, dragToSeek: true,
-      cursorColor: cssVar("--ink"), overlayColor: "rgba(128,128,128,.22)" })],
+      cursorColor: PLAYHEAD, overlayColor: "rgba(128,128,128,.22)" })],
   });
   state.ws.on("ready", syncMarkers);
 }

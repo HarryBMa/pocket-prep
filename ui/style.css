@@ -56,7 +56,7 @@ button, input, select { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 h1, h2, h3 { margin: 0; }
 b { font-weight: 600; }
-.ic { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.ic { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .ic.sm { width: 15px; height: 15px; }
 .spacer { flex: 1; }
 .muted { color: var(--ink-3); }
@@ -244,7 +244,7 @@ th.c-col { width: 14px; padding-right: 0; } td.c-col { padding-right: 0; }
 .transport .time { font-variant-numeric: tabular-nums; color: var(--ink); min-width: 104px; text-align: right; font-size: 14px; font-weight: 500; }
 .play-btn { width: 36px; height: 36px; border-radius: 50%; justify-content: center; padding: 0; background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .play-btn:hover { background: var(--accent); filter: brightness(1.06); }
-.play-btn .ic { width: 16px; height: 16px; stroke: none; }
+.play-btn .ic { width: 16px; height: 16px; }
 .zoom { display: inline-flex; gap: 0; }
 .zoom button { border-radius: 0; padding: 2px 7px; } .zoom button:first-child { border-radius: var(--r) 0 0 var(--r); } .zoom button:last-child { border-radius: 0 var(--r) var(--r) 0; margin-left: -1px; }
 canvas { display: block; width: 100%; }

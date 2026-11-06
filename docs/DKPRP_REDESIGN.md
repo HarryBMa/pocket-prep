@@ -56,8 +56,11 @@ Work Sans 400/500/600 and Fugaz One are bundled in `ui/fonts`.
   white in dark / navy in light). Each pixel column draws its tallest band first, so all three stay
   visible. WaveSurfer hands a custom renderer only two channels, so it gets one channel of column
   positions and `drawBands` reads the bands from `state.bands`.
-- **Hot cues A–H** each have a colour (pads and waveform markers). DKPRP only: the card's PCOB
-  cues carry no colour, so the deck and CDJs use their own.
+- **Hot cues A–H** use the DECK001 firmware's fixed slot colours (`cues_storage.h`) on the pads
+  and waveform markers, and the playhead is the deck's amber (`kPlayhead`). The card's PCOB cues
+  carry no colour; the deck colours by slot, so the two always agree.
+- **Icons** are the deck's Lucide set (`assets/icons/`) wherever the deck has the same control,
+  and plain Lucide elsewhere; mapping in `ui/icons/README.md`.
 - **Transport bar:** previous/next track, seek, preview tempo ±8 % with key lock, and volume.
   Playback only; nothing is saved.
 - **Dock** (Library, windows 1480 px and wider): DECK001 status, what an export writes, the stems
