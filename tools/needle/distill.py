@@ -2,6 +2,7 @@
 MUSDB18-HQ mixtures) and save its four stems as 44.1 kHz 16-bit FLAC.
 
     python distill.py --input "D:\\Music" --out E:\\needle-data\\teacher
+    python distill.py --input C:\\Users\\Harry\\source --glob "*" --out E:\\needle-data\\teacher   # top level only
     python distill.py --musdb E:\\needle-data\\musdb18hq --subset test --out E:\\needle-data\\teacher_musdb_test
 
 Why: MUSDB18-HQ has only 86 training songs. A big model (the teacher, ~9 dB SDR) can label any
@@ -66,7 +67,8 @@ def run_teacher(model, wav, device, shifts, overlap):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src = ap.add_mutually_exclusive_group(required=True)
-    src.add_argument("--input", help="music folder (searched recursively)")
+    src.add_argument("--input", help="music folder")
+    ap.add_argument("--glob", default="**/*", help='which files under --input: "**/*" = all subfolders, "*" = top level only')
     src.add_argument("--musdb", help="MUSDB18-HQ root: separate <subset>'s mixture.wav files")
     ap.add_argument("--subset", default="test", choices=["train", "valid", "test"])
     ap.add_argument("--out", required=True)
@@ -82,7 +84,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     if a.input:
         root = Path(a.input)
-        files = sorted(p for p in root.rglob("*") if p.suffix.lower() in AUDIO and p.is_file())
+        files = sorted(p for p in root.glob(a.glob) if p.suffix.lower() in AUDIO and p.is_file())
         jobs = [(track_id(p.relative_to(root).as_posix()), p) for p in files]
     else:
         names = musdb_split(a.musdb)[a.subset]

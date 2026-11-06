@@ -101,10 +101,11 @@ def validate(model, tracks, cfg: NeedleConfig, overlap, device):
     predict = torch_predictor(model)
     scores = []
     for _, stems in tracks:
-        ref = torch.from_numpy(stems).to(device).float() / 32768
-        est = separate_chunked(predict, ref.sum(0), cfg, overlap)
-        scores.append(nsdr(ref, est).cpu())
+        ref = torch.from_numpy(stems).float() / 32768             # reference stays on the CPU
+        est = separate_chunked(predict, ref.sum(0).to(device), cfg, overlap)
+        scores.append(nsdr(ref, est))
     model.train()
+    torch.cuda.empty_cache()                                      # give validation's memory back before training
     return torch.stack(scores).float()
 
 
@@ -150,6 +151,8 @@ def main():
     ap.add_argument("--patience", type=int, default=8, help="stop after this many validations without a new best")
     ap.add_argument("--overlap", type=int, default=8, help="chunk overlap in frames (validation)")
     ap.add_argument("--max-hours", type=float, default=11.5, help="save and stop after this long (resume later)")
+    ap.add_argument("--gpu-mem", type=float, default=0.8,
+                    help="cap on PyTorch's share of GPU memory; on Windows going over spills into system RAM (~100x slower)")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
 
@@ -157,6 +160,7 @@ def main():
     device = "cuda"
     torch.manual_seed(a.seed)
     torch.backends.cudnn.benchmark = True                         # pick the fastest conv kernels once
+    torch.cuda.set_per_process_memory_fraction(a.gpu_mem)         # fail loudly instead of spilling silently
     run = Path(a.runs) / a.name
     run.mkdir(parents=True, exist_ok=True)
 
@@ -210,9 +214,19 @@ def main():
     batches = Prefetcher(bank, a.batch, a.remix, seed=a.seed + start)
     spec_norm = torch.hann_window(cfg.n_fft).pow(2).sum().sqrt().item()
 
-    # Logs
-    tb = SummaryWriter(str(run))
-    new = not (run / "log.csv").exists() or not a.resume
+    # Logs. On resume, rows logged after the checkpoint's step are dropped (they'll be redone),
+    # and the hours column continues from the checkpoint, so it counts training time only.
+    new = not a.resume or not (run / "log.csv").exists()
+    hours_offset = 0.0
+    if not new:
+        for fname in ("log.csv", "val.csv"):
+            rows = list(csv.reader(open(run / fname, newline="")))
+            rows = [rows[0]] + [r for r in rows[1:] if int(r[0]) <= start]
+            with open(run / fname, "w", newline="") as fh:
+                csv.writer(fh).writerows(rows)
+            if fname == "log.csv" and len(rows) > 1:
+                hours_offset = float(rows[-1][1])
+    tb = SummaryWriter(str(run), purge_step=start if a.resume else None)
     log_f = open(run / "log.csv", "w" if new else "a", newline="")
     val_f = open(run / "val.csv", "w" if new else "a", newline="")
     log, val = csv.writer(log_f), csv.writer(val_f)
@@ -221,7 +235,8 @@ def main():
         val.writerow(["step", "hours", *SOURCES, "avg", "best"])
 
     model.train()
-    t_start, t_log = time.time(), time.time()
+    t_wall = t_log = time.time()                                  # this session, for --max-hours
+    t_start = t_wall - hours_offset * 3600                        # cumulative, for the logs
     acc = torch.zeros(4, device=device)
     step = start
     while step < a.steps:
@@ -257,7 +272,7 @@ def main():
             print(f"step {step:>7,}  loss {m[0]:.4f} (spec {m[1]:.4f}, wave {m[2]:.4f})  |g| {m[3]:.2f}  "
                   f"lr {lr:.2e}  {sps:.1f} steps/s  {h:.2f} h, {eta:.1f} h left", flush=True)
 
-        done = step >= a.steps or (time.time() - t_start) / 3600 > a.max_hours
+        done = step >= a.steps or (time.time() - t_wall) / 3600 > a.max_hours
         if step % a.val_every == 0 or done:
             sdr = validate(model, valid, cfg, a.overlap, device)  # (tracks, sources)
             med = sdr.median(0).values                            # median over tracks, as in SiSEC/museval

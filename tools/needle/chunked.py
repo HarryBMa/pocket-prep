@@ -18,7 +18,7 @@ in exactly the same way.
 import torch
 import torch.nn.functional as F
 
-from needle import NeedleConfig, apply_masks, istft, network_input, spectrogram
+from needle import SOURCES, NeedleConfig, istft, network_input, spectrogram
 
 
 def crossfade_weights(frames: int, overlap: int) -> torch.Tensor:
@@ -66,19 +66,41 @@ def chunked_masks(predict, x: torch.Tensor, frames: int, overlap: int = 8, batch
 
 @torch.no_grad()
 def separate_chunked(predict, wav: torch.Tensor, cfg: NeedleConfig, overlap: int = 8, batch: int = 64) -> torch.Tensor:
-    """Separate a whole track the way the device would. wav (C, N) -> stems (S, C, N).
-    Front end (STFT, log1p) and back end (mask normalisation, iSTFT) are needle.py's own
-    functions, so this matches needle.separate() except for the chunking."""
-    spec = spectrogram(wav[None], cfg)                       # (1, C, F, T) complex
-    x = network_input(spec, cfg)[0]                          # (C, bins, T)
-    masks = chunked_masks(predict, x, cfg.frames, overlap, batch)
-    return istft(apply_masks(masks[None], spec, cfg), cfg, wav.shape[-1])[0]
+    """Separate a whole track the way the device would. wav (C, N) -> stems (S, C, N), on the CPU.
+
+    Front end (STFT, log1p) and back end (masks normalised to sum to 1, iSTFT) are the same as
+    needle.separate() / needle.apply_masks(). The back end runs one source at a time, which gives
+    the same result with a quarter of the memory: a 6-minute song as one tensor of four complex
+    stems is several GB, and on Windows a GPU that runs out of memory doesn't fail, it silently
+    spills into system RAM and becomes ~100x slower."""
+    spec = spectrogram(wav[None], cfg)[0]                    # (C, F, T) complex
+    masks = chunked_masks(predict, network_input(spec[None], cfg)[0], cfg.frames, overlap, batch)
+    c, f, t = spec.shape
+    m = masks.reshape(cfg.sources, c, cfg.bins, t)
+    m /= m.sum(0, keepdim=True) + 1e-4                       # same normalisation (and eps) as apply_masks
+    other = SOURCES.index("other")
+    stems = []
+    for s in range(cfg.sources):
+        full = torch.zeros(c, f, t, device=spec.device)
+        full[:, :cfg.bins] = m[s]
+        if s == other:
+            full[:, cfg.bins:] = 1.0                         # bins above `bins` (the Nyquist bin) go to "other"
+        stems.append(istft((full * spec)[None, None], cfg, wav.shape[-1])[0, 0].cpu())
+        del full
+    return torch.stack(stems)
 
 
-def torch_predictor(model):
-    """Wrap a PyTorch Needle as a `predict` function (float, in eval mode)."""
+def torch_predictor(model, batch: int = 64):
+    """Wrap a PyTorch Needle as a `predict` function (float, in eval mode). The last group of
+    chunks of a track is padded to the full batch, so the GPU only ever sees one input shape."""
     model.eval()
-    return lambda xb: model(xb)
+
+    def predict(xb):
+        n = xb.shape[0]
+        if n < batch:
+            xb = F.pad(xb, (0, 0, 0, 0, 0, 0, 0, batch - n))
+        return model(xb)[:n]
+    return predict
 
 
 def nsdr(ref: torch.Tensor, est: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
