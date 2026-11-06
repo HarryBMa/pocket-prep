@@ -152,7 +152,7 @@ def main():
     # bookkeeping
     ap.add_argument("--val-every", type=int, default=5000)
     ap.add_argument("--log-every", type=int, default=200)
-    ap.add_argument("--patience", type=int, default=8, help="stop after this many validations without a new best")
+    ap.add_argument("--patience", type=int, default=30, help="stop after this many validations without a new best (validation SDR is noisy: 8 stopped runs far too early)")
     ap.add_argument("--overlap", type=int, default=8, help="chunk overlap in frames (validation)")
     ap.add_argument("--max-hours", type=float, default=11.5, help="save and stop after this long (resume later)")
     ap.add_argument("--gpu-mem", type=float, default=0.8,

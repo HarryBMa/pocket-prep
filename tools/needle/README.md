@@ -110,3 +110,34 @@ Two virtual environments, because TensorFlow 2.18 needs an older numpy than the 
         --audio F:\needle\data\musdb18hq\train --audio-glob "*/mixture.wav"
     .venv-export\Scripts\python eval_tflite.py --tflite build\b16_f32\needle_b16_f32\needle_int8.tflite `
         --musdb F:\needle\data\musdb18hq --float results\b16_f32_test.json
+
+## Trained results (6 November 2026)
+
+SDR in dB from museval (median over 1-s windows, then over songs), chunked like the device
+(32-frame chunks, 8-frame overlap each side, crossfade). Float = PyTorch; int8 / int16 = the
+TFLite models Vela compiles (run on the CPU with the TFLite interpreter; XNNPACK and reference
+kernels agree to 0.01 dB). Training on the RTX 3080 Ti, MUSDB18-HQ only (86 songs).
+
+| Model | Drums | Bass | Other | Vocals | **Avg** |
+|---|---|---|---|---|---|
+| HT Demucs fine-tuned (teacher, ~170 M params) | 10.04 | 10.39 | 6.28 | 9.21 | **8.98** |
+| Needle base 16, float | 5.07 | 3.63 | 3.34 | 5.21 | **4.31** |
+| Needle base 16, int8 | 5.05 | 3.62 | 3.34 | 5.16 | **4.29** |
+| Needle base 16, int16 | 5.04 | 3.64 | 3.36 | 5.15 | **4.29** |
+
+MUSDB18-HQ test set (50 songs). Base 16 on other sets (float): MUSDB validation 4.53;
+MoisesDB held-out test set (30 songs, many genres) 5.26.
+
+| Base 16, frames 32 | int8, on-chip SRAM | int16, SDRAM |
+|---|---|---|
+| ms per chunk (0.37 s) / RTF | 7.1 / 0.019 | 34.0 / 0.091 |
+| Arena (working memory) | 1.5 MB | 3.1 MB |
+| Weights | 452 KB | 433 KB |
+| CPU operators | 0 | 0 |
+
+- Parameters 500,968; training 2.94 h (early stop at step 190k; best validation, fast metric, 4.80).
+- Quantisation costs 0.02 dB: every layer's error is at the rounding level (quant_debug.py), so
+  no quantisation-aware training is needed for this model.
+- Base 12 and base 8: base 12's first run stopped too early (patience 8 at step 75k), so it is
+  being resumed with patience 30; base 8 still to train. Base 16 with real stems (MoisesDB, NI,
+  sample packs) and base 16 at frames 64 are in progress.

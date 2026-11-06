@@ -52,13 +52,17 @@ def track_list(a):
 
 
 def score_track(refs, ests):
-    """refs, ests: float32 (S, C, N). Returns {metric: {source: median over 1-s windows}}."""
+    """refs, ests: float32 (S, C, N). Returns {metric: {source: median over 1-s windows}}.
+    A stem that is silent for the whole song (an instrumental's vocals) has no SDR; museval
+    refuses such references, so those stems are left out and reported as NaN (ignored in the
+    median over songs)."""
     import museval
     n = min(refs.shape[-1], ests.shape[-1])
-    r = np.ascontiguousarray(refs[..., :n].transpose(0, 2, 1))     # museval wants (sources, samples, channels)
-    e = np.ascontiguousarray(ests[..., :n].transpose(0, 2, 1))
+    live = [i for i in range(len(SOURCES)) if np.abs(refs[i, :, :n]).max() > 1e-4]
+    r = np.ascontiguousarray(refs[live, :, :n].transpose(0, 2, 1))  # museval wants (sources, samples, channels)
+    e = np.ascontiguousarray(ests[live, :, :n].transpose(0, 2, 1))
     sdr, isr, sir, sar = museval.evaluate(r, e, win=SAMPLE_RATE, hop=SAMPLE_RATE)
-    return {k: {s: float(np.nanmedian(v[i])) for i, s in enumerate(SOURCES)}
+    return {k: {s: float(np.nanmedian(v[live.index(i)])) if i in live else float("nan") for i, s in enumerate(SOURCES)}
             for k, v in (("SDR", sdr), ("SIR", sir), ("SAR", sar))}
 
 
