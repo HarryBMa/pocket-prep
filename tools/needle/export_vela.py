@@ -57,21 +57,30 @@ def build_keras(cfg: NeedleConfig, convs):
     return keras.Model(inp, keras.layers.Activation("sigmoid")(x))
 
 
-def calibration_chunks(cfg: NeedleConfig, audio_dir, n=64):
-    """Network inputs (NHWC float32) from real tracks, or log-normal noise without any."""
+def calibration_chunks(cfg: NeedleConfig, audio_dir, n=64, pattern="**/*", max_files=40):
+    """Network inputs (NHWC float32) from real tracks, or log-normal noise without any.
+
+    The quantiser fits each tensor's int8/int16 range to what it sees here, so the chunks should
+    look like what the deck will get: full mixtures from many songs. Chunks are therefore taken
+    at random positions spread over up to `max_files` files (e.g. --audio <MUSDB>/train
+    --audio-glob "*/mixture.wav"), not all from the first file."""
     chunks = []
     if audio_dir:
         import soundfile as sf
-        files = sorted(p for p in Path(audio_dir).rglob("*") if p.suffix.lower() in (".wav", ".flac", ".mp3"))
+        rng = np.random.default_rng(0)
+        files = sorted(p for p in Path(audio_dir).glob(pattern) if p.suffix.lower() in (".wav", ".flac", ".mp3"))
+        files = [files[i] for i in sorted(rng.permutation(len(files))[:max_files])]
+        per_file = -(-n // max(1, len(files)))                   # ceil
         for f in files:
             wav, sr = sf.read(f, dtype="float32", always_2d=True)
             if sr != cfg.sample_rate or wav.shape[1] != cfg.audio_channels:
                 continue
             x = network_input(spectrogram(torch.from_numpy(wav.T)[None], cfg), cfg)[0]      # (C, bins, T)
-            for t0 in range(0, x.shape[-1] - cfg.frames, cfg.frames):
+            if x.shape[-1] <= cfg.frames:
+                continue
+            for t0 in rng.integers(0, x.shape[-1] - cfg.frames, per_file):
                 chunks.append(x[..., t0:t0 + cfg.frames].permute(1, 2, 0).numpy())
-            if len(chunks) >= n:
-                break
+        rng.shuffle(chunks)
     if not chunks:
         rng = np.random.default_rng(0)
         chunks = [np.log1p(rng.lognormal(0, 1.5, (cfg.bins, cfg.frames, cfg.audio_channels))).astype(np.float32) for _ in range(n)]
@@ -173,7 +182,9 @@ def main():
     ap.add_argument("--base", type=int, default=16)
     ap.add_argument("--frames", type=int, default=64)
     ap.add_argument("--checkpoint")
-    ap.add_argument("--audio")
+    ap.add_argument("--audio", help="folder of 44.1 kHz stereo tracks for calibration (training data, never test)")
+    ap.add_argument("--audio-glob", default="**/*", help='which files under --audio, e.g. "*/mixture.wav"')
+    ap.add_argument("--calib-chunks", type=int, default=256)
     ap.add_argument("--modes", default="int8,int16")
     ap.add_argument("--out", default=str(HERE / "build"))
     a = ap.parse_args()
@@ -193,7 +204,7 @@ def main():
     report = {"config": {k: v for k, v in cfg.__dict__.items()}, **count_macs(cfg)}
 
     km = build_keras(cfg, folded_convs(model))
-    chunks = calibration_chunks(cfg, a.audio)
+    chunks = calibration_chunks(cfg, a.audio, a.calib_chunks, a.audio_glob)
     x = chunks[0]
     with torch.no_grad():
         ref = model(torch.from_numpy(x).permute(2, 0, 1)[None]).permute(0, 2, 3, 1).numpy()

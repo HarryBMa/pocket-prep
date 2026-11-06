@@ -15,4 +15,12 @@ gen/
 tools/needle/build/
 tools/needle/.venv/
 tools/needle/listening/
+# Needle training: second venv, runs (checkpoints, TensorBoard), model files. Datasets and
+# teacher stems live outside the repo (E:\needle-data) and must never be committed.
+tools/needle/.venv-export/
+tools/needle/runs/
+tools/needle/**/*.pt
+tools/needle/**/*.tflite
+tools/needle/**/*.flac
+tools/needle/**/*.wav
 __pycache__/

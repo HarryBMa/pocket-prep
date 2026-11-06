@@ -54,4 +54,55 @@ What it means:
     python export_vela.py --base 12 --frames 32         # random weights: speed and memory
     python export_vela.py --checkpoint needle.pt --frames 32 --audio <folder of 44.1 kHz stereo tracks>
 
-On Windows, if `ethos-u-vela` doesn't install, run the export in WSL2 or on Linux.
+On Windows, if `ethos-u-vela` doesn't install, run the export in WSL2 or on Linux. (With uv on
+Windows 11, ethos-u-vela 5.2.0 installs and runs natively.)
+
+## Training
+
+Files:
+- `train.py`: training (MUSDB18-HQ, optionally teacher stems), checkpoints in the format `export_vela.py --checkpoint` reads.
+- `data.py`: audio in RAM as int16, the official MUSDB split, random crops with remixing, GPU augmentation.
+- `chunked.py`: device-style chunked inference (chunks of `frames` frames, 8-frame overlap at each side, crossfade), used by validation and both evaluations.
+- `distill.py`: teacher stems (Demucs `htdemucs_ft`) for a music folder or for MUSDB mixtures, resumable.
+- `eval.py`: museval SDR of a checkpoint or of stems on disk (median over 1-s windows, then over tracks).
+- `eval_tflite.py`: the same for `needle_int8.tflite` / `needle_int16.tflite` on the CPU.
+
+### Environments (Windows, uv)
+Two virtual environments, because TensorFlow 2.18 needs an older numpy than the rest:
+
+    cd tools\needle
+    uv venv .venv --python 3.11
+    uv pip install --python .venv\Scripts\python.exe torch==2.7.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+    uv pip install --python .venv\Scripts\python.exe soundfile numpy tqdm tensorboard musdb museval demucs==4.0.1
+    uv venv .venv-export --python 3.11
+    uv pip install --python .venv-export\Scripts\python.exe torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+    uv pip install --python .venv-export\Scripts\python.exe "tensorflow-cpu==2.18.*" "ethos-u-vela==5.2.0" soundfile museval tqdm
+
+`.venv` trains, distills and evaluates float models (GPU); `.venv-export` exports and evaluates TFLite models (CPU).
+
+### Data (outside the repository, never committed)
+- MUSDB18-HQ (https://zenodo.org/records/3338373, non-commercial research licence) unzipped to
+  `E:\needle-data\musdb18hq` (`train\`, `test\`). 86 training tracks, 14 validation tracks (musdb's
+  official split, taken from the training set), 50 test tracks (only for the final numbers).
+- Teacher stems: `E:\needle-data\teacher` (your music) and `E:\needle-data\teacher_musdb_test` (baseline, listening set).
+
+### Commands
+    # teacher stems (htdemucs_ft on the GPU; resumable, failures in <out>\failed.tsv)
+    .venv\Scripts\python distill.py --musdb E:\needle-data\musdb18hq --subset test --out E:\needle-data\teacher_musdb_test
+    .venv\Scripts\python distill.py --input "<music folder>" --out E:\needle-data\teacher
+
+    # train (writes runs\<name>\best.pt, last.pt, log.csv, val.csv, TensorBoard events)
+    .venv\Scripts\python train.py --musdb E:\needle-data\musdb18hq --base 16 --frames 32 --name b16_f32
+    .venv\Scripts\python train.py ... --teacher E:\needle-data\teacher --teacher-share 0.5 --name b16_f32_kd
+    .venv\Scripts\python train.py ... --name b16_f32 --resume           # continue a stopped run
+    .venv\Scripts\tensorboard --logdir runs                             # loss and validation curves
+
+    # float SDR on the 50 test tracks, and the teacher baseline
+    .venv\Scripts\python eval.py --checkpoint runs\b16_f32\best.pt --musdb E:\needle-data\musdb18hq
+    .venv\Scripts\python eval.py --estimates E:\needle-data\teacher_musdb_test --name htdemucs_ft --musdb E:\needle-data\musdb18hq
+
+    # quantise (calibrated on training mixtures, never test), compile with Vela, then int8/int16 SDR
+    .venv-export\Scripts\python export_vela.py --checkpoint runs\b16_f32\best.pt --frames 32 --out build\b16_f32 `
+        --audio E:\needle-data\musdb18hq\train --audio-glob "*/mixture.wav"
+    .venv-export\Scripts\python eval_tflite.py --tflite build\b16_f32\needle_b16_f32\needle_int8.tflite `
+        --musdb E:\needle-data\musdb18hq --float results\b16_f32_test.json
