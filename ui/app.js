@@ -210,12 +210,11 @@ const FILTERS = {
   stems: (t) => t.stems === "done",
   attention: (t) => issues(t).length > 0,
 };
-// What would go wrong at the booth, from what the track list already knows. The track panel adds
-// the server's own check of the file (deck_problem: e.g. 24-bit WAV).
-const DECK_FORMATS = ["mp3", "wav", "flac"];
+// What would go wrong at the booth: the server's check of the file (deck_problem: a 24-bit WAV, an M4A...) and what the
+// track list already knows. "Convert for the deck" makes a copy the deck can play and clears the first one.
 function issues(t) {
-  const out = [], ext = (t.path || "").split(".").pop().toLowerCase();
-  if (!DECK_FORMATS.includes(ext)) out.push(`${ext.toUpperCase()} won't play on the DECK001`);
+  const out = [];
+  if (t.deck_problem) out.push(t.deck_problem);
   if (!t.artist) out.push("No artist");
   if (!t.analysed_at && jobFor(t.id, "analyse")?.status === "failed") out.push("Analysis failed");
   if (t.stems === "failed") out.push("Stems failed");
@@ -403,9 +402,26 @@ $("#menu").addEventListener("keydown", (e) => {
   if (e.key === "Escape") { e.stopPropagation(); closeMenu(); }
   if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); b[(i + (e.key === "ArrowDown" ? 1 : -1) + b.length) % b.length]?.focus(); }
 });
+async function convertForDeck(ids) {
+  try {
+    const r = await api("/api/convert", { body: { ids } });
+    toast(r.jobs.length ? `Converting ${plural(r.jobs.length, "track")} for the deck` : "Already converting");
+    pollJobs();
+  } catch (e) { fail(e); }
+}
+async function removeDeckCopy(ids) {
+  try {
+    await api("/api/convert", { body: { ids, remove: true } });
+    toast(`${plural(ids.length, "track")} will be exported as the original`);
+    await loadTracks();
+    if (state.current && ids.includes(state.current.id)) openTrack(state.current.id);
+  } catch (e) { fail(e); }
+}
 function trackMenuItems(t) {
   const ids = [t.id];
   return [
+    t.deck_problem ? { label: "Convert for the deck", run: () => convertForDeck(ids) } : null,
+    t.deck_copy ? { label: "Use the original for the deck", run: () => removeDeckCopy(ids) } : null,
     { label: t.analysed_at ? "Re-analyse" : "Analyse", run: () => api("/api/analyse", { body: { ids } }).then(() => { toast("Analysing"); pollJobs(); }).catch(fail) },
     t.stems !== "done" && t.stems !== "running" && t.stems !== "queued" ? { label: "Make stems", run: () => api("/api/stems", { body: { ids } }).then(() => { toast("Making stems"); loadTracks(); pollJobs(); }).catch(fail) } : null,
     ...state.playlists.filter((p) => !p.is_folder).slice(0, 8).map((p) => ({ label: `Add to "${p.name}"`, run: () => addToPlaylist(p.id, ids).catch(fail) })),
@@ -575,6 +591,9 @@ function renderContext() {
   const parts = [h("span", { class: "sel-count" }, `${ids.length} selected`)];
   parts.push(h("button", { class: "ghost small", onclick: () => api("/api/analyse", { body: { ids } }).then(() => { toast(`Analysing ${ids.length}`); pollJobs(); }).catch(fail) },
     sel.every((t) => t.analysed_at) ? "Re-analyse" : "Analyse"));
+  const unplayable = sel.filter((t) => t.deck_problem).map((t) => t.id);
+  if (unplayable.length) parts.push(h("button", { class: "ghost small", onclick: () => convertForDeck(unplayable),
+    title: "16-bit FLAC copies the deck can play; the originals stay as they are" }, `Convert ${unplayable.length} for the deck`));
   const noStems = sel.filter((t) => t.stems !== "done" && t.stems !== "running" && t.stems !== "queued").map((t) => t.id);
   if (noStems.length) parts.push(h("button", { class: "ghost small", onclick: () => api("/api/stems", { body: { ids: noStems } }).then(() => { toast(`Making stems for ${noStems.length}`); loadTracks(); pollJobs(); }).catch(fail) }, "Make stems"));
   const lists = state.playlists.filter((p) => !p.is_folder);
@@ -784,7 +803,7 @@ function renderDetail() {
       running ? h("div", { class: "progress" }, h("i", { style: `width:${sj.progress * 100}%` })) : null];
   }
 
-  const ph = t.phrases, why = [...issues(t), ...(t.deck_problem ? [`${t.deck_problem}. It's still exported (CDJs play it)`] : [])];
+  const ph = t.phrases, why = issues(t);
   const meta = [t.bpm ? `${fmtBpm(t.bpm)} BPM` : null, t.camelot ? `${t.shifted_camelot || t.camelot} ${t.shifted_key || t.musical_key || ""}`.trim() + (t.key_shift ? ` (${fmtShift(t.key_shift)})` : "") : null,
                 t.energy != null ? `${t.energy} energy` : null, fmtTime(t.duration)].filter(Boolean).join(" · ");
   fill(d,
@@ -798,7 +817,11 @@ function renderDetail() {
       h("button", { class: "ghost icon-btn", "aria-label": "Track actions", title: "Actions",
         onclick: (e) => openMenu(e.currentTarget, [...trackMenuItems(t), { label: "Close track", run: closeDetail }]) }, icon("more", "ic sm"))),
     splitSuggestion(t),
-    why.length ? h("div", { class: "warn-line" }, "Needs attention: ", why.join(" · ")) : null,
+    why.length ? h("div", { class: "warn-line" }, h("span", {}, "Needs attention: ", why.join(" · "), t.deck_problem ? ". The original is still exported (CDJs play it)." : ""),
+      t.deck_problem ? h("button", { class: "small", onclick: () => convertForDeck([t.id]), title: "Makes a 16-bit FLAC copy for the deck. The original stays as it is." }, "Convert for the deck") : null) : null,
+    t.deck_copy ? h("div", { class: "ok-line" }, icon("check", "ic sm"),
+      h("span", {}, `The deck gets a 16-bit FLAC copy${t.deck_copy_bytes ? ` (${fmtBytes(t.deck_copy_bytes)})` : ""} instead of the original.`),
+      h("button", { class: "ghost small", onclick: () => removeDeckCopy([t.id]) }, "Use the original")) : null,
     h("section", { "aria-label": "Waveforms", class: "tp-waves" },
       secH("Waveform", h("span", { class: "spacer" }),
         h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },

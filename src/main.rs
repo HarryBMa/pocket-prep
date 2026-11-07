@@ -11,6 +11,7 @@
 
 mod analysis;
 mod config;
+mod convert;
 mod db;
 mod deck;
 mod embed;

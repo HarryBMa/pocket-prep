@@ -195,12 +195,15 @@ fn free_space(root: &Path) -> u64 {
         .max_by_key(|d| d.mount_point().as_os_str().len()).map(|d| d.available_space()).unwrap_or(0)
 }
 
+/// The file that goes on the drive: the converted copy (src/convert.rs) when there is one, else the original.
 fn track_path(t: &Row) -> PathBuf {
-    PathBuf::from(t["path"].as_str().unwrap_or(""))
+    let original = PathBuf::from(t["path"].as_str().unwrap_or(""));
+    crate::convert::deck_file(t["id"].as_i64().unwrap_or(0), &original)
 }
 
 fn warnings(tracks: &[Row]) -> Vec<Value> {
     tracks.iter().filter_map(|t| {
+        // A converted copy is what is exported, so it is the file that has to be playable.
         let p = track_path(t);
         p.exists().then(|| deck_problem(&p)).flatten()
             .map(|why| json!({"track_id": t["id"], "title": t["title"], "problem": why}))
@@ -212,7 +215,7 @@ pub fn plan(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool) -> Re
     let (tracks, pls) = collect(playlist_ids)?;
     let mut need = 0u64;
     for t in &tracks {
-        need += t["file_size"].as_u64().unwrap_or(0);
+        need += std::fs::metadata(track_path(t)).map(|m| m.len()).unwrap_or_else(|_| t["file_size"].as_u64().unwrap_or(0));
         if include_stems {
             need += std::fs::metadata(stems::stem_file(t["id"].as_i64().unwrap_or(0))).map(|m| m.len()).unwrap_or(0);
         }
@@ -306,7 +309,8 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
         let t = db::track(tid)?.unwrap_or_else(|| t.clone());
         let s = |k: &str| t[k].as_str().map(str::to_string);
 
-        // 1. Audio file, copied byte for byte (never converted or resampled)
+        // 1. Audio file, copied byte for byte (never converted or resampled here; `src` is the converted copy only
+        //    if you asked for one with "Convert for the deck")
         let fname = src.file_name().map(|f| f.to_string_lossy().to_string());
         let rel_audio = format!("Contents/{}/{}/{}", safe(s("artist").as_deref(), "Unknown Artist"),
                                 safe(s("album").as_deref(), "Unknown Album"),
@@ -615,6 +619,27 @@ mod export_tests {
         let t = db::track(tid).unwrap().unwrap();
         assert_eq!((t["camelot"].clone(), t["energy"].clone(), t["bpm"].clone()), (analysed["camelot"].clone(), analysed["energy"].clone(), analysed["bpm"].clone()));
         assert_eq!(t["edited"].as_str(), Some("[]"));
+
+        // "Convert for the deck": the export writes the 16-bit FLAC copy instead of the original, and removing the copy
+        // brings the original back.
+        let audio_files = |card: &Path| -> Vec<String> {
+            let mut v = vec![];
+            let mut stack = vec![card.join("Contents")];
+            while let Some(d) = stack.pop() {
+                for e in std::fs::read_dir(d).unwrap().flatten() {
+                    if e.path().is_dir() { stack.push(e.path()) } else { v.push(e.file_name().to_string_lossy().to_string()) }
+                }
+            }
+            v
+        };
+        assert!(audio_files(&card).iter().all(|f| f.ends_with(".wav")), "{:?}", audio_files(&card));
+        crate::convert::convert(tid, &|_, _| {}, &|| false).unwrap();
+        assert_eq!(db::track(tid).unwrap().map(|t| crate::convert::state(tid, Path::new(t["path"].as_str().unwrap()))["deck_copy"].clone()), Some(json!(true)));
+        export_to(&card.to_string_lossy(), None, true, &|_, _| {}, &|| false).unwrap();
+        assert!(audio_files(&card).iter().any(|f| f.ends_with(".flac")), "{:?}", audio_files(&card));
+        crate::convert::remove(tid);
+        assert!(crate::convert::existing(tid, Path::new(db::track(tid).unwrap().unwrap()["path"].as_str().unwrap())).is_none());
+        export_to(&card.to_string_lossy(), None, true, &|_, _| {}, &|| false).unwrap();     // the original again
 
         // stems.json: keyed by the PDB path, pointing at a decodable 8-channel FLAC of the right length.
         let manifest: Value = serde_json::from_slice(&std::fs::read(card.join("POCKETDECK/stems.json")).unwrap()).unwrap();

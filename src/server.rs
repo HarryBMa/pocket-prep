@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 use crate::db::{self, Row};
 use crate::export::usb;
-use crate::{analysis, config, deck, jobs, library, mood, stems};
+use crate::{analysis, config, convert, deck, jobs, library, mood, stems};
 
 pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -143,6 +143,12 @@ async fn list_tracks(Query(tq): Query<TrackQuery>) -> R {
             db::query(&format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE deleted=0 ORDER BY added_at DESC, id DESC"), &[])?
         };
         tracks.iter_mut().for_each(analysis::add_shifted_key);
+        for t in tracks.iter_mut() {
+            let (id, path) = (t["id"].as_i64().unwrap_or(0), PathBuf::from(t["path"].as_str().unwrap_or("")));
+            if let Some(m) = convert::state(id, &path).as_object() {
+                m.iter().for_each(|(k, v)| { t.insert(k.clone(), v.clone()); });
+            }
+        }
         let words: Vec<String> = tq.q.to_lowercase().split_whitespace().map(str::to_string).collect();
         if !words.is_empty() {
             tracks.retain(|t| {
@@ -175,7 +181,10 @@ async fn get_track(P(tid): P<i64>) -> R {
         let pls: Vec<Value> = db::query("SELECT DISTINCT playlist_id FROM playlist_tracks WHERE track_id=?", &[json!(tid)])?
             .into_iter().map(|r| r["playlist_id"].clone()).collect();
         t.insert("playlists".into(), json!(pls));
-        t.insert("deck_problem".into(), json!(t["path"].as_str().and_then(|p| usb::deck_problem(std::path::Path::new(p)))));
+        if let Some(m) = convert::state(tid, &PathBuf::from(t["path"].as_str().unwrap_or(""))).as_object() {
+            m.iter().for_each(|(k, v)| { t.insert(k.clone(), v.clone()); });
+        }
+        t.insert("deck_copy_bytes".into(), json!(t["path"].as_str().and_then(|p| convert::existing(tid, std::path::Path::new(p))).and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len())));
         Ok(json!(t))
     }).await
 }
@@ -264,6 +273,25 @@ async fn import_files(Json(b): Json<Value>) -> R {
 
 async fn remove_tracks(Json(b): Json<Value>) -> R {
     blocking(move || Ok(json!({"undo": library::remove_tracks(&ids(&b, "ids"))?}))).await
+}
+
+/// "Convert for the deck" (src/convert.rs): 16-bit FLAC copies the deck can play. With "remove": true it deletes the
+/// copies, so the original is exported again.
+async fn convert_tracks(Json(b): Json<Value>) -> R {
+    blocking(move || {
+        let ids = ids(&b, "ids");
+        if b["remove"].as_bool().unwrap_or(false) {
+            ids.iter().for_each(|&id| convert::remove(id));
+            return Ok(json!({"removed": ids.len()}));
+        }
+        let jobs: Vec<i64> = ids.iter().filter(|t| !jobs::pending_for(**t, "convert")).map(|&tid| {
+            jobs::submit("convert", &format!("Convert for the deck: {}", title_of(tid)), "cpu", Some(tid), move |h| {
+                let out = convert::convert(tid, &|f, m| h.progress(f, m), &|| h.cancelled())?;
+                Ok(Some(json!({"bytes": std::fs::metadata(out)?.len()})))
+            })
+        }).collect();
+        Ok(json!({"jobs": jobs}))
+    }).await
 }
 
 async fn analyse_tracks(Json(b): Json<Value>) -> R {
@@ -477,6 +505,7 @@ pub fn router() -> Router {
         .route("/api/import", post(import_files))
         .route("/api/tracks/remove", post(remove_tracks))
         .route("/api/analyse", post(analyse_tracks))
+        .route("/api/convert", post(convert_tracks))
         .route("/api/stems", post(make_stems))
         .route("/api/playlists", get(get_playlists).post(new_playlist))
         .route("/api/playlists/{pid}", axum::routing::patch(rename_playlist).delete(remove_playlist))
