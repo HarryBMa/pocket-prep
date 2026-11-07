@@ -111,7 +111,7 @@
               <select id="sortSel">
                 <option value="index">Playlist order</option><option value="added_at:-1">Date added</option>
                 <option value="title">Title</option><option value="artist">Artist</option>
-                <option value="bpm">BPM</option><option value="camelot">Key</option><option value="energy:-1">Energy</option>
+                <option value="bpm">BPM</option><option value="camelot">Key</option><option value="energy:-1">Energy</option><option value="mood">Mood (grouped)</option>
               </select>
             </label>
           </div>
@@ -119,9 +119,9 @@
             <table id="tracks">
               <thead><tr>
                 <th class="c-idx num" data-sort="index">#</th>
-                <th class="c-art">Artwork</th>
+                <th class="c-art"><span class="sr">Artwork</span></th>
                 <th data-sort="title">Track</th><th data-sort="artist">Artist</th>
-                <th class="num" data-sort="bpm">BPM</th><th data-sort="camelot">Key</th>
+                <th class="num" data-sort="bpm">BPM</th><th data-sort="camelot">Key</th><th class="c-mood" data-sort="mood">Mood</th>
                 <th class="num" data-sort="energy">Energy</th><th class="c-stems" data-sort="stems">Stems</th>
                 <th data-sort="analysed_at">Analysis</th><th class="c-menu"><span class="sr">Actions</span></th>
               </tr></thead>

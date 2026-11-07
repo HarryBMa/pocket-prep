@@ -49,6 +49,14 @@ const COLOR_NAMES = ["None", "Pink", "Red", "Orange", "Yellow", "Green", "Aqua",
 const PAD = "ABCDEFGH";
 // Hot cue colours A-H, the DECK001 firmware's slot colours (cues_storage.h). The card itself stores none.
 const CUE_COLORS = ["#ff4545", "#ff9f1c", "#ffdf40", "#20d879", "#00c8e8", "#318cff", "#b79bff", "#ff66af"];
+// Moods (src/mood.rs), in the server's order, which is also the group order. Colours are the
+// deck's slot colours, calm to hard: blue, purple, cyan, orange, red; then green, pink, yellow.
+let MOODS = [], MOOD_FEATURES = [];
+api("/api/moods").then((r) => { MOODS = r.moods; MOOD_FEATURES = r.features; if (state.loaded) renderTracks(); }).catch(() => {});
+const MOOD_COLOR = { deep: CUE_COLORS[5], melodic: CUE_COLORS[6], tech_house: CUE_COLORS[4], peaktime: CUE_COLORS[1],
+                     hard_techno: CUE_COLORS[0], dnb: CUE_COLORS[3], pop: CUE_COLORS[7], downtempo: CUE_COLORS[2] };
+const moodOf = (id) => MOODS.find((m) => m.id === id);
+const moodRank = (id) => { const i = MOODS.findIndex((m) => m.id === id); return i < 0 ? null : i; };
 const PLAYHEAD = "#e9b954"; // DECK001 playhead (settings.h kPlayhead)
 
 const state = { tracks: [], view: [], selected: new Set(), anchor: null, playlist: 0, playlists: [], open: new Set(),
@@ -217,7 +225,7 @@ function visibleTracks() {
   const list = state.tracks.map((t, i) => ({ t, i })).filter(({ t }) => FILTERS[state.filter](t));
   if (state.sort) {
     const { key, dir } = state.sort;
-    const val = (x) => key === "index" ? x.i : x.t[key];
+    const val = (x) => key === "index" ? x.i : key === "mood" ? moodRank(x.t.mood) : x.t[key];
     list.sort((a, b) => {
       const va = val(a), vb = val(b);
       if (va == null || va === "") return vb == null || vb === "" ? 0 : 1;      // empty values last
@@ -249,6 +257,42 @@ function stemPill(t) {
   svg.setAttribute("role", "img"); svg.removeAttribute("aria-hidden"); svg.setAttribute("aria-label", label);
   return h("span", { title: label }, svg);
 }
+function moodSummary() {
+  const counts = MOODS.map((m) => [m, state.tracks.filter((t) => t.mood === m.id).length]).filter(([, n]) => n);
+  if (!counts.length) return null;
+  const max = Math.max(...counts.map(([, n]) => n));
+  return h("section", { class: "mood-sum", "aria-label": "Moods in this list" },
+    h("div", { class: "sec-h" }, "Moods", h("span", { class: "spacer" }),
+      h("button", { class: "ghost small", onclick: () => { state.sort = { key: "mood", dir: 1 }; renderTracks(); } }, "Group by mood")),
+    counts.map(([m, n]) => h("div", { class: "mood-bar" },
+      h("span", { class: "mood", style: `--mood:${MOOD_COLOR[m.id]}` }, h("i"), m.label),
+      h("span", { class: "bar" }, h("b", { style: `width:${(n / max) * 100}%;background:${MOOD_COLOR[m.id]}` })),
+      h("span", { class: "num muted" }, String(n)))));
+}
+// Mood: a coloured label; "?" when the guess is close between two moods (under 50 % sure).
+function moodPill(t) {
+  const m = moodOf(t.mood);
+  if (!m) return h("span", { class: "muted" }, t.analysed_at ? "–" : "");
+  const sure = Math.round((t.mood_conf ?? 0) * 100), unsure = !t.mood_manual && sure < 50;
+  return h("span", { class: "mood" + (unsure ? " unsure" : ""), style: `--mood:${MOOD_COLOR[m.id] || "#8a8a90"}`,
+                     title: `${m.about}. ${t.mood_manual ? "Set by you." : `Automatic, ${sure} % sure.`}` },
+    h("i"), m.label, unsure ? h("span", { class: "q", "aria-label": "unsure" }, "?") : null);
+}
+// Sorted by mood, each mood gets a header row with its track count and length.
+function withMoodGroups(vis, rows) {
+  const out = [];
+  vis.forEach(({ t }, k) => {
+    if (k === 0 || vis[k - 1].t.mood !== t.mood) {
+      const group = vis.filter((x) => x.t.mood === t.mood).map((x) => x.t), m = moodOf(t.mood);
+      out.push(h("tr", { class: "group", "aria-hidden": "true" }, h("td", { colspan: "11" },
+        h("span", { class: "mood", style: `--mood:${m ? MOOD_COLOR[m.id] : "#8a8a90"}` }, h("i"), m ? m.label : "No mood yet"),
+        h("span", { class: "muted" }, `${plural(group.length, "track")} · ${fmtDur(group.reduce((a, x) => a + (x.duration || 0), 0))}`),
+        m ? h("span", { class: "muted about" }, m.about) : null)));
+    }
+    out.push(rows[k]);
+  });
+  return out;
+}
 // Key in the track colours by Camelot number, so neighbouring keys look related.
 const keyColor = (camelot) => COLORS[1 + ((parseInt(camelot, 10) || 1) - 1) % 8];
 function artCell(t) {
@@ -271,6 +315,7 @@ function renderTracks() {
       h("td", { class: "c-artist" }, t.artist || h("span", { class: "muted" }, "Unknown")),
       h("td", { class: "num" }, t.bpm ? fmtBpm(t.bpm) : h("span", { class: "muted" }, t.analysed_at ? "?" : "…")),
       h("td", {}, t.camelot ? h("span", { class: "key", style: `color:${keyColor(t.camelot)}` }, h("b", {}, t.camelot), h("span", {}, t.musical_key || "")) : ""),
+      h("td", { class: "c-mood" }, moodPill(t)),
       h("td", { class: "num" }, t.energy != null ? String(t.energy) : ""),
       h("td", { class: "c-st c-stems" }, stemPill(t)),
       h("td", { class: "c-an" }, analysisCell(t)),
@@ -289,7 +334,7 @@ function renderTracks() {
     }
     return tr;
   });
-  body.replaceChildren(...rows);
+  body.replaceChildren(...(state.sort?.key === "mood" ? withMoodGroups(vis, rows) : rows));
   // Keyboard focus lands on the anchor row (or the first), arrow keys move from there.
   (body.querySelector(`tr[data-id="${state.anchor}"]`) || body.firstElementChild)?.setAttribute("tabindex", "0");
   if (focusedId) body.querySelector(`tr[data-id="${focusedId}"]`)?.focus({ preventScroll: true });
@@ -583,7 +628,7 @@ function renderDetail() {
   if (!t) {
     fill(d, h("div", { class: "tp-empty" },
       h("p", {}, h("b", {}, "Select a track to prepare it.")),
-      h("p", { class: "hint" }, "Check the beat grid against the waveform, set cues, fix tags and make stems.")), exportCard());
+      h("p", { class: "hint" }, "Check the beat grid against the waveform, set cues, fix tags and make stems.")), moodSummary(), exportCard());
     return;
   }
   const field = (label, key, type = "text") => {
@@ -644,7 +689,8 @@ function renderDetail() {
       h("div", { class: "tp-id" },
         h("div", { class: "tp-title", title: t.path }, t.title || ""),
         h("div", { class: "tp-artist" }, t.artist || "Unknown artist"),
-        h("div", { class: "tp-meta" }, meta)),
+        h("div", { class: "tp-meta" }, meta),
+        moodPicker(t)),
       h("button", { class: "ghost icon-btn", "aria-label": "Track actions", title: "Actions",
         onclick: (e) => openMenu(e.currentTarget, [...trackMenuItems(t), { label: "Close track", run: closeDetail }]) }, icon("more", "ic sm"))),
     splitSuggestion(t),
@@ -682,6 +728,7 @@ function renderDetail() {
         field("Title", "title"), field("Artist", "artist"), field("Album", "album"),
         field("Genre", "genre"), field("BPM", "bpm", "number"), field("Year", "year", "number"),
         h("label", {}, "Colour", color), h("label", {}, "Rating", rating), field("Comment", "comment")),
+      moodWhy(t),
       ph ? h("dl", { class: "kv", style: "margin-top:10px" },
         h("dt", {}, "First downbeat"), h("dd", {}, fmtMs(ph.first_downbeat_ms)),
         h("dt", {}, "Intro ends"), h("dd", {}, fmtMs(ph.intro_end_ms)),
@@ -689,6 +736,52 @@ function renderDetail() {
         h("dt", {}, plural(ph.drops.length, "drop")), h("dd", {}, ph.drops.map(fmtMs).join(", ") || "–")) : null),
     exportCard());
   syncMarkers();
+}
+
+// Mood in the track panel: the label and a menu to set it. Picking one teaches the automatic
+// moods (mood.rs); "Automatic" hands the track back to the analysis.
+function moodPicker(t) {
+  if (!t.analysed_at || !MOODS.length) return null;
+  const auto = t.mood_why?.ranking?.[0], autoMood = moodOf(auto?.id);
+  const sel = h("select", { "aria-label": "Mood", class: "mood-sel" },
+    h("option", { value: "", selected: !t.mood_manual }, autoMood ? `Automatic (${autoMood.label}, ${Math.round(auto.confidence * 100)} %)` : "Automatic"),
+    MOODS.map((m) => h("option", { value: m.id, selected: !!t.mood_manual && t.mood === m.id }, m.label)));
+  sel.addEventListener("change", () => saveMood(sel.value || null));
+  return h("div", { class: "tp-mood" }, moodPill(t), sel);
+}
+async function saveMood(id) {
+  try {
+    const body = id ? { mood: id, mood_manual: 1 } : { mood_manual: 0 };
+    const r = await api(`/api/tracks/${state.current.id}`, { method: "PATCH", body });
+    const m = moodOf(r.track.mood);
+    toast(id ? `Mood: ${m?.label}. Automatic moods learn from it` : `Mood back to automatic: ${m?.label || "none"}`, r.undo);
+    await openTrack(state.current.id);
+    loadTracks();
+  } catch (e) { fail(e); }
+}
+// Why: the three nearest moods and the measured numbers they were compared on.
+const FEATURE_LABEL = { bpm: "Tempo", lufs: "Loudness", bass: "Bass", bright: "Treble", drums: "Drums", melody: "Melody",
+                        vocals: "Vocals", breaks: "Breakdowns", minor: "Key" };
+const FEATURE_FMT = {
+  bpm: (v) => `${fmtBpm(v)} BPM`, lufs: (v) => `${v.toFixed(1)} LUFS`, minor: (v) => (v >= 0.5 ? "minor" : "major"),
+};
+function moodWhy(t) {
+  const w = t.mood_why;
+  if (!w?.ranking) return null;
+  const pct = (v) => `${Math.round(v * 100)} %`;
+  return h("div", { class: "mood-why" },
+    h("div", { class: "sec-h" }, "Why this mood"),
+    h("div", { class: "why-rank" }, w.ranking.map((r) => {
+      const m = moodOf(r.id);
+      return h("span", { class: "mood", style: `--mood:${MOOD_COLOR[r.id]}`, title: `Distance ${r.distance} (0 = exactly typical)` },
+        h("i"), m?.label || r.id, h("span", { class: "muted" }, ` ${pct(r.confidence)}`));
+    })),
+    h("dl", { class: "kv" }, MOOD_FEATURES.map((f) => {
+      const v = w.features?.[f.id];
+      return [h("dt", { title: f.about[0].toUpperCase() + f.about.slice(1) }, FEATURE_LABEL[f.id] || f.id),
+              h("dd", {}, v == null ? (f.id === "vocals" ? "needs stems" : "–") : (FEATURE_FMT[f.id] || pct)(v))];
+    }).flat()),
+    h("p", { class: "hint" }, "Same audio, same mood. Each mood has typical values for these numbers; the nearest wins. Setting a mood by hand moves that mood's typical values towards the track."));
 }
 
 // ── Preview bar: listen to check a track; it never changes anything ─────────
