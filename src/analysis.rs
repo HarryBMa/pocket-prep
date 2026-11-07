@@ -23,11 +23,12 @@ use clubcraft_core::SectionKind;
 use rusqlite::params;
 use serde_json::{json, Value};
 
-use crate::{config, db, stems};
+use crate::{config, db, mood, stems};
 
 const COLS_PER_S: f64 = 150.0;
-/// Bump when results change; older analyses are redone at startup (3 = ClubCraft + phrase cues).
-pub const VERSION: i64 = 3;
+/// Bump when results change; older analyses are redone at startup (3 = ClubCraft + phrase cues,
+/// 4 = mood features).
+pub const VERSION: i64 = 4;
 
 pub fn load_analysis(track_id: i64) -> Option<Value> {
     let text = std::fs::read_to_string(config::analysis_dir().join(format!("{track_id}.json"))).ok()?;
@@ -268,8 +269,33 @@ pub fn analyse_audio(audio: &AudioBuffer, stems: Option<&StemsRef>, bpm_range: (
         // Auto cues: slot 1-4 = hot cue A-D.
         "auto_cues": auto_cues(&r.sections, &g).iter().map(|&(slot, t, label)| json!({
             "slot": slot, "start_ms": ms(t), "label": label})).collect::<Vec<_>>(),
+        "mood_features": mood::features_json(&mood_features(&r, &lo, &mid, &hi, stems.is_some())),
         "waveforms": waveforms(&peak, &lo, &mid, &hi),
     })
+}
+
+/// The numbers the mood is worked out from (see mood.rs). Shares are of the whole track.
+fn mood_features(r: &clubcraft_core::Analysis, lo: &[f64], mid: &[f64], hi: &[f64], has_stems: bool) -> mood::Features {
+    let energy = |x: &[f64]| x.iter().map(|v| v * v).sum::<f64>();
+    let (l, m, h) = (energy(lo), energy(mid), energy(hi));
+    let total = l + m + h;
+    let bars: f64 = r.sections.iter().map(|s| s.bars as f64).sum();
+    // Stem activity (drums, bass, melody, vocals) averaged over the track, weighted by bars.
+    let stem = |k: usize| (bars > 0.0).then(|| r.sections.iter().map(|s| s.stems[k] as f64 * s.bars as f64).sum::<f64>() / bars);
+    let breaks = (bars > 0.0).then(|| r.sections.iter()
+        .filter(|s| matches!(s.kind, SectionKind::Breakdown | SectionKind::Buildup)).map(|s| s.bars as f64).sum::<f64>() / bars);
+    let round = |x: f64| (x * 1000.0).round() / 1000.0;
+    [
+        r.grid.map(|g| g.bpm),
+        r.loudness_lufs.map(|v| v as f64),
+        (total > 0.0).then(|| l / total),
+        (total > 0.0).then(|| h / total),
+        stem(0),
+        stem(2),
+        if has_stems { stem(3) } else { None },
+        breaks,
+        r.key.map(|k| if k.camelot().ends_with('A') { 1.0 } else { 0.0 }),
+    ].map(|v| v.map(round))
 }
 
 pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
@@ -304,9 +330,11 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
                 db::log(c, "grid_nudge_reset", json!({"track_id": track_id, "why": "re-analysis moved the beat grid"}), None)?;
             }
         }
-        c.execute("UPDATE tracks SET bpm=?, musical_key=?, camelot=?, energy=?, duration=?, analysed_at=? WHERE id=?",
+        c.execute("UPDATE tracks SET bpm=?, musical_key=?, camelot=?, energy=?, duration=?, analysed_at=?, mood_features=? WHERE id=?",
                   params![a["bpm"].as_f64(), a["key"].as_str(), a["camelot"].as_str(), a["energy"].as_i64(),
-                          a["duration_ms"].as_f64().map(|d| d / 1000.0), a["analysed_at"].as_f64(), track_id])?;
+                          a["duration_ms"].as_f64().map(|d| d / 1000.0), a["analysed_at"].as_f64(),
+                          a["mood_features"].to_string(), track_id])?;
+        mood::refresh(c)?;
         // Place automatic cues only if the user hasn't set any.
         let user: Option<i64> = c.query_row("SELECT 1 FROM cues WHERE track_id=? AND auto=0", [track_id], |r| r.get(0)).ok();
         if user.is_none() {
@@ -392,6 +420,36 @@ mod tests {
     /// Real tracks with known values (not in git: copyright). Run with
     ///   POCKET_PREP_KNOWN_TRACKS=<folder> cargo test --release -- --ignored known_tracks
     /// Expected values are in tests/known_tracks.json.
+    /// Mood calibration: POCKET_PREP_MOOD_DIR holds one folder per mood id with example tracks.
+    /// Prints one JSON line per track (expected mood, measured features, ranking) and the hit rate.
+    #[test]
+    #[ignore]
+    fn mood_calibration() {
+        let dir = std::path::PathBuf::from(std::env::var("POCKET_PREP_MOOD_DIR").expect("set POCKET_PREP_MOOD_DIR"));
+        let protos = mood::prototypes(&[]);
+        let (mut hits, mut n) = (0, 0);
+        let mut dirs: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        dirs.sort();
+        for d in dirs {
+            let want = d.file_name().unwrap().to_string_lossy().to_string();
+            let mut files: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.path()).collect();
+            files.sort();
+            for f in files {
+                let Ok(audio) = clubcraft_audio::decode::decode_native(&f) else { continue };
+                let a = analyse_audio(&audio, None, (85.0, 175.0));
+                let feats = mood::features_of(&a).unwrap();
+                let r = mood::rank(&feats, &protos);
+                let got = mood::MOODS[r[0].0].id;
+                n += 1;
+                hits += (got == want) as i32;
+                println!("{}", json!({"want": want, "got": got, "file": f.file_name().unwrap().to_string_lossy(),
+                                      "features": a["mood_features"],
+                                      "top": r.iter().take(3).map(|&(m, d, _)| format!("{} {:.2}", mood::MOODS[m].id, d)).collect::<Vec<_>>()}));
+            }
+        }
+        println!("hit rate {hits}/{n}");
+    }
+
     #[test]
     #[ignore]
     fn known_tracks() {

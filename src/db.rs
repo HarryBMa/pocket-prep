@@ -77,7 +77,9 @@ pub fn conn() -> MutexGuard<'static, Connection> {
         c.execute_batch(SCHEMA).unwrap();
         // Columns added after the first schema (older libraries get them here, empty).
         // grid_offset_ms / downbeat_shift: the user's beat grid nudge on top of the analysis grid.
-        for (col, decl) in [("grid_offset_ms", "REAL DEFAULT 0"), ("downbeat_shift", "INTEGER DEFAULT 0")] {
+        // mood / mood_manual / mood_conf / mood_features: see mood.rs.
+        for (col, decl) in [("grid_offset_ms", "REAL DEFAULT 0"), ("downbeat_shift", "INTEGER DEFAULT 0"), ("mood", "TEXT"),
+                            ("mood_manual", "INTEGER DEFAULT 0"), ("mood_conf", "REAL"), ("mood_features", "TEXT")] {
             let has: bool = c.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name=?").unwrap()
                 .exists([col]).unwrap();
             if !has {
@@ -172,7 +174,7 @@ pub fn marks(n: usize) -> String {
 }
 
 const TRACK_EDITABLE: &[&str] = &["title", "artist", "album", "genre", "comment", "year", "rating", "color", "bpm", "musical_key",
-                                    "grid_offset_ms", "downbeat_shift"];
+                                    "grid_offset_ms", "downbeat_shift", "mood", "mood_manual"];
 
 pub fn update_track(id: i64, fields: &Row) -> Result<()> {
     let fields: Vec<(&String, &Value)> = fields.iter().filter(|(k, _)| TRACK_EDITABLE.contains(&k.as_str())).collect();
