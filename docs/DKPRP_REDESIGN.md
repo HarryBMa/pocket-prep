@@ -124,3 +124,17 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   deck as `cue_labels` in POCKETDECK/analysis, because the rekordbox files have no field for it.
 - **Check before exporting**: the plan lists, per track, what the export will do and what to know first (unplayable file,
   missing file, converted copy used, no stems, near silence, key shift, loudness gain). Nothing is written until Export.
+
+## v4: one bar, the list with the card beside it, the open track full screen
+- **Top bar only**: logo (= Library), search, Playlists (a popover), then the glyphs: analysis queue
+  (a ring), deck (dot), card (count), add files, `+` import, theme, settings. No sidebar, no titles.
+- **Library**: filters are glyphs; energy is five bars; state is three glyphs per row (stems,
+  analysis, on the card: from the export plan). Double-click or Enter opens the track, a click loads
+  it into the preview bar.
+- **Card column** (`#view-export`, always beside the list): drive, free space, scope and stems
+  toggles, the plan and its check, one `N →` button. Folds with the card glyph, resizable.
+- **Open track** (`#detail.track-focus` over the list): waveform stack filling the height, dot lane
+  labels with the name on hover, cue pads, edit-cues pencil, grid-nudge and key-shift pills,
+  listen-to dots, zoom, details (ⓘ). Esc or the chevron in the preview bar goes back.
+- Toasts show under the top bar. Deck and Settings have a back arrow.
+- Product direction and the lean-installer plan: `docs/DECK001_PRODUCT_SPEC.md`.
