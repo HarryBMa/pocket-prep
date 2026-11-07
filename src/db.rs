@@ -78,8 +78,9 @@ pub fn conn() -> MutexGuard<'static, Connection> {
         // Columns added after the first schema (older libraries get them here, empty).
         // grid_offset_ms / downbeat_shift: the user's beat grid nudge on top of the analysis grid.
         // key_shift: semitones the deck shifts the track's key by when it plays it (the file is not changed).
-        for (col, decl) in [("grid_offset_ms", "REAL DEFAULT 0"), ("downbeat_shift", "INTEGER DEFAULT 0"),
-                            ("key_shift", "INTEGER DEFAULT 0")] {
+        // mood / mood_manual / mood_conf / mood_features: see mood.rs.
+        for (col, decl) in [("grid_offset_ms", "REAL DEFAULT 0"), ("downbeat_shift", "INTEGER DEFAULT 0"), ("key_shift", "INTEGER DEFAULT 0"),
+                            ("mood", "TEXT"), ("mood_manual", "INTEGER DEFAULT 0"), ("mood_conf", "REAL"), ("mood_features", "TEXT")] {
             let has: bool = c.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name=?").unwrap()
                 .exists([col]).unwrap();
             if !has {
@@ -174,7 +175,7 @@ pub fn marks(n: usize) -> String {
 }
 
 const TRACK_EDITABLE: &[&str] = &["title", "artist", "album", "genre", "comment", "year", "rating", "color", "bpm", "musical_key",
-                                    "grid_offset_ms", "downbeat_shift", "key_shift"];
+                                    "grid_offset_ms", "downbeat_shift", "key_shift", "mood", "mood_manual"];
 
 /// The deck's key shift range, semitones either way (deck-stretch DS_MAX_SHIFT).
 pub const MAX_KEY_SHIFT: i64 = 12;

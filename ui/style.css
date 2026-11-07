@@ -141,7 +141,6 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 15
 .tree .folder > .nav-item .chev { width: 10px; color: var(--ink-3); font-size: 10px; }
 .tree .children { padding-left: 10px; display: none; border-left: 1px solid var(--line); margin-left: 8px; }
 .tree .folder.open > .children { display: block; }
-.tree-empty { color: var(--ink-3); font-size: 12px; padding: 4px 8px; }
 .side-actions { display: flex; gap: 4px; padding: 4px 4px 0; }
 .side-actions button { color: var(--ink-3); font-size: 12px; padding: 2px 6px; border-color: transparent; }
 .hint { color: var(--ink-3); font-size: 12px; margin: 8px 0 0; max-width: 70ch; }
@@ -208,6 +207,10 @@ tbody tr:focus-visible { outline-offset: -2px; }
 .c-idx { width: 36px; color: var(--ink-3); }
 .c-art { width: 50px; } .c-stems { width: 58px; text-align: center; } .c-menu { width: 34px; }
 td.c-title { font-weight: 500; } td.c-artist { color: var(--ink-2); }
+/* Title and artist share what the other columns leave and shorten with "…" (max-width 0 lets
+   them shrink below their text in an auto-layout table). */
+td.c-title { max-width: 0; width: 58%; } td.c-artist { max-width: 0; width: 42%; }
+.c-mood { width: 1%; }
 .art { display: block; width: 34px; height: 34px; border-radius: var(--r); object-fit: cover; background: var(--surface-2); }
 .key b { font-weight: 600; } .key span { color: var(--ink-3); margin-left: 4px; font-weight: 400; }
 td.c-stems { text-align: center; }
@@ -431,3 +434,23 @@ input[type=range] { accent-color: var(--accent); padding: 0; border: 0; backgrou
 .swatch { display: inline-block; width: 4px; height: 16px; border-radius: 1px; vertical-align: middle; margin-right: 8px; }
 .dot.queued { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* ── Mood ───────────────────────────────────────────────────────────────── */
+.mood { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; color: var(--ink); }
+.mood i { width: 8px; height: 8px; border-radius: 2px; background: var(--mood); flex: none; }
+.mood.unsure { color: var(--ink-2); }
+.mood .q { color: var(--ink-3); font-size: 11px; margin-left: -2px; }
+#tracks tr.group td { max-width: 0; padding: 14px 10px 6px; border-bottom: 1px solid var(--line); background: var(--surface); cursor: default; }
+#tracks tr.group td > * { margin-right: 12px; }
+#tracks tr.group .mood { font-weight: 600; font-size: 13px; }
+#tracks tr.group .about { font-size: 12px; }
+.tp-mood { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.tp-mood .mood-sel { font-size: 12px; padding: 3px 6px; max-width: 220px; }
+.mood-why { margin-top: 12px; }
+.mood-why .why-rank { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 10px; }
+.mood-why .hint { font-size: 12px; margin-top: 8px; }
+.mood-sum { margin-top: 18px; }
+.mood-bar { display: grid; grid-template-columns: 130px minmax(0, 1fr) 32px; align-items: center; gap: 10px; margin: 6px 0; }
+.mood-bar .bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.mood-bar .bar b { display: block; height: 100%; border-radius: 3px; }
+@media (max-width: 1440px) { #tracks tr.group .about { display: none; } }

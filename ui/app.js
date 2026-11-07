@@ -49,6 +49,14 @@ const COLOR_NAMES = ["None", "Pink", "Red", "Orange", "Yellow", "Green", "Aqua",
 const PAD = "ABCDEFGH";
 // Hot cue colours A-H, the DECK001 firmware's slot colours (cues_storage.h). The card itself stores none.
 const CUE_COLORS = ["#ff4545", "#ff9f1c", "#ffdf40", "#20d879", "#00c8e8", "#318cff", "#b79bff", "#ff66af"];
+// Moods (src/mood.rs), in the server's order, which is also the group order. Colours are the
+// deck's slot colours, calm to hard: blue, purple, cyan, orange, red; then green, pink, yellow.
+let MOODS = [], MOOD_FEATURES = [];
+api("/api/moods").then((r) => { MOODS = r.moods; MOOD_FEATURES = r.features; if (state.loaded) renderTracks(); }).catch(() => {});
+const MOOD_COLOR = { deep: CUE_COLORS[5], melodic: CUE_COLORS[6], tech_house: CUE_COLORS[4], peaktime: CUE_COLORS[1],
+                     hard_techno: CUE_COLORS[0], dnb: CUE_COLORS[3], pop: CUE_COLORS[7], downtempo: CUE_COLORS[2] };
+const moodOf = (id) => MOODS.find((m) => m.id === id);
+const moodRank = (id) => { const i = MOODS.findIndex((m) => m.id === id); return i < 0 ? null : i; };
 const PLAYHEAD = "#e9b954"; // DECK001 playhead (settings.h kPlayhead)
 
 const state = { tracks: [], view: [], selected: new Set(), anchor: null, playlist: 0, playlists: [], open: new Set(),
@@ -152,7 +160,7 @@ async function loadPlaylists() {
     return h("div", { class: "folder" + (open ? " open" : "") }, btn, h("div", { class: "children" }, build(p.id)));
   });
   const tree = build(0);
-  $("#tree").replaceChildren(...(tree.length ? tree : [h("div", { class: "tree-empty" }, "No playlists yet.")]));
+  $("#tree").replaceChildren(...(tree.length ? tree : []));
   $("#allTracks").classList.toggle("active", state.playlist === 0);
 }
 async function playlistMenu(p) {
@@ -160,7 +168,7 @@ async function playlistMenu(p) {
   if (name === null) return;
   if (name === "") {
     await api(`/api/playlists/${p.id}`, { method: "DELETE" });
-    toast(`Deleted ${p.is_folder ? "folder" : "playlist"} "${p.name}". Tracks stay in the library.`);
+    toast(`Deleted ${p.is_folder ? "folder" : "playlist"} "${p.name}"`);
     if (state.playlist === p.id) selectPlaylist(0); else loadPlaylists();
   } else { await api(`/api/playlists/${p.id}`, { method: "PATCH", body: { name } }); loadPlaylists(); }
 }
@@ -217,7 +225,7 @@ function visibleTracks() {
   const list = state.tracks.map((t, i) => ({ t, i })).filter(({ t }) => FILTERS[state.filter](t));
   if (state.sort) {
     const { key, dir } = state.sort;
-    const val = (x) => key === "index" ? x.i : x.t[key];
+    const val = (x) => key === "index" ? x.i : key === "mood" ? moodRank(x.t.mood) : x.t[key];
     list.sort((a, b) => {
       const va = val(a), vb = val(b);
       if (va == null || va === "") return vb == null || vb === "" ? 0 : 1;      // empty values last
@@ -249,6 +257,41 @@ function stemPill(t) {
   svg.setAttribute("role", "img"); svg.removeAttribute("aria-hidden"); svg.setAttribute("aria-label", label);
   return h("span", { title: label }, svg);
 }
+function moodSummary() {
+  const counts = MOODS.map((m) => [m, state.tracks.filter((t) => t.mood === m.id).length]).filter(([, n]) => n);
+  if (!counts.length) return null;
+  const max = Math.max(...counts.map(([, n]) => n));
+  return h("section", { class: "mood-sum", "aria-label": "Moods in this list" },
+    h("div", { class: "sec-h" }, "Moods", h("span", { class: "spacer" }),
+      h("button", { class: "ghost small", onclick: () => { state.sort = { key: "mood", dir: 1 }; renderTracks(); } }, "Group by mood")),
+    counts.map(([m, n]) => h("div", { class: "mood-bar" },
+      h("span", { class: "mood", style: `--mood:${MOOD_COLOR[m.id]}` }, h("i"), m.label),
+      h("span", { class: "bar" }, h("b", { style: `width:${(n / max) * 100}%;background:${MOOD_COLOR[m.id]}` })),
+      h("span", { class: "num muted" }, String(n)))));
+}
+// Mood: a coloured label; "?" when the guess is close between two moods (under 50 % sure).
+function moodPill(t) {
+  const m = moodOf(t.mood);
+  if (!m) return h("span", { class: "muted" }, t.analysed_at ? "–" : "");
+  const sure = Math.round((t.mood_conf ?? 0) * 100), unsure = !t.mood_manual && sure < 50;
+  return h("span", { class: "mood" + (unsure ? " unsure" : ""), style: `--mood:${MOOD_COLOR[m.id] || "#8a8a90"}`,
+                     title: `${m.about}. ${t.mood_manual ? "Set by you." : `Automatic, ${sure} % sure.`}` },
+    h("i"), m.label, unsure ? h("span", { class: "q", "aria-label": "unsure" }, "?") : null);
+}
+// Sorted by mood, each mood gets a header row with its track count and length.
+function withMoodGroups(vis, rows) {
+  const out = [];
+  vis.forEach(({ t }, k) => {
+    if (k === 0 || vis[k - 1].t.mood !== t.mood) {
+      const group = vis.filter((x) => x.t.mood === t.mood).map((x) => x.t), m = moodOf(t.mood);
+      out.push(h("tr", { class: "group", "aria-hidden": "true" }, h("td", { colspan: "11" },
+        h("span", { class: "mood", style: `--mood:${m ? MOOD_COLOR[m.id] : "#8a8a90"}` }, h("i"), m ? m.label : "No mood yet"),
+        h("span", { class: "muted" }, `${plural(group.length, "track")} · ${fmtDur(group.reduce((a, x) => a + (x.duration || 0), 0))}`))));
+    }
+    out.push(rows[k]);
+  });
+  return out;
+}
 // Key in the track colours by Camelot number, so neighbouring keys look related.
 const keyColor = (camelot) => COLORS[1 + ((parseInt(camelot, 10) || 1) - 1) % 8];
 function artCell(t) {
@@ -274,6 +317,7 @@ function renderTracks() {
           title: t.key_shift ? `${t.camelot} ${t.musical_key || ""} as analysed, shifted ${fmtShift(t.key_shift)} on the deck` : null },
         h("b", {}, t.shifted_camelot || t.camelot), h("span", {}, t.shifted_key || t.musical_key || ""),
         t.key_shift ? h("span", { class: "shift-tag" }, fmtShift(t.key_shift)) : null) : ""),
+      h("td", { class: "c-mood" }, moodPill(t)),
       h("td", { class: "num" }, t.energy != null ? String(t.energy) : ""),
       h("td", { class: "c-st c-stems" }, stemPill(t)),
       h("td", { class: "c-an" }, analysisCell(t)),
@@ -292,7 +336,7 @@ function renderTracks() {
     }
     return tr;
   });
-  body.replaceChildren(...rows);
+  body.replaceChildren(...(state.sort?.key === "mood" ? withMoodGroups(vis, rows) : rows));
   // Keyboard focus lands on the anchor row (or the first), arrow keys move from there.
   (body.querySelector(`tr[data-id="${state.anchor}"]`) || body.firstElementChild)?.setAttribute("tabindex", "0");
   if (focusedId) body.querySelector(`tr[data-id="${focusedId}"]`)?.focus({ preventScroll: true });
@@ -301,7 +345,7 @@ function renderTracks() {
   const note = $("#tableNote");
   note.hidden = state.loaded && (rows.length > 0 || libEmpty);
   note.textContent = !state.loaded ? "Loading library…"
-    : state.tracks.length === 0 && state.playlist && !$("#search").value ? "This playlist is empty. Drag tracks onto it in the sidebar."
+    : state.tracks.length === 0 && state.playlist && !$("#search").value ? "Empty playlist"
     : state.tracks.length === 0 ? "No tracks match the search." : "No tracks match this filter.";
   $$("#tracks thead th[data-sort]").forEach((th) => th.setAttribute("aria-sort", state.sort?.key === th.dataset.sort ? (state.sort.dir > 0 ? "ascending" : "descending") : "none"));
   renderContext();
@@ -449,7 +493,7 @@ async function removeSelected() {
   const ids = [...state.selected];
   if (!ids.length) return;
   const r = await api("/api/tracks/remove", { body: { ids } });
-  toast(`Removed ${ids.length} from the library (files are kept)`, r.undo);
+  toast(`Removed ${ids.length} from the library`, r.undo);
   state.selected.clear();
   if (state.current && ids.includes(state.current.id)) closeDetail();
   loadTracks();
@@ -584,9 +628,7 @@ function renderDetail() {
   const t = state.current;
   const d = $("#detail");
   if (!t) {
-    fill(d, h("div", { class: "tp-empty" },
-      h("p", {}, h("b", {}, "Select a track to prepare it.")),
-      h("p", { class: "hint" }, "Check the beat grid against the waveform, set cues, fix tags and make stems.")), exportCard());
+    fill(d, h("div", { class: "tp-empty" }), moodSummary(), exportCard());
     return;
   }
   const field = (label, key, type = "text") => {
@@ -621,7 +663,7 @@ function renderDetail() {
       h("button", { class: "ghost small", onclick: () => { player.currentTime = c.start_ms / 1000; } }, "Jump"),
       h("button", { class: "ghost small icon-btn", "aria-label": `Delete memory cue at ${fmtMs(c.start_ms)}`, title: "Delete",
                     onclick: () => removeMemory(c).catch(fail) }, icon("x", "ic sm"))))
-    : h("div", { class: "muted", style: "font-size:12px" }, "None. Press M to add one at the playhead."));
+    : h("div", { class: "muted", style: "font-size:12px" }, "None"));
 
   // Stems: solo one at a time through the same player, or make them.
   const sj = jobFor(t.id, "stems");
@@ -647,19 +689,20 @@ function renderDetail() {
       h("div", { class: "tp-id" },
         h("div", { class: "tp-title", title: t.path }, t.title || ""),
         h("div", { class: "tp-artist" }, t.artist || "Unknown artist"),
-        h("div", { class: "tp-meta" }, meta)),
+        h("div", { class: "tp-meta" }, meta),
+        moodPicker(t)),
       h("button", { class: "ghost icon-btn", "aria-label": "Track actions", title: "Actions",
         onclick: (e) => openMenu(e.currentTarget, [...trackMenuItems(t), { label: "Close track", run: closeDetail }]) }, icon("more", "ic sm"))),
     splitSuggestion(t),
     why.length ? h("div", { class: "warn-line" }, "Needs attention: ", why.join(" · ")) : null,
     h("section", { "aria-label": "Waveforms", class: "tp-waves" },
-      secH("Waveform", h("span", { class: "spacer" }), h("span", { class: "muted" }, `${WAVE_THEMES[waveTheme].name} · ${WAVE_STYLES[waveStyle].name}`),
+      secH("Waveform", h("span", { class: "spacer" }),
         h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
           h("button", { class: "ghost small", "aria-label": "Zoom out", title: "Zoom out", onclick: () => zoomWave(0.5) }, "−"),
           h("button", { class: "ghost small", "aria-label": "Zoom in", title: "Zoom in", onclick: () => zoomWave(2) }, "+"))),
       waveStack),
     h("section", { "aria-label": "Hot cues", class: "tp-cues" },
-      secH("Hot cues", h("span", { class: "muted" }, "keys 1–8"), h("span", { class: "spacer" }),
+      secH("Hot cues", h("span", { class: "spacer" }),
         h("button", { class: "ghost small", "aria-pressed": String(!!state.cueEdit), onclick: () => { state.cueEdit = !state.cueEdit; renderDetail(); } }, state.cueEdit ? "Done" : "Edit")),
       pads, state.cueEdit ? memList : null),
     t.sections?.length ? h("section", { "aria-label": "Sections and phrases" },
@@ -685,14 +728,15 @@ function renderDetail() {
             h("button", { "aria-label": "Later by 1 ms (], Shift for 10 ms)", title: "Later by 1 ms (], Shift+] for 10 ms)", onclick: (e) => gridNudge(e.shiftKey ? 10 : 1) }, "›")),
           h("button", { class: "ghost small", title: "Back to the analysis grid", onclick: gridReset }, "Reset"),
           h("button", { class: "ghost small", title: "Move the bar start one beat later", onclick: () => gridNudge(0, 1) }, "Downbeat +1"))
-        : h("div", { class: "muted" }, "Appears after analysis")),
+        : h("div", { class: "muted" }, "Not analysed")),
       h("section", { "aria-label": "Stems", class: "tp-stems" }, secH("Stems"), stems)),
     h("details", { class: "details", open: state.detailsOpen ? true : null, ontoggle: (e) => { state.detailsOpen = e.currentTarget.open; } },
-      h("summary", { class: "sec-h" }, "Track details", h("span", { class: "spacer" }), h("span", { class: "muted" }, "tags, rating, phrases")),
+      h("summary", { class: "sec-h" }, "Track details"),
       h("div", { class: "fields" },
         field("Title", "title"), field("Artist", "artist"), field("Album", "album"),
         field("Genre", "genre"), field("BPM", "bpm", "number"), field("Year", "year", "number"),
         h("label", {}, "Colour", color), h("label", {}, "Rating", rating), field("Comment", "comment")),
+      moodWhy(t),
       ph ? h("dl", { class: "kv", style: "margin-top:10px" },
         h("dt", {}, "First downbeat"), h("dd", {}, fmtMs(ph.first_downbeat_ms)),
         h("dt", {}, "Intro ends"), h("dd", {}, fmtMs(ph.intro_end_ms)),
@@ -700,6 +744,51 @@ function renderDetail() {
         h("dt", {}, plural(ph.drops.length, "drop")), h("dd", {}, ph.drops.map(fmtMs).join(", ") || "–")) : null),
     exportCard());
   syncMarkers();
+}
+
+// Mood in the track panel: the label and a menu to set it. Picking one teaches the automatic
+// moods (mood.rs); "Automatic" hands the track back to the analysis.
+function moodPicker(t) {
+  if (!t.analysed_at || !MOODS.length) return null;
+  const sel = h("select", { "aria-label": "Mood", class: "mood-sel" },
+    h("option", { value: "", selected: !t.mood_manual }, "Auto"),
+    MOODS.map((m) => h("option", { value: m.id, selected: !!t.mood_manual && t.mood === m.id }, m.label)));
+  sel.addEventListener("change", () => saveMood(sel.value || null));
+  return h("div", { class: "tp-mood" }, moodPill(t), sel);
+}
+async function saveMood(id) {
+  try {
+    const body = id ? { mood: id, mood_manual: 1 } : { mood_manual: 0 };
+    const r = await api(`/api/tracks/${state.current.id}`, { method: "PATCH", body });
+    const m = moodOf(r.track.mood);
+    toast(id ? `Mood: ${m?.label}` : `Mood: automatic (${m?.label || "none"})`, r.undo);
+    await openTrack(state.current.id);
+    loadTracks();
+  } catch (e) { fail(e); }
+}
+// Why: the three nearest moods and the measured numbers they were compared on.
+const FEATURE_LABEL = { bpm: "Tempo", lufs: "Loudness", bass: "Bass", bright: "Treble", drums: "Drums", melody: "Melody",
+                        vocals: "Vocals", breaks: "Breakdowns", minor: "Key" };
+const FEATURE_FMT = {
+  bpm: (v) => `${fmtBpm(v)} BPM`, lufs: (v) => `${v.toFixed(1)} LUFS`, minor: (v) => (v >= 0.5 ? "minor" : "major"),
+};
+function moodWhy(t) {
+  const w = t.mood_why;
+  if (!w?.ranking) return null;
+  const pct = (v) => `${Math.round(v * 100)} %`;
+  return h("div", { class: "mood-why" },
+    h("div", { class: "sec-h" }, "Why this mood"),
+    h("div", { class: "why-rank" }, w.ranking.map((r) => {
+      const m = moodOf(r.id);
+      return h("span", { class: "mood", style: `--mood:${MOOD_COLOR[r.id]}`, title: `Distance ${r.distance} (0 = exactly typical)` },
+        h("i"), m?.label || r.id, h("span", { class: "muted" }, ` ${pct(r.confidence)}`));
+    })),
+    h("dl", { class: "kv" }, MOOD_FEATURES.map((f) => {
+      const v = w.features?.[f.id];
+      return [h("dt", { title: f.about[0].toUpperCase() + f.about.slice(1) }, FEATURE_LABEL[f.id] || f.id),
+              h("dd", {}, v == null ? (f.id === "vocals" ? "needs stems" : "–") : (FEATURE_FMT[f.id] || pct)(v))];
+    }).flat()),
+  );
 }
 
 // ── Preview bar: listen to check a track; it never changes anything ─────────
@@ -1090,7 +1179,6 @@ function renderInlineJobs() {
       el.append(h("div", { class: "plan" }, h("b", {}, "Export complete"),
         h("div", {}, `Exported ${j.result.tracks} tracks (${j.result.copied} files copied), ${j.result.playlists} playlists, ${j.result.stems} with stems.` +
           (j.result.missing_files ? ` ${j.result.missing_files} files were missing and skipped.` : "")),
-        h("div", { class: "muted" }, "Eject the drive before unplugging it."),
         ...deckWarnings(j.result.warnings)));
     }
   }
@@ -1116,7 +1204,6 @@ const exp = { root: null, drives: [], plan: null };
 function foreignLibrary(why) {
   return h("div", { class: "suggest" },
     h("span", {}, why, " Exporting would replace it, so DKPRP won't."),
-    h("button", { class: "ghost small", disabled: true, title: "Coming soon: keeps every existing track, cue and playlist" }, "Add to the existing library"),
     h("button", { class: "ghost small", onclick: () => { exp.root = null; loadExport(); } }, "Choose another drive"));
 }
 
@@ -1141,14 +1228,14 @@ async function loadExport() {
       h("div", { class: "bar", title: `${Math.round(used * 100)}% used` }, h("i", { style: `width:${used * 100}%` })),
       h("div", { class: "muted tnum" }, `${fmtBytes(d.free)} free of ${fmtBytes(d.total)}`),
       d.problem ? h("div", { class: "alert-text" }, d.problem) : null,
-      d.has_export ? h("div", { class: "muted" }, "Has a rekordbox library: checked in the plan before anything is written") : null);
+      d.has_export ? h("div", { class: "muted" }, "Has a rekordbox library") : null);
     c.addEventListener("click", () => { exp.root = d.root; loadExport(); });
     return c;
-  }) : [h("p", { class: "muted" }, "No removable drives found. Insert an SD card or USB stick, then Refresh.")]));
+  }) : [h("p", { class: "muted" }, "No removable drives")]));
   const lists = state.playlists.filter((p) => !p.is_folder);
   const ticked = new Set($$("#exportPlaylists input:checked").map((i) => +i.value));
   $("#exportPlaylists").replaceChildren(...(lists.length ? lists.map((p) => h("label", { class: "check" }, h("input", { type: "checkbox", value: p.id, checked: ticked.has(p.id) }), `${p.name} (${p.count})`))
-    : [h("span", { class: "muted" }, "No playlists yet.")]));
+    : [h("span", { class: "muted" }, "No playlists")]));
   updatePlan();
 }
 $$("input[name=scope]").forEach((r) => r.addEventListener("change", () => { $("#exportPlaylists").hidden = $("input[name=scope]:checked").value !== "playlists"; updatePlan(); }));
@@ -1179,7 +1266,7 @@ async function updatePlan() {
   btn.disabled = true; btn.textContent = "Export";
   plan.classList.remove("bad");
   renderTarget(null);
-  if (!exp.root) { plan.textContent = "Choose a drive to see what will be copied."; return; }
+  if (!exp.root) { plan.textContent = "No drive selected"; return; }
   const body = exportBody();
   if (body.playlist_ids && !body.playlist_ids.length) { plan.textContent = "Tick at least one playlist."; return; }
   plan.textContent = "Working out the plan…";
@@ -1244,7 +1331,7 @@ async function loadDeck() {
       ...(s.reachable ? [row("Firmware", f.version || f.app_version || "?"), row("Project", f.project), row("Running partition", f.running_partition || f.slot),
                          row("Image state", f.running_image_state)] : [])),
     s.reachable && f.last_error ? h("div", { class: "alert-text" }, `Last update error: ${f.last_error}`) : null,
-    s.reachable ? null : h("p", { class: "hint", style: "margin:0" }, `Turn on Wi-Fi Remote on the deck and join its network to update or read its status. The address is set in Settings.`));
+  );
   const ports = await api("/api/deck/ports").catch(() => []);
   $("#ports").replaceChildren(...(ports.length ? ports.map((p) => h("option", { value: p.port }, `${p.port} – ${p.description}${p.espressif ? " (ESP32)" : ""}`)) : [h("option", { value: "" }, "No USB serial ports")]));
 }

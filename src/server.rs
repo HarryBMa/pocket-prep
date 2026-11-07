@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 use crate::db::{self, Row};
 use crate::export::usb;
-use crate::{analysis, config, deck, jobs, library, stems};
+use crate::{analysis, config, deck, jobs, library, mood, stems};
 
 pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -29,7 +29,8 @@ pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 struct Ui;
 
 const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
-    rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift";
+    rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
+    mood, mood_manual, mood_conf";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -88,6 +89,8 @@ fn queue_analysis(track_ids: &[i64]) -> Vec<i64> {
 /// re-analyse outdated tracks (after, so the analysis can use the converted stems).
 pub fn startup_jobs() {
     jobs::submit("stems", "Convert stems to FLAC", "io", None, |h| {
+        // Moods follow the current MOODS table and your hand-picked moods.
+        db::tx(mood::refresh)?;
         h.progress(0.1, "Converting");
         let n = stems::migrate_wav_stems()?;
         queue_outdated_analysis();
@@ -155,6 +158,7 @@ async fn get_track(P(tid): P<i64>) -> R {
         let mut t = track_or_404(tid)?;
         let a = analysis::load_analysis(tid);
         t.insert("cues".into(), json!(library::cues(tid)?));
+        t.insert("mood_why".into(), db::tx(|c| mood::explain(c, tid))?);
         t.insert("phrases".into(), a.as_ref().map(|a| a["phrases"].clone()).unwrap_or(Value::Null));
         // Phrase sections (intro, build, drop...) for the phrase strip under the waveform.
         t.insert("sections".into(), a.as_ref().map(|a| a["sections"].clone()).unwrap_or(json!([])));
@@ -227,6 +231,9 @@ async fn patch_track(P(tid): P<i64>, Json(fields): Json<Row>) -> R {
     blocking(move || {
         track_or_404(tid)?;
         db::update_track(tid, &fields)?;
+        if fields.contains_key("mood") || fields.contains_key("mood_manual") {
+            db::tx(mood::refresh)?;       // a hand-picked mood also teaches the others
+        }
         let last = db::one("SELECT id FROM history ORDER BY id DESC LIMIT 1", &[])?.map(|r| r["id"].clone());
         Ok(json!({"track": track_or_404(tid)?, "undo": last}))
     }).await
@@ -301,6 +308,7 @@ async fn undo(P(hid): P<i64>) -> R {
         if !db::undo(hid)? {
             return Err(ApiError(StatusCode::CONFLICT, "That change can't be undone".into()));
         }
+        db::tx(mood::refresh)?;
         Ok(json!({"ok": true}))
     }).await
 }
@@ -453,6 +461,7 @@ pub fn router() -> Router {
         .route("/api/jobs/{id}/cancel", post(cancel_job))
         .route("/api/jobs/clear", post(clear_jobs))
         .route("/api/tracks", get(list_tracks))
+        .route("/api/moods", get(|| async { Json(mood::list()) }))
         .route("/api/tracks/{tid}", get(get_track).patch(patch_track))
         .route("/api/tracks/{tid}/waveform", get(get_waveform))
         .route("/api/tracks/{tid}/audio", get(get_audio))
