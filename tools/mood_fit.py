@@ -9,6 +9,7 @@ Usage:
   python tools/mood_fit.py run1.jsonl run2.jsonl [--keep keep.txt] [--folds 5] [--weights] [--rust]
 
   --keep FILE   only use files whose name is listed in FILE (one per line): the tracks you approved
+  --fit-only A,B  fit only these moods; the others keep their built-in values (for moods whose labels you don't trust)
   --without N   leave the number N (e.g. lufs) out of the distance: use it when the sources differ in mastering
   --weights     also try changing the feature weights, keeping a change only if it helps in the cross-validation
   --rust        print the fitted MOODS lines to paste into src/mood.rs
@@ -61,11 +62,11 @@ def confidence(x, protos, w):
     return max(like) / max(sum(like), 1e-300)
 
 
-def fit(data, names, builtin, min_tracks=5):
-    """Prototype per mood from (mood index, features); a mood with fewer than min_tracks keeps the built-in values."""
+def fit(data, names, builtin, min_tracks=5, only=None):
+    """Prototype per mood from (mood index, features); a mood with fewer than min_tracks, or not in `only`, keeps the built-in values."""
     protos = []
     for m, base in enumerate(builtin):
-        rows = [x for k, x in data if k == m]
+        rows = [x for k, x in data if k == m and (only is None or m in only)]
         p = []
         for j, name in enumerate(names):
             v = sorted(r[j] for r in rows if r[j] is not None)
@@ -90,13 +91,13 @@ def folds_of(data, k, seed=1):
     return fold
 
 
-def cross_validate(data, names, builtin, w, k, fitted=True):
+def cross_validate(data, names, builtin, w, k, fitted=True, only=None):
     """(accuracy, per-fold accuracies, confusion matrix) on held-out folds; the built-in values need no fitting."""
     fold, conf, per = folds_of(data, k), collections.Counter(), []
     for f in range(k):
         train = [d for d, g in zip(data, fold) if g != f]
         test = [d for d, g in zip(data, fold) if g == f]
-        protos = fit(train, names, builtin) if fitted else builtin
+        protos = fit(train, names, builtin, only=only) if fitted else builtin
         ok = 0
         for m, x in test:
             p = predict(x, protos, w)
@@ -124,6 +125,7 @@ def main():
     ap.add_argument("--keep")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--without", action="append", default=[])
+    ap.add_argument("--fit-only", default="")
     ap.add_argument("--weights", action="store_true")
     ap.add_argument("--rust", action="store_true")
     a = ap.parse_args()
@@ -159,7 +161,8 @@ def main():
 
     acc0, per0, conf0 = cross_validate(d2, names, base2, w0, a.folds, fitted=False)
     show("built-in values (never fitted on these tracks)", acc0, per0, conf0, ids2, pres2)
-    acc1, per1, conf1 = cross_validate(d2, names, base2, w0, a.folds)
+    only = {ids2.index(m) for m in a.fit_only.split(",") if m in ids2} if a.fit_only else None
+    acc1, per1, conf1 = cross_validate(d2, names, base2, w0, a.folds, only=only)
     show(f"fitted values, {a.folds}-fold cross-validation", acc1, per1, conf1, ids2, pres2)
     print(f"\nchange: {100 * (acc1 - acc0):+.1f} percentage points; better in {sum(x > y for x, y in zip(per1, per0))} of {a.folds} folds")
 
@@ -178,9 +181,9 @@ def main():
                         w, best, bper = t, acc, per
         print("\nweights:", ", ".join(f"{n} {x:g}" for n, x in zip(names, w)),
               "(unchanged)" if w == w0 else f"-> {100 * best:.1f} % cross-validated (was {100 * acc1:.1f} %)")
-        acc1, per1, conf1 = cross_validate(d2, names, base2, w, a.folds)
+        acc1, per1, conf1 = cross_validate(d2, names, base2, w, a.folds, only=only)
 
-    full = fit(d2, names, base2)
+    full = fit(d2, names, base2, only=only)
     # confidence of the fitted values on the tracks they were fitted on is NOT an accuracy; shown for the mean only
     print("\nmean confidence on held-in tracks (not an accuracy):", f"{100 * statistics.mean(confidence(x, full, w) for _, x in d2):.0f} %")
     if a.rust:

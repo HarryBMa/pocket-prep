@@ -50,16 +50,17 @@ pub struct Mood {
 }
 
 /// Built-in moods, in the order the library groups them (calm to hard, then the rest).
-/// Typical values were measured on a calibration set (docs/MOOD.md).
+/// Deep, melodic, tech house and peak time are fitted on a DJ library (docs/MOOD.md); the other four are
+/// still rules of thumb, because no labelled set could confirm them yet.
 pub const MOODS: &[Mood] = &[
     Mood { id: "deep", label: "Deep", about: "Deep house and deep tech: warm, rolling, low-key, few vocals",
-           proto: [(121.0, 4.0), (-10.5, 3.0), (0.45, 0.12), (0.015, 0.02), (0.85, 0.12), (0.6, 0.15), (0.15, 0.25), (0.06, 0.08), (1.0, 0.7)] },
+           proto: [(124.0, 2.0), (-8.871, 1.0), (0.447, 0.03), (0.018, 0.03), (0.924, 0.048), (0.762, 0.11), (0.15, 0.25), (0.109, 0.095), (1.0, 0.741)] },
     Mood { id: "melodic", label: "Melodic", about: "Melodic techno and progressive: big melodies, long breakdowns, minor keys",
-           proto: [(123.0, 4.0), (-9.5, 3.0), (0.35, 0.12), (0.025, 0.02), (0.78, 0.12), (0.8, 0.15), (0.2, 0.3), (0.15, 0.08), (1.0, 0.5)] },
+           proto: [(126.0, 3.7), (-9.386, 1.0), (0.494, 0.046), (0.02, 0.03), (0.887, 0.119), (0.757, 0.158), (0.2, 0.3), (0.114, 0.071), (1.0, 0.741)] },
     Mood { id: "tech_house", label: "Tech house", about: "Groovy, percussive, bass-led, vocal snippets",
-           proto: [(125.0, 3.0), (-8.5, 3.0), (0.45, 0.12), (0.02, 0.02), (0.95, 0.12), (0.6, 0.15), (0.3, 0.3), (0.05, 0.08), (0.7, 0.7)] },
+           proto: [(126.0, 2.22), (-8.646, 1.0), (0.438, 0.055), (0.025, 0.03), (0.904, 0.06), (0.738, 0.155), (0.3, 0.3), (0.139, 0.111), (1.0, 0.741)] },
     Mood { id: "peaktime", label: "Peak time", about: "Driving peak-time techno and house: loud, dense, full on",
-           proto: [(130.0, 4.0), (-8.0, 3.0), (0.42, 0.12), (0.02, 0.02), (0.9, 0.12), (0.6, 0.15), (0.15, 0.25), (0.1, 0.08), (0.8, 0.7)] },
+           proto: [(126.0, 2.0), (-7.768, 1.04), (0.472, 0.033), (0.02, 0.03), (0.815, 0.145), (0.637, 0.121), (0.15, 0.25), (0.181, 0.039), (1.0, 0.741)] },
     Mood { id: "hard_techno", label: "Hard techno", about: "Hard, industrial and schranz: fast, loud, distorted kicks",
            proto: [(145.0, 8.0), (-6.5, 3.0), (0.5, 0.12), (0.03, 0.02), (0.92, 0.12), (0.65, 0.15), (0.1, 0.2), (0.06, 0.08), (0.8, 0.7)] },
     Mood { id: "dnb", label: "Drum & bass", about: "Drum & bass, jungle and breaks at 160-180 BPM",
@@ -196,7 +197,7 @@ mod tests {
         let mut f = feats(MOODS[0].proto.map(|(c, _)| c));
         f[0] = Some(127.0);
         let p = prototypes(&[(0, f), (0, f), (0, f)]);
-        assert!((p[0][0].0 - (3.0 * 121.0 + 3.0 * 127.0) / 6.0).abs() < 1e-9);
+        assert!((p[0][0].0 - (3.0 * MOODS[0].proto[0].0 + 3.0 * 127.0) / 6.0).abs() < 1e-9);
         assert_eq!(p[1][0].0, MOODS[1].proto[0].0);
     }
 

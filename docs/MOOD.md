@@ -55,27 +55,72 @@ measured numbers, so a surprising mood can be traced to the number that caused i
 
 ## Where the typical values come from
 
-They started as rules of thumb (tempo ranges are well known per genre). Then their scale was
-set from 32 Creative Commons tracks from archive.org netlabels, four per mood, analysed with
-the `mood_calibration` test:
+**Deep, Melodic, Tech house and Peak time** are fitted on a DJ library: 88 club tracks, labelled
+from their Beatport genre tags (Deep House and Minimal / Deep Tech = deep; Melodic House & Techno
+and Progressive House = melodic; Tech House = tech house; Techno and Techno (Peak Time / Driving)
+= peak time). Per number, the typical value is the median and the spread is IQR / 1.35, never
+below a floor (tempo 2, loudness 1, shares 0.03, key 0.3).
+
+**Hard techno, Drum & bass, Mainstream pop and Downtempo** are still rules of thumb. No clean
+labelled set exists for them: 120 Creative Commons tracks from MTG-Jamendo were tried, but their
+genre tags are the artists' own. Only 6 of the 29 "drum & bass" tracks are above 160 BPM, and
+the fitted tempo spread came out at 38 BPM, so fitting them would have made those moods worse.
+They were used only to check the fit, not to set the values.
+
+### How accurate it is
+
+Measured with 5-fold cross-validation: every track is predicted by values fitted *without* it
+(the moods are split evenly over five groups; fit on four, test on the fifth, five times).
+Never counted on the tracks the values were fitted on.
+
+| Test set | Built-in (before) | Fitted (after) | Folds better |
+|---|---|---|---|
+| The 4 club moods only, 88 tracks | 28.4 % | 48.9 % | 5 of 5 |
+| All 8 moods, 88 club + 72 Jamendo tracks* | 28.9 % | 39.0 % | 4 of 5 |
+
+\* Only the Jamendo tracks where an independent classifier (Essentia Discogs-EffNet) agreed with the
+artist's tag are included; the rest are mislabelled too often. Chance for eight moods is 12.5 %.
+
+Club moods, held-out predictions (rows: Beatport label, columns: predicted):
+
+| | deep | melodic | tech house | peak time |
+|---|---|---|---|---|
+| deep (21) | 5 | 6 | 10 | 0 |
+| melodic (7) | 1 | 1 | 3 | 2 |
+| tech house (44) | 4 | 6 | 31 | 3 |
+| peak time (16) | 0 | 4 | 6 | 6 |
+
+Tech house is found 70 % of the time; deep 24 %, melodic 14 %, peak time 38 %. The most
+confused pairs are deep -> tech house, tech house -> melodic and peak time -> tech house: the nine
+numbers can't hear kick timbre, groove or darkness. The weights were left unchanged: a
+weight search gave +3 points on the pooled set, but not consistently across folds.
+
+A comparison: Essentia's Discogs-EffNet style classifier (400 styles, summed into our moods) agrees
+with the Beatport label on 60 % of the 89 club tracks without any fitting. It is the better next
+step, but its models are CC BY-NC-SA (non-commercial; a commercial licence is available from the
+authors), so it needs a licence decision before it ships.
+
+### Redoing it
 
 ```
-POCKET_PREP_MOOD_DIR=<folder with one sub-folder per mood id> \
-  cargo test --release mood_calibration -- --ignored --nocapture
+# 1. a TSV of "mood id<TAB>path" (the music stays where it is), then measure it:
+POCKET_PREP_MOOD_LIST=tracks.tsv cargo test --release mood_calibration -- --ignored --nocapture > run.jsonl
+# 2. fit and cross-validate (python 3, standard library only):
+python tools/mood_fit.py run.jsonl [--keep approved-files.txt] [--fit-only deep,melodic,tech_house,peaktime] [--weights] [--rust]
 ```
 
-The netlabel tags turned out to be poor labels: a "deep" track at 160 BPM, "drum & bass" at 90
-and 120 BPM, and the same file tagged both deep and tech house. So that set gave the **scale** of
-each number (e.g. bass share 0.2–0.5, treble under 0.06, breakdowns 0–0.25), not a fair
-accuracy. 10 of 32 matched their tags, and many of the tags are themselves wrong.
+`--rust` prints the values to paste into `MOODS` in `src/mood.rs`. Compare the printed
+cross-validated accuracy for the built-in and the fitted values before you keep a change.
 
-**Expect to correct moods at first.** The built-in values are a starting point; the hand-picked
-tracks are what make it fit your library. A few per mood is enough to move it.
+**Expect to correct moods at first.** The values are a starting point; the hand-picked tracks
+are what make it fit your library. A few per mood is enough to move it.
 
 ## Limits and next steps
 
-- Loudness mostly reflects mastering (netlabel releases are 4–6 dB quieter than club
-  releases), so it has a low weight.
+- Loudness mostly reflects mastering (free-music releases are quieter than club releases, and a
+  pooled test can "succeed" by hearing that), so it has a low weight.
+- Tempo can come out at half or double the real value (several drum & bass tracks measured at
+  87 BPM): the analysis range is 85-175 BPM.
 - Deep vs peak time vs tech house is the hardest split: the nine numbers don't hear kick
   timbre, groove or "darkness". A better next step is an audio embedding: a network turns
   each track into a vector, and the same nearest-centroid idea runs on it. The Essentia
