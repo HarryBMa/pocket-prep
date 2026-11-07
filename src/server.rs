@@ -30,7 +30,7 @@ struct Ui;
 
 const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
     rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
-    mood, mood_manual, mood_conf";
+    mood, mood_manual, mood_conf, edited";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -232,6 +232,8 @@ async fn get_stem(P((tid, name)): P<(i64, String)>, req: Request) -> Response {
 async fn patch_track(P(tid): P<i64>, Json(fields): Json<Row>) -> R {
     blocking(move || {
         track_or_404(tid)?;
+        let mut fields = fields;
+        analysis::apply_user_edits(tid, &mut fields)?;
         db::update_track(tid, &fields)?;
         if fields.contains_key("mood") || fields.contains_key("mood_manual") {
             db::tx(mood::refresh)?;       // a hand-picked mood also teaches the others

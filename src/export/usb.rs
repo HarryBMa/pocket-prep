@@ -594,6 +594,28 @@ mod export_tests {
         export_to(&card.to_string_lossy(), None, true, &|_, _| {}, &|| false).unwrap();
         assert_eq!(key_shift(&card), -3);
 
+        // Edits from the list: key (Camelot), energy and tempo are validated, remembered, and survive a re-analysis;
+        // null puts the analysed value back.
+        let edit = |v: Value| -> anyhow::Result<()> {
+            let mut f = v.as_object().unwrap().clone();
+            analysis::apply_user_edits(tid, &mut f)?;
+            db::update_track(tid, &f)
+        };
+        let analysed = db::track(tid).unwrap().unwrap();
+        for bad in [json!({"camelot": "13A"}), json!({"camelot": "Am"}), json!({"energy": 11}), json!({"energy": 0}), json!({"bpm": -5})] {
+            assert!(edit(bad.clone()).is_err(), "{bad}");
+        }
+        edit(json!({"camelot": "5b", "energy": 9, "bpm": 123.456})).unwrap();
+        let t = db::track(tid).unwrap().unwrap();
+        assert_eq!((t["camelot"].as_str(), t["musical_key"].as_str(), t["energy"].as_i64(), t["bpm"].as_f64()), (Some("5B"), Some("Eb"), Some(9), Some(123.46)));
+        analysis::analyse(tid, &|_, _| {}).unwrap();
+        let t = db::track(tid).unwrap().unwrap();
+        assert_eq!((t["camelot"].as_str(), t["energy"].as_i64(), t["bpm"].as_f64()), (Some("5B"), Some(9), Some(123.46)), "a re-analysis keeps edits");
+        edit(json!({"camelot": null, "energy": null, "bpm": null})).unwrap();
+        let t = db::track(tid).unwrap().unwrap();
+        assert_eq!((t["camelot"].clone(), t["energy"].clone(), t["bpm"].clone()), (analysed["camelot"].clone(), analysed["energy"].clone(), analysed["bpm"].clone()));
+        assert_eq!(t["edited"].as_str(), Some("[]"));
+
         // stems.json: keyed by the PDB path, pointing at a decodable 8-channel FLAC of the right length.
         let manifest: Value = serde_json::from_slice(&std::fs::read(card.join("POCKETDECK/stems.json")).unwrap()).unwrap();
         assert_eq!(manifest["version"], 3);

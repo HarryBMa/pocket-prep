@@ -35,6 +35,53 @@ pub fn load_analysis(track_id: i64) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
+/// Edits of the analysed numbers (tempo, key, energy) from the library list or the track panel. The key is a Camelot
+/// code ("8A") and its name follows from it; energy is 1 to 10; tempo is above 0. A value of null puts the analysed
+/// value back. Every number you set is remembered in `edited`, so a re-analysis keeps it. Other fields are not touched.
+pub fn apply_user_edits(track_id: i64, fields: &mut db::Row) -> Result<()> {
+    let touched = ["bpm", "camelot", "energy"].iter().any(|k| fields.contains_key(*k));
+    if !touched {
+        return Ok(());
+    }
+    let t = db::track(track_id)?.ok_or_else(|| anyhow!("unknown track"))?;
+    let mut edited: Vec<String> = t.get("edited").and_then(Value::as_str).and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    let analysed = load_analysis(track_id);
+    let mut mark = |name: &str, on: bool| {
+        edited.retain(|e| e != name);
+        if on {
+            edited.push(name.to_string());
+        }
+    };
+    if let Some(v) = fields.get("energy").cloned() {
+        match v.as_i64() {
+            Some(n) if (1..=10).contains(&n) => { fields.insert("energy".into(), json!(n)); mark("energy", true); }
+            _ if v.is_null() => { fields.insert("energy".into(), analysed.as_ref().map(|a| a["energy"].clone()).unwrap_or(Value::Null)); mark("energy", false); }
+            _ => return Err(anyhow!("Energy is a whole number from 1 to 10")),
+        }
+    }
+    if let Some(v) = fields.get("bpm").cloned() {
+        match v.as_f64() {
+            Some(b) if b > 0.0 && b < 400.0 => { fields.insert("bpm".into(), json!((b * 100.0).round() / 100.0)); mark("bpm", true); }
+            _ if v.is_null() => { fields.insert("bpm".into(), analysed.as_ref().map(|a| a["bpm"].clone()).unwrap_or(Value::Null)); mark("bpm", false); }
+            _ => return Err(anyhow!("Tempo is a number of BPM above 0")),
+        }
+    }
+    if let Some(v) = fields.get("camelot").cloned() {
+        if v.is_null() {
+            fields.insert("camelot".into(), analysed.as_ref().map(|a| a["camelot"].clone()).unwrap_or(Value::Null));
+            fields.insert("musical_key".into(), analysed.as_ref().map(|a| a["key"].clone()).unwrap_or(Value::Null));
+            mark("key", false);
+        } else {
+            let k = v.as_str().and_then(clubcraft_core::Key::from_camelot).ok_or_else(|| anyhow!("Key is a Camelot code such as 8A or 5B"))?;
+            fields.insert("camelot".into(), json!(k.camelot()));
+            fields.insert("musical_key".into(), json!(k.name()));
+            mark("key", true);
+        }
+    }
+    fields.insert("edited".into(), json!(serde_json::to_string(&edited)?));
+    Ok(())
+}
+
 pub fn waveform_bytes(a: &Value, name: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD.decode(a["waveforms"][name].as_str().unwrap_or("")).unwrap_or_default()
 }
@@ -352,7 +399,12 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
                 db::log(c, "grid_nudge_reset", json!({"track_id": track_id, "why": "re-analysis moved the beat grid"}), None)?;
             }
         }
-        c.execute("UPDATE tracks SET bpm=?, musical_key=?, camelot=?, energy=?, duration=?, analysed_at=?, mood_features=?, mood_emb=COALESCE(?, mood_emb) WHERE id=?",
+        // Numbers you edited by hand (`edited`) are kept; everything else is replaced by the new analysis.
+        let keep = |name: &str| format!("instr(COALESCE(edited,''), '\"{name}\"') > 0");
+        c.execute(&format!("UPDATE tracks SET bpm=CASE WHEN {bpm} THEN bpm ELSE ? END, musical_key=CASE WHEN {key} THEN musical_key ELSE ? END, \
+                            camelot=CASE WHEN {key} THEN camelot ELSE ? END, energy=CASE WHEN {energy} THEN energy ELSE ? END, \
+                            duration=?, analysed_at=?, mood_features=?, mood_emb=COALESCE(?, mood_emb) WHERE id=?",
+                           bpm = keep("bpm"), key = keep("key"), energy = keep("energy")),
                   params![a["bpm"].as_f64(), a["key"].as_str(), a["camelot"].as_str(), a["energy"].as_i64(),
                           a["duration_ms"].as_f64().map(|d| d / 1000.0), a["analysed_at"].as_f64(),
                           a["mood_features"].to_string(), emb, track_id])?;

@@ -300,6 +300,7 @@ function artCell(t) {
   return h("span", { class: "art", style: `background:linear-gradient(150deg, ${c} 0%, var(--surface-2) 85%)` });
 }
 function renderTracks() {
+  if (state.editing) { state.renderLater = true; return; }      // an inline editor is open; it renders when it closes
   const body = $("#tracks tbody");
   const focusedId = body.contains(document.activeElement) ? document.activeElement.dataset?.id : null;   // keep keyboard focus across re-renders
   const vis = visibleTracks();
@@ -310,21 +311,27 @@ function renderTracks() {
                          class: (state.selected.has(t.id) ? "sel" : "") + (state.current?.id === t.id ? " playing" : "") },
       h("td", { class: "c-idx num" }, String(i + 1)),
       h("td", { class: "c-art" }, artCell(t)),
-      h("td", { class: "c-title", title: t.path }, t.color ? h("span", { class: "swatch", style: `background:${COLORS[t.color]}`, title: COLOR_NAMES[t.color] }) : null, t.title || ""),
-      h("td", { class: "c-artist" }, t.artist || h("span", { class: "muted" }, "Unknown")),
-      h("td", { class: "num" }, t.bpm ? fmtBpm(t.bpm) : h("span", { class: "muted" }, t.analysed_at ? "?" : "…")),
-      h("td", {}, t.camelot ? h("span", { class: "key", style: `color:${keyColor(t.shifted_camelot || t.camelot)}`,
+      h("td", { class: "c-title", "data-edit": "title", title: t.path }, t.color ? h("span", { class: "swatch", style: `background:${COLORS[t.color]}`, title: COLOR_NAMES[t.color] }) : null, t.title || ""),
+      h("td", { class: "c-artist", "data-edit": "artist" }, t.artist || h("span", { class: "muted" }, "Unknown")),
+      h("td", { class: "num" + (wasEdited(t, "bpm") ? " edited" : ""), "data-edit": "bpm" }, t.bpm ? fmtBpm(t.bpm) : h("span", { class: "muted" }, t.analysed_at ? "?" : "…")),
+      h("td", { class: wasEdited(t, "key") ? "edited" : "", "data-edit": "key" }, t.camelot ? h("span", { class: "key", style: `color:${keyColor(t.shifted_camelot || t.camelot)}`,
           title: t.key_shift ? `${t.camelot} ${t.musical_key || ""} as analysed, shifted ${fmtShift(t.key_shift)} on the deck` : null },
         h("b", {}, t.shifted_camelot || t.camelot), h("span", {}, t.shifted_key || t.musical_key || ""),
         t.key_shift ? h("span", { class: "shift-tag" }, fmtShift(t.key_shift)) : null) : ""),
-      h("td", { class: "c-mood" }, moodPill(t)),
-      h("td", { class: "num" }, t.energy != null ? String(t.energy) : ""),
+      h("td", { class: "c-mood" + (t.mood_manual ? " edited" : ""), "data-edit": "mood" }, moodPill(t)),
+      h("td", { class: "num" + (wasEdited(t, "energy") ? " edited" : ""), "data-edit": "energy" }, t.energy != null ? String(t.energy) : ""),
       h("td", { class: "c-st c-stems" }, stemPill(t)),
       h("td", { class: "c-an" }, analysisCell(t)),
       h("td", { class: "c-menu" }, h("button", { class: "row-menu", "aria-label": `Actions for ${t.title || "track"}`, title: "Actions",
         onclick: (e) => { e.stopPropagation(); rowMenu(e.currentTarget, t); } }, icon("more", "ic sm"))));
-    tr.addEventListener("click", (e) => clickRow(e, t.id, vi));
-    tr.addEventListener("dblclick", () => openTrack(t.id, true));
+    tr.addEventListener("click", (e) => {
+      // A click on a cell of the row that is already the selected one edits it (see "Quick edits" below).
+      const cell = e.target.closest("td[data-edit]");
+      const alone = state.selected.size === 1 && state.selected.has(t.id) && !e.shiftKey && !e.ctrlKey && !e.metaKey;
+      clickRow(e, t.id, vi);
+      if (cell && alone) beginEdit(t.id, cell.dataset.edit);
+    });
+    tr.addEventListener("dblclick", (e) => { if (!e.target.closest("input")) openTrack(t.id, true); });
     tr.addEventListener("dragstart", (e) => {
       if (!state.selected.has(t.id)) { state.selected = new Set([t.id]); renderTracks(); }
       e.dataTransfer.setData("application/x-tracks", JSON.stringify([...state.selected]));
@@ -428,6 +435,8 @@ function clickRow(e, id, vi) {
 }
 // Arrow keys move the selection (Shift extends it), Enter plays, in the focused table.
 $("#tracks tbody").addEventListener("keydown", (e) => {
+  if (e.target.closest("input, select")) return;
+  if (e.key === "F2") { const id = +document.activeElement?.dataset?.id; if (id) { e.preventDefault(); beginEdit(id, "title"); } return; }
   if (!["ArrowDown", "ArrowUp", "Enter", "Home", "End"].includes(e.key) || !state.view.length) return;
   e.preventDefault();
   const view = state.view, cur = view.findIndex((t) => t.id === +document.activeElement?.dataset?.id);
@@ -436,6 +445,101 @@ $("#tracks tbody").addEventListener("keydown", (e) => {
   clickRow({ shiftKey: e.shiftKey, ctrlKey: false, metaKey: false }, view[n].id, n);
   $(`#tracks tbody tr[data-id="${view[n].id}"]`)?.scrollIntoView({ block: "nearest" });
 });
+// ── Quick edits in the list ─────────────────────────────────────────────────
+// Click a cell of the selected row (or press F2 for the title): text and tempo become a box (Enter saves, Esc cancels,
+// Tab moves to the next cell); key, mood and energy open a small picker. Edits are saved at once and can be undone.
+// A tempo, key or energy you set is kept when the track is analysed again; "Analysed value" puts it back.
+const EDIT_ORDER = ["title", "artist", "bpm", "key", "mood", "energy"];
+const NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+const wasEdited = (t, what) => { try { return JSON.parse(t.edited || "[]").includes(what); } catch { return false; } };
+function camelotName(n, letter) {                       // 8B = C major, 5A = C minor; one step round the wheel = a fifth
+  const major = (((n - 8) * 7) % 12 + 12) % 12;
+  return NOTE_NAMES[letter === "B" ? major : (major + 9) % 12] + (letter === "A" ? "m" : "");
+}
+function endEdit() {
+  state.editing = null; $("#picker")?.remove(); document.removeEventListener("mousedown", pickerOutside, true);
+  if (state.renderLater) { state.renderLater = false; renderTracks(); }
+}
+function pickerOutside(e) { if (!e.target.closest("#picker")) endEdit(); }
+async function saveTrackEdit(id, fields, label) {
+  try {
+    const r = await api(`/api/tracks/${id}`, { method: "PATCH", body: fields });
+    const i = state.tracks.findIndex((x) => x.id === id);
+    if (i >= 0) state.tracks[i] = { ...state.tracks[i], ...r.track };
+    toast(label, r.undo);
+    if ("mood" in fields || "mood_manual" in fields) await loadTracks();        // a hand-picked mood teaches the others
+    if (state.current?.id === id) { state.editing = null; await openTrack(id); }
+  } catch (e) { fail(e); } finally { endEdit(); renderTracks(); }
+}
+function beginEdit(id, kind) {
+  if (state.editing) endEdit();
+  const t = state.tracks.find((x) => x.id === id);
+  const td = $(`#tracks tbody tr[data-id="${id}"] td[data-edit="${kind}"]`);
+  if (!t || !td) return;
+  state.editing = { id, kind };
+  if (kind === "title" || kind === "artist" || kind === "bpm") return editText(t, td, kind);
+  const picker = h("div", { id: "picker", class: "picker", role: "dialog", "aria-label": `Edit ${kind}` });
+  const pick = (fields, label) => { picker.remove(); state.editing = null; saveTrackEdit(id, fields, label); };
+  const analysed = (field, label) => wasEdited(t, label === "key" ? "key" : field)
+    ? h("button", { class: "ghost small pick-auto", onclick: () => pick({ [field]: null }, `${label[0].toUpperCase() + label.slice(1)}: analysed value`) }, "Analysed value") : null;
+  if (kind === "key") {
+    picker.append(h("div", { class: "pick-keys" }, [["A", "Minor"], ["B", "Major"]].map(([letter, name]) =>
+      h("div", {}, h("small", {}, name), Array.from({ length: 12 }, (_, i) => {
+        const code = `${i + 1}${letter}`;
+        return h("button", { class: "pick-key" + (t.camelot === code ? " on" : ""), style: `--k:${keyColor(code)}`,
+                             onclick: () => pick({ camelot: code }, `Key: ${code} ${camelotName(i + 1, letter)}`) },
+                 h("b", {}, code), h("span", {}, camelotName(i + 1, letter)));
+      })))), analysed("camelot", "key"));
+  } else if (kind === "energy") {
+    picker.append(h("div", { class: "pick-energy" }, Array.from({ length: 10 }, (_, i) =>
+      h("button", { class: "pick-num" + (t.energy === i + 1 ? " on" : ""), onclick: () => pick({ energy: i + 1 }, `Energy: ${i + 1}`) }, String(i + 1)))),
+      analysed("energy", "energy"));
+  } else if (kind === "mood") {
+    picker.append(h("div", { class: "pick-moods" }, MOODS.map((m) =>
+      h("button", { class: "pick-mood" + (t.mood_manual && t.mood === m.id ? " on" : ""), title: m.about,
+                    onclick: () => pick({ mood: m.id, mood_manual: 1 }, `Mood: ${m.label}`) },
+        h("span", { class: "mood", style: `--mood:${MOOD_COLOR[m.id]}` }, h("i"), m.label)))),
+      t.mood_manual ? h("button", { class: "ghost small pick-auto", onclick: () => pick({ mood_manual: 0 }, "Mood: automatic") }, "Automatic") : null);
+  }
+  document.body.append(picker);
+  const r = td.getBoundingClientRect(), w = picker.offsetWidth, ph = picker.offsetHeight;
+  picker.style.left = `${Math.max(8, Math.min(innerWidth - w - 8, r.left))}px`;
+  picker.style.top = `${r.bottom + ph + 8 > innerHeight ? Math.max(8, r.top - ph - 4) : r.bottom + 4}px`;
+  picker.querySelector("button")?.focus();
+  picker.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); endEdit(); renderTracks(); } });
+  document.addEventListener("mousedown", pickerOutside, true);
+}
+function editText(t, td, kind) {
+  const num = kind === "bpm";
+  const input = h("input", { class: "cell-edit", type: num ? "number" : "text", step: num ? "0.01" : null, min: num ? "1" : null,
+                             value: num ? (t.bpm ?? "") : (t[kind] ?? ""), "aria-label": `Edit ${kind}`, placeholder: num ? "analysed" : "" });
+  const tr = td.closest("tr"); tr.draggable = false;
+  td.replaceChildren(input);
+  input.focus(); input.select();
+  let done = false;
+  const finish = (save, next = 0) => {
+    if (done) return;
+    done = true;
+    const v = num ? (input.value === "" ? null : +input.value) : input.value.trim();
+    const was = num ? (t.bpm ?? null) : (t[kind] ?? "");
+    state.editing = null;
+    if (save && v !== was && !(num && v === was)) {
+      saveTrackEdit(t.id, { [kind]: v }, num ? (v == null ? "Tempo: analysed value" : `Tempo: ${v} BPM`) : `${kind === "title" ? "Title" : "Artist"} saved`)
+        .then(() => { if (next) beginEdit(t.id, EDIT_ORDER[(EDIT_ORDER.indexOf(kind) + next + EDIT_ORDER.length) % EDIT_ORDER.length]); });
+    } else {
+      renderTracks();
+      if (next) beginEdit(t.id, EDIT_ORDER[(EDIT_ORDER.indexOf(kind) + next + EDIT_ORDER.length) % EDIT_ORDER.length]);
+    }
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); finish(true); $(`#tracks tbody tr[data-id="${t.id}"]`)?.focus({ preventScroll: true }); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); $(`#tracks tbody tr[data-id="${t.id}"]`)?.focus({ preventScroll: true }); }
+    else if (e.key === "Tab") { e.preventDefault(); finish(true, e.shiftKey ? -1 : 1); }
+  });
+  input.addEventListener("blur", () => finish(true));
+  for (const ev of ["click", "dblclick", "mousedown"]) input.addEventListener(ev, (e) => e.stopPropagation());
+}
 // Sort by clicking a column header: ascending, descending, then back to playlist order.
 $$("#tracks thead th[data-sort]").forEach((th) => {
   th.tabIndex = 0;
@@ -1417,6 +1521,61 @@ addEventListener("keydown", (e) => {
     gridNudge((e.code === "BracketLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1));
   }
 });
+
+// ── Drag to resize: the sidebar and the track panel ─────────────────────────
+// A thin handle on the edge: drag it, or focus it and use the arrow keys (Shift = bigger steps); double-click resets.
+// The width is kept in the browser (localStorage) and set as a CSS variable, so everything that follows it moves with it.
+function makeResizer(handle, { name, label, cssVar, min, max, edge, defaultPx }) {
+  const root = document.documentElement;
+  const current = () => parseFloat(getComputedStyle(root).getPropertyValue(cssVar)) || defaultPx;
+  const clamp = (v) => Math.round(Math.max(min, Math.min(max(), v)));
+  const set = (px, save = false) => {
+    px = clamp(px);
+    root.style.setProperty(cssVar, `${px}px`);
+    handle.setAttribute("aria-valuenow", String(px));
+    if (save) { try { localStorage.setItem(`size-${name}`, String(px)); } catch {} }
+  };
+  handle.setAttribute("role", "separator"); handle.setAttribute("aria-orientation", "vertical");
+  handle.setAttribute("aria-label", label); handle.tabIndex = 0;
+  handle.setAttribute("aria-valuemin", String(min));
+  handle.title = `${label} (drag, or arrow keys; double-click to reset)`;
+  try { const saved = parseFloat(localStorage.getItem(`size-${name}`)); if (saved) set(saved); } catch {}
+  handle.setAttribute("aria-valuenow", String(clamp(current())));
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const x0 = e.clientX, w0 = current();
+    handle.classList.add("drag"); document.body.classList.add("resizing");
+    const move = (m) => set(w0 + (edge === "right" ? m.clientX - x0 : x0 - m.clientX));
+    const up = () => {
+      handle.removeEventListener("pointermove", move); handle.removeEventListener("pointerup", up); handle.removeEventListener("pointercancel", up);
+      handle.classList.remove("drag"); document.body.classList.remove("resizing");
+      set(current(), true); window.dispatchEvent(new Event("resize"));      // the waveforms follow the new width
+    };
+    handle.addEventListener("pointermove", move); handle.addEventListener("pointerup", up); handle.addEventListener("pointercancel", up);
+  });
+  handle.addEventListener("keydown", (e) => {
+    const d = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+    if (!d) return;
+    e.preventDefault();
+    set(current() + d * (edge === "right" ? 1 : -1) * (e.shiftKey ? 64 : 16), true);
+    window.dispatchEvent(new Event("resize"));
+  });
+  handle.addEventListener("dblclick", () => {
+    root.style.removeProperty(cssVar);
+    try { localStorage.removeItem(`size-${name}`); } catch {}
+    handle.setAttribute("aria-valuenow", String(clamp(current())));
+    window.dispatchEvent(new Event("resize"));
+  });
+}
+{
+  const sideHandle = h("div", { class: "resizer resizer-side" });
+  $(".app").append(sideHandle);
+  makeResizer(sideHandle, { name: "side", label: "Resize the sidebar", cssVar: "--side-w", min: 160, max: () => 360, edge: "right", defaultPx: 200 });
+  const panelHandle = h("div", { class: "resizer resizer-panel" });
+  $("#detail").before(panelHandle);
+  makeResizer(panelHandle, { name: "panel", label: "Resize the track panel", cssVar: "--panel-w", min: 320, max: () => Math.max(420, innerWidth - 560), edge: "left", defaultPx: 440 });
+}
 
 async function refreshAll() { await loadPlaylists(); await loadTracks(); if (state.current) openTrack(state.current.id); }
 renderTracks();
