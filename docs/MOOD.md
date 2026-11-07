@@ -115,6 +115,36 @@ cross-validated accuracy for the built-in and the fitted values before you keep 
 **Expect to correct moods at first.** The values are a starting point; the hand-picked tracks
 are what make it fit your library. A few per mood is enough to move it.
 
+## Needle Tags: an embedding model instead of nine numbers (`tools/needle/`)
+
+An Essentia-style two-stage model with no non-commercial licence in it. `mood_embed.py` runs htdemucs
+(MIT, Meta) on the middle two minutes of a track and takes the output of its cross-transformer
+(where the time and the spectrum branch meet), pooled over time, plus the level and busyness of
+each stem: 2,056 numbers per track. `mood_head.py` trains a small logistic regression on top
+(standardised numbers, L2 penalty chosen by an inner cross-validation, every mood weighted equally).
+The trained head is `tools/needle/mood_head_v1.json` (8 moods, 2,048 weights each).
+
+5-fold cross-validation, with all tracks of one artist kept in the same fold (so it can't learn an
+artist's sound):
+
+| Test set | DKPRP's nine numbers | Essentia (no training) | Needle Tags |
+|---|---|---|---|
+| 4 club moods, 88 tracks (Beatport tags) | 49 % | 60 % | **65 %** |
+| 4 other moods, 120 Jamendo tracks (the artists' tags, noisy) | 38 % | about 55 % | **60 %** |
+| All 8 moods, 88 club + 72 Jamendo | 39 % | - | **69 %** |
+
+The eight-mood result is flattering: the club tracks and the Jamendo tracks differ in how they are
+mastered, so part of it is telling the two sources apart. Read it with the first two rows. Weak
+spots: melodic (7 tracks, 29 % recall) and deep, which is mistaken for tech house about half the time.
+The label sets are small and the tags are not your own. Both go up with your corrections.
+
+It isn't wired into the app yet. The app already runs htdemucs to make stems, so the same pass could
+produce the embedding at no extra cost; the head is a 2,048 x 8 matrix multiply. When Needle is
+trained, the same recipe can use its encoder instead.
+
+Redo it: `python mood_embed.py list.tsv out.npz` (Needle venv; `list.tsv` is "mood<TAB>path"), then
+`python mood_head.py --luke a.npz --jam b.npz --groups artists.tsv --save mood_head.json`.
+
 ## Limits and next steps
 
 - Loudness mostly reflects mastering (free-music releases are quieter than club releases, and a
