@@ -127,7 +127,11 @@ def separate(net, wav, overlap=8):
         acc[..., a:a + frames] += net(x[..., a:a + frames]) * w
         wsum[a:a + frames] += w
     m = (acc / wsum)[..., :t].reshape(len(SOURCES), c, BINS, t)
-    m /= m.sum(0, keepdims=True) + 1e-4
+    # Normalise so the four masks sum to 1 and the stems add up to the mix. The int8 model can
+    # output exactly 0 for all four sources in a bin (sigmoid rounded to 0); then share it equally
+    # instead of dropping it, so the stems still sum to the mix.
+    total = m.sum(0, keepdims=True)
+    m = np.where(total > 1e-3, m / np.maximum(total, 1e-3), 1.0 / len(SOURCES))
     full = np.zeros((len(SOURCES), c, f, t), np.float32)
     full[:, :, :BINS] = m
     full[OTHER, :, BINS:] = 1.0                                       # the Nyquist bin goes to "other"

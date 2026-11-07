@@ -88,10 +88,11 @@ static void deck_hop(deck_t *d, const float32_t new_in[CHANNELS][HOP], float32_t
     for (int c = 0; c < CHANNELS; c++) {
         /* dequantise (scale 1/256, as the NPU's sigmoid output) and normalise over 4 sources */
         for (int k = 0; k < BINS; k++) {
-            float32_t m[SOURCES], sum = 1e-4f;
+            float32_t m[SOURCES], sum = 0.0f;
             for (int s = 0; s < SOURCES; s++) { m[s] = (d->mask_q[s][c][k] + 128) * (1.0f / 256.0f); sum += m[s]; }
-            float32_t inv = 1.0f / sum;
-            for (int s = 0; s < SOURCES; s++) gain[s][k] = m[s] * inv;
+            /* int8 masks can all be exactly 0 in a bin: share it equally so stems still sum to the mix */
+            if (sum > 1e-3f) { float32_t inv = 1.0f / sum; for (int s = 0; s < SOURCES; s++) gain[s][k] = m[s] * inv; }
+            else             { for (int s = 0; s < SOURCES; s++) gain[s][k] = 1.0f / SOURCES; }
         }
         for (int s = 0; s < SOURCES; s++) {
             /* CMSIS packed layout: [DC, Nyquist, re1, im1, ...]: pair 0 gets the DC gain on DC
