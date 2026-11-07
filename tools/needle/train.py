@@ -72,7 +72,7 @@ def check_alignment(cfg: NeedleConfig, device):
     assert err < 1e-4, f"STFT/iSTFT alignment is off: {err}"
 
 
-def compute_loss(model, stems, cfg: NeedleConfig, wave_weight, amp_dtype, spec_norm):
+def compute_loss(model, stems, cfg: NeedleConfig, wave_weight, amp_dtype, spec_norm, mr_weight=0.0):
     """stems (B, S, C, L) float on the GPU. Returns (total, spectral L1, waveform L1)."""
     mix = stems.sum(1)                                            # (B, C, L)
     mix_spec = stft_frames(mix, cfg)                              # (B, C, F, T)
@@ -90,8 +90,48 @@ def compute_loss(model, stems, cfg: NeedleConfig, wave_weight, amp_dtype, spec_n
     # Waveform loss: masked complex mixture -> iSTFT -> compare with the middle of the crop.
     est_wav = istft(apply_masks(masks, mix_spec, cfg), cfg, (cfg.frames - 1) * cfg.hop)
     h = cfg.n_fft // 2
-    wave_l1 = (est_wav - stems[..., h:h + est_wav.shape[-1]]).abs().mean()
-    return spec_l1 + wave_weight * wave_l1, spec_l1, wave_l1
+    tgt_wav = stems[..., h:h + est_wav.shape[-1]]
+    wave_l1 = (est_wav - tgt_wav).abs().mean()
+    loss = spec_l1 + wave_weight * wave_l1
+    if mr_weight:
+        loss = loss + mr_weight * multires_loss(est_wav, tgt_wav)
+    return loss, spec_l1, wave_l1
+
+
+MR_WINDOWS = (2048, 1024, 512, 256)
+
+
+def multires_loss(est, tgt):
+    """Multi-resolution complex-spectrogram L1 (as BS-RoFormer and Moises-Light train): the
+    separated waveforms are compared at several STFT sizes, so short windows check transients
+    (drum hits) and long windows check pitch. Each resolution is scaled like the main spectral
+    loss (divided by sqrt(sum window^2)), and the resolutions are averaged."""
+    e, t = est.reshape(-1, est.shape[-1]), tgt.reshape(-1, tgt.shape[-1])
+    total = 0.0
+    for n in MR_WINDOWS:
+        w = torch.hann_window(n, device=est.device)
+        se = torch.stft(e, n, n // 4, window=w, center=False, return_complex=True)
+        st = torch.stft(t, n, n // 4, window=w, center=False, return_complex=True)
+        total = total + (torch.view_as_real(se) - torch.view_as_real(st)).abs().mean() / w.pow(2).sum().sqrt()
+    return total / len(MR_WINDOWS)
+
+
+def change_speed(stems, out_len, max_change, p, gen=None):
+    """Speed/pitch augmentation (Demucs' "repitch", done by resampling): with probability p an
+    example is played up to `max_change` faster or slower (0.06 = about +-1 semitone and +-6 %
+    tempo), all its stems by the same factor so the mixture still matches. stems (B, S, C, L_in)
+    with L_in >= out_len * (1 + max_change); returns (B, S, C, out_len). Linear interpolation:
+    the tiny high-frequency loss it causes is the same in the mixture and in the targets."""
+    b = stems.shape[0]
+    f = 1 + (torch.rand(b, device=stems.device) * 2 - 1) * max_change
+    f = torch.where(torch.rand(b, device=stems.device) < p, f, torch.ones_like(f))
+    pos = torch.arange(out_len, device=stems.device)[None] * f[:, None]          # (B, out_len)
+    i0 = pos.floor().long().clamp_(max=stems.shape[-1] - 2)
+    frac = (pos - i0)[:, None, None]
+    idx = i0[:, None, None].expand(b, *stems.shape[1:3], out_len)
+    a0 = stems.gather(-1, idx)
+    a1 = stems.gather(-1, idx + 1)
+    return a0 + (a1 - a0) * frac
 
 
 # ── Validation ───────────────────────────────────────────────────────────────
@@ -145,6 +185,10 @@ def main():
     ap.add_argument("--min-lr", type=float, default=0.01, help="final lr as a fraction of --lr")
     ap.add_argument("--clip", type=float, default=5.0)
     ap.add_argument("--amp", choices=["bf16", "fp16", "none"], default="bf16")
+    ap.add_argument("--mr-weight", type=float, default=0.0,
+                    help="weight of the multi-resolution complex STFT loss on the separated waveforms (0 = off)")
+    ap.add_argument("--p-speed", type=float, default=0.0, help="probability of speed/pitch augmentation (0 = off)")
+    ap.add_argument("--speed-change", type=float, default=0.06, help="largest speed change, 0.06 = +-6 %%")
     ap.add_argument("--wave-weight", type=float, default=0.1)
     # augmentation
     ap.add_argument("--remix", type=float, default=0.5, help="probability that a crop mixes stems of different songs")
@@ -220,7 +264,8 @@ def main():
           f"valid {len(valid)} ({hours(valid):.1f} h), teacher {len(teacher)} ({hours(teacher):.1f} h), "
           f"real stems {len(real)} ({hours(real):.1f} h); shares MUSDB {1 - share_t - share_r:.2f}, "
           f"teacher {share_t:.2f}, real {share_r:.2f}")
-    bank = StemBank(groups, crop_length(cfg))
+    crop = crop_length(cfg)
+    bank = StemBank(groups, math.ceil(crop * (1 + a.speed_change)) + 2 if a.p_speed else crop)
     batches = Prefetcher(bank, a.batch, a.remix, seed=a.seed + start)
     spec_norm = torch.hann_window(cfg.n_fft).pow(2).sum().sqrt().item()
 
@@ -251,8 +296,10 @@ def main():
     step = start
     while step < a.steps:
         stems = batches.next().to(device, non_blocking=True).float().div_(32768)
+        if a.p_speed:
+            stems = change_speed(stems, crop, a.speed_change, a.p_speed)
         stems = augment(stems, a.gain_db, a.p_swap, a.p_flip)
-        loss, spec_l1, wave_l1 = compute_loss(model, stems, cfg, a.wave_weight, amp_dtype, spec_norm)
+        loss, spec_l1, wave_l1 = compute_loss(model, stems, cfg, a.wave_weight, amp_dtype, spec_norm, a.mr_weight)
 
         opt.zero_grad(set_to_none=True)
         scaler.scale(loss).backward()
