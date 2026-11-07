@@ -138,9 +138,27 @@ mastered, so part of it is telling the two sources apart. Read it with the first
 spots: melodic (7 tracks, 29 % recall) and deep, which is mistaken for tech house about half the time.
 The label sets are small and the tags are not your own. Both go up with your corrections.
 
-It isn't wired into the app yet. The app already runs htdemucs to make stems, so the same pass could
-produce the embedding at no extra cost; the head is a 2,048 x 8 matrix multiply. When Needle is
-trained, the same recipe can use its encoder instead.
+### In the app
+
+The app uses it. When `models/htdemucs_embed.onnx` is installed, analysing a track also computes its embedding
+(`src/embed.rs`, `vendor/clubcraft/crates/stems/src/embed.rs`; 15 segments of 7.8 s from the middle of the track,
+about 2 s per track on the GPU through DirectML, about 15 s on the processor). It is saved with the track
+(`mood_emb`, 8 KB), a "Mood model" job fills in the tracks analysed before, and the mood comes from the head
+(`mood_head_v1.json`, built into the app). Without the model file everything works as before, from the nine numbers.
+
+- **Your moods teach it.** Setting a mood by hand moves the head a little towards that track (a few gradient steps
+  with a pull back to the trained weights). On the labelled tracks, correcting 3 of the head's mistakes fixed about 9 %
+  of the other mistakes and kept 98 % of the rest right; one wrong pick changes nothing measurable.
+- **Same answer as PyTorch.** The embedding computed in Rust matches the one the head was trained on (cosine 0.9999;
+  `cargo test --release embedding_matches_pytorch -- --ignored`).
+- **DirectML only after a check.** The first time, the GPU result on a test signal is compared with the processor's;
+  if they disagree the processor is used (`POCKET_PREP_EMBED_CPU=1` forces it).
+- **Cost.** The model file is 145 MB, on top of the stem model, in every installer. On the Mac it runs on the processor
+  (the CoreML path of ONNX Runtime gives wrong numbers for this network).
+- **Why this panel changed.** For a track with an embedding, "Why this mood" shows the model's probabilities, not
+  distances; the nine numbers are still shown.
+
+When Needle is trained, the same recipe can use its encoder instead.
 
 Redo it: `python mood_embed.py list.tsv out.npz` (Needle venv; `list.tsv` is "mood<TAB>path"), then
 `python mood_head.py --luke a.npz --jam b.npz --groups artists.tsv --save mood_head.json`.

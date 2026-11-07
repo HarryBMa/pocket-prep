@@ -123,24 +123,145 @@ pub fn rank(f: &Features, protos: &[[(f64, f64); N]]) -> Vec<(usize, f64, f64)> 
     out
 }
 
-/// Work out every automatic mood again from the saved features and the hand-picked moods.
+// ── Needle Tags: the embedding head ──────────────────────────────────────────
+
+/// Length of the embedding (clubcraft_stems::embed::EMBEDDING_LEN).
+pub const EMB_LEN: usize = 2048;
+
+/// The trained head (tools/needle/mood_head_v1.json): standardise the embedding, one weight per number and mood,
+/// softmax. Its moods are `MOODS` ids.
+struct Head {
+    classes: Vec<usize>, // MOODS index of each output
+    mean: Vec<f32>,
+    std: Vec<f32>,
+    w: Vec<f32>, // [EMB_LEN][classes]
+    b: Vec<f32>,
+}
+
+fn head() -> &'static Head {
+    static HEAD: std::sync::OnceLock<Head> = std::sync::OnceLock::new();
+    HEAD.get_or_init(|| {
+        let v: Value = serde_json::from_str(include_str!("../tools/needle/mood_head_v1.json")).expect("mood head");
+        let floats = |k: &str| -> Vec<f32> { v[k].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect() };
+        let classes: Vec<usize> = v["moods"].as_array().unwrap().iter().map(|m| index(m.as_str().unwrap()).expect("mood id")).collect();
+        let w: Vec<f32> = v["W"].as_array().unwrap().iter().flat_map(|row| row.as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32)).collect();
+        assert_eq!(w.len(), EMB_LEN * classes.len());
+        Head { classes, mean: floats("mean"), std: floats("std"), w, b: floats("b") }
+    })
+}
+
+fn standardised(emb: &[f32]) -> Vec<f32> {
+    let h = head();
+    emb.iter().zip(h.mean.iter().zip(&h.std)).map(|(x, (m, s))| (x - m) / s).collect()
+}
+
+/// Softmax over the head's moods for one standardised embedding, with weights `w` and biases `b`.
+fn probabilities(z: &[f32], w: &[f32], b: &[f32]) -> Vec<f64> {
+    let k = b.len();
+    let mut logit: Vec<f64> = b.iter().map(|&v| v as f64).collect();
+    for (d, &x) in z.iter().enumerate() {
+        for c in 0..k {
+            logit[c] += (x * w[d * k + c]) as f64;
+        }
+    }
+    let top = logit.iter().cloned().fold(f64::MIN, f64::max);
+    let e: Vec<f64> = logit.iter().map(|l| (l - top).exp()).collect();
+    let s: f64 = e.iter().sum();
+    e.iter().map(|v| v / s).collect()
+}
+
+/// The head moved towards the tracks you gave a mood by hand (the embedding version of "learn"): a few gradient steps
+/// of the cross-entropy over those tracks, with a pull back to the trained weights so one pick can't swing a mood.
+fn adapted(manual: &[(usize, Vec<f32>)]) -> (Vec<f32>, Vec<f32>) {
+    let h = head();
+    let (mut w, mut b) = (h.w.clone(), h.b.clone());
+    let k = h.classes.len();
+    let samples: Vec<(usize, Vec<f32>)> = manual.iter()
+        .filter_map(|(m, e)| Some((h.classes.iter().position(|c| c == m)?, standardised(e)))).collect();
+    if samples.is_empty() {
+        return (w, b);
+    }
+    let step = 0.5 / EMB_LEN as f32; // the standardised numbers have unit size, so |z|² is about EMB_LEN
+    for _ in 0..30 {
+        let mut gw = vec![0f32; w.len()];
+        let mut gb = vec![0f32; k];
+        for (y, z) in &samples {
+            let p = probabilities(z, &w, &b);
+            for c in 0..k {
+                let g = (p[c] - if c == *y { 1.0 } else { 0.0 }) as f32;
+                gb[c] += g;
+                for (d, &x) in z.iter().enumerate() {
+                    gw[d * k + c] += g * x;
+                }
+            }
+        }
+        for i in 0..w.len() {
+            w[i] -= step * gw[i] + 0.02 * (w[i] - h.w[i]);
+        }
+        for c in 0..k {
+            b[c] -= 0.05 * gb[c] + 0.02 * (b[c] - h.b[c]);
+        }
+    }
+    (w, b)
+}
+
+/// Moods for an embedding, most likely first: (index into `MOODS`, probability). `manual` are the hand-picked
+/// tracks (mood index, embedding) the head is adapted to.
+pub fn rank_embedding(emb: &[f32], manual: &[(usize, Vec<f32>)]) -> Vec<(usize, f64)> {
+    let (w, b) = adapted(manual);
+    let p = probabilities(&standardised(emb), &w, &b);
+    let mut out: Vec<(usize, f64)> = head().classes.iter().cloned().zip(p).collect();
+    out.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    out
+}
+
+pub fn embedding_to_blob(e: &[f32]) -> Vec<u8> {
+    e.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+fn blob_to_embedding(b: &[u8]) -> Option<Vec<f32>> {
+    (b.len() == EMB_LEN * 4).then(|| b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+}
+
+fn features_from(json_text: &Option<String>) -> Option<Features> {
+    let v: Value = serde_json::from_str(json_text.as_ref()?).ok()?;
+    features_of(&json!({"mood_features": v}))
+}
+
+/// Work out every automatic mood again from the saved numbers and the hand-picked moods. A track with an embedding
+/// (the Needle Tags model, see embed.rs) gets its mood from the head; a track without one from the nine numbers.
 pub fn refresh(c: &Connection) -> Result<()> {
-    let mut st = c.prepare("SELECT id, mood, mood_manual, mood_features FROM tracks WHERE deleted=0 AND mood_features IS NOT NULL")?;
-    let rows: Vec<(i64, Option<String>, i64, String)> =
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0), r.get(3)?)))?.flatten().collect();
-    let parsed: Vec<(i64, Option<String>, bool, Features)> = rows.into_iter().filter_map(|(id, mood, manual, f)| {
-        let v: Value = serde_json::from_str(&f).ok()?;
-        Some((id, mood, manual == 1, features_of(&json!({"mood_features": v}))?))
-    }).collect();
-    let manual: Vec<(usize, Features)> = parsed.iter()
-        .filter_map(|(_, mood, man, f)| if *man { Some((index(mood.as_deref()?)?, *f)) } else { None }).collect();
-    let protos = prototypes(&manual);
-    for (id, _, man, f) in &parsed {
-        let r = rank(f, &protos);
-        if *man {
+    type Row = (i64, Option<String>, i64, Option<String>, Option<Vec<u8>>);
+    let mut st = c.prepare("SELECT id, mood, mood_manual, mood_features, mood_emb FROM tracks WHERE deleted=0 AND (mood_features IS NOT NULL OR mood_emb IS NOT NULL)")?;
+    let rows: Vec<Row> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0), r.get(3)?, r.get(4)?)))?.flatten().collect();
+    // hand-picked moods: for the nine-number prototypes and for the head
+    let mut by_feats: Vec<(usize, Features)> = vec![];
+    let mut by_emb: Vec<(usize, Vec<f32>)> = vec![];
+    for (_, mood, man, f, e) in &rows {
+        let Some(m) = (*man == 1).then(|| mood.as_deref().and_then(index)).flatten() else { continue };
+        if let Some(f) = features_from(f) {
+            by_feats.push((m, f));
+        }
+        if let Some(e) = e.as_deref().and_then(blob_to_embedding) {
+            by_emb.push((m, e));
+        }
+    }
+    let protos = prototypes(&by_feats);
+    let (w, b) = adapted(&by_emb);
+    for (id, _, man, f, e) in rows {
+        if man == 1 {
             continue;
         }
-        let (m, _, conf) = r[0];
+        let (m, conf) = if let Some(e) = e.as_deref().and_then(blob_to_embedding) {
+            let p = probabilities(&standardised(&e), &w, &b);
+            let best = (0..p.len()).max_by(|&x, &y| p[x].total_cmp(&p[y]).then(y.cmp(&x))).unwrap();
+            (head().classes[best], p[best])
+        } else if let Some(f) = features_from(&f) {
+            let r = rank(&f, &protos);
+            (r[0].0, r[0].2)
+        } else {
+            continue;
+        };
         c.execute("UPDATE tracks SET mood=?, mood_conf=? WHERE id=?", params![MOODS[m].id, (conf * 100.0).round() / 100.0, id])?;
     }
     Ok(())
@@ -148,16 +269,29 @@ pub fn refresh(c: &Connection) -> Result<()> {
 
 /// Why a track got its mood: the top three moods and the measured numbers.
 pub fn explain(c: &Connection, track_id: i64) -> Result<Value> {
-    let f: Option<String> = c.query_row("SELECT mood_features FROM tracks WHERE id=?", [track_id], |r| r.get(0))?;
-    let Some(f) = f.and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { return Ok(Value::Null) };
-    let feats = features_of(&json!({"mood_features": f.clone()})).unwrap_or([None; N]);
+    let (f, e): (Option<String>, Option<Vec<u8>>) =
+        c.query_row("SELECT mood_features, mood_emb FROM tracks WHERE id=?", [track_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let features = f.as_ref().and_then(|s| serde_json::from_str::<Value>(s).ok());
+    if let Some(e) = e.as_deref().and_then(blob_to_embedding) {
+        let mut st = c.prepare("SELECT mood, mood_emb FROM tracks WHERE deleted=0 AND mood_manual=1 AND mood_emb IS NOT NULL AND id<>?")?;
+        let manual: Vec<(usize, Vec<f32>)> = st.query_map([track_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?.flatten()
+            .filter_map(|(m, b)| Some((index(&m)?, blob_to_embedding(&b)?))).collect();
+        let ranking = rank_embedding(&e, &manual);
+        return Ok(json!({
+            "source": "needle",
+            "features": features,
+            "ranking": ranking.iter().take(3).map(|&(m, p)| json!({"id": MOODS[m].id, "distance": Value::Null,
+                                                                     "confidence": (p * 100.0).round() / 100.0})).collect::<Vec<_>>(),
+        }));
+    }
+    let Some(feats) = features_from(&f) else { return Ok(Value::Null) };
     let mut st = c.prepare("SELECT mood, mood_features FROM tracks WHERE deleted=0 AND mood_manual=1 AND mood_features IS NOT NULL AND id<>?")?;
     let manual: Vec<(usize, Features)> = st.query_map([track_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.flatten()
-        .filter_map(|(m, f)| Some((index(&m)?, features_of(&json!({"mood_features": serde_json::from_str::<Value>(&f).ok()?}))?)))
-        .collect();
+        .filter_map(|(m, f)| Some((index(&m)?, features_from(&Some(f))?))).collect();
     let ranking = rank(&feats, &prototypes(&manual));
     Ok(json!({
-        "features": f,
+        "source": "numbers",
+        "features": features,
         "ranking": ranking.iter().take(3).map(|&(m, d, p)| json!({"id": MOODS[m].id, "distance": (d * 100.0).round() / 100.0,
                                                                      "confidence": (p * 100.0).round() / 100.0})).collect::<Vec<_>>(),
     }))
@@ -207,5 +341,74 @@ mod tests {
         let mut f = feats(MOODS[6].proto.map(|(c, _)| c));
         f[6] = None;
         assert!(rank(&f, &prototypes(&[]))[0].1.is_finite());
+    }
+
+    /// An embedding in the direction one mood's weights point gets that mood, from the trained head.
+    fn embedding_strength(class: usize, strength: f32, seed: u32) -> Vec<f32> {
+        let h = head();
+        let k = h.classes.len();
+        let col: Vec<f32> = (0..EMB_LEN).map(|d| h.w[d * k + class]).collect();
+        let norm = col.iter().map(|v| v * v).sum::<f32>().sqrt();
+        // a real track is mostly "everything else": unit-size noise in every number, the class direction on top
+        let mut x = seed;
+        let mut noise = || {
+            x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+            (x >> 8) as f32 / (1u32 << 24) as f32 * 3.4641 - 1.7321 // uniform, unit variance
+        };
+        (0..EMB_LEN).map(|d| h.mean[d] + h.std[d] * (noise() + strength * col[d] / norm)).collect()
+    }
+
+    fn embedding_for(class: usize) -> Vec<f32> {
+        embedding_strength(class, 40.0, 7)
+    }
+
+    /// The weakest embedding along a class direction that the head still calls that class with at least `p`.
+    fn embedding_with_confidence(class: usize, p: f64, seed: u32) -> Vec<f32> {
+        let mut s = 0.5f32;
+        loop {
+            let e = embedding_strength(class, s, seed);
+            let r = rank_embedding(&e, &[]);
+            if r[0].0 == head().classes[class] && r[0].1 >= p {
+                return e;
+            }
+            s *= 1.1;
+            assert!(s < 1000.0);
+        }
+    }
+
+    #[test]
+    fn the_head_names_the_mood_it_points_at() {
+        let h = head();
+        assert_eq!(h.classes.len(), MOODS.len());
+        for (c, &m) in h.classes.iter().enumerate() {
+            let r = rank_embedding(&embedding_for(c), &[]);
+            assert_eq!(MOODS[r[0].0].id, MOODS[m].id);
+            assert!((r.iter().map(|x| x.1).sum::<f64>() - 1.0).abs() < 1e-9);
+            assert_eq!(r, rank_embedding(&embedding_for(c), &[]), "same input, same answer");
+        }
+    }
+
+    /// Hand-picked tracks move the head: three tracks given as "peak time" that look just like a deep-looking track make
+    /// it peak time too, a single pick doesn't change a similar but different track, and a track of another kind stays.
+    /// (On real embeddings, correcting a few mistakes fixes some of the others and keeps 97 % of the rest right.)
+    #[test]
+    fn hand_picked_moods_move_the_head() {
+        let (deep, peak, down) = (index("deep").unwrap(), index("peaktime").unwrap(), index("downtempo").unwrap());
+        let class = |m: usize| head().classes.iter().position(|&c| c == m).unwrap();
+        let like_deep = embedding_with_confidence(class(deep), 0.8, 999);
+        assert_eq!(rank_embedding(&like_deep, &[])[0].0, deep);
+        let picks: Vec<(usize, Vec<f32>)> = (0..3).map(|i| (peak, like_deep.iter().map(|v| v + 0.001 * i as f32).collect())).collect();
+        assert_eq!(rank_embedding(&like_deep, &picks)[0].0, peak, "three picks move it");
+        let cousin = embedding_with_confidence(class(deep), 0.8, 5);
+        assert_eq!(rank_embedding(&cousin, &picks[..1])[0].0, deep, "one pick doesn't swing a similar track");
+        let far = embedding_with_confidence(class(down), 0.8, 17);
+        assert_eq!(rank_embedding(&far, &picks)[0].0, down, "a track of another kind stays");
+    }
+
+    #[test]
+    fn embeddings_survive_the_database() {
+        let e: Vec<f32> = (0..EMB_LEN).map(|i| i as f32 * 0.25 - 3.0).collect();
+        assert_eq!(blob_to_embedding(&embedding_to_blob(&e)).unwrap(), e);
+        assert!(blob_to_embedding(&[1, 2, 3]).is_none());
     }
 }

@@ -96,6 +96,8 @@ pub fn startup_jobs() {
         queue_outdated_analysis();
         Ok(Some(json!({"converted": n})))
     });
+    // Mood embeddings for tracks analysed before the model was installed (a no-op when there is nothing to do).
+    jobs::submit("mood", "Mood model", "cpu", None, |h| Ok(Some(crate::embed::backfill(h)?)));
 }
 
 /// Re-analyse tracks whose analysis predates the current analysis::VERSION.

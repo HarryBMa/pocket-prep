@@ -780,7 +780,7 @@ function moodWhy(t) {
     h("div", { class: "sec-h" }, "Why this mood"),
     h("div", { class: "why-rank" }, w.ranking.map((r) => {
       const m = moodOf(r.id);
-      return h("span", { class: "mood", style: `--mood:${MOOD_COLOR[r.id]}`, title: `Distance ${r.distance} (0 = exactly typical)` },
+      return h("span", { class: "mood", style: `--mood:${MOOD_COLOR[r.id]}`, title: r.distance == null ? "Chance from the Needle Tags model (an embedding of the sound)" : `Distance ${r.distance} (0 = exactly typical)` },
         h("i"), m?.label || r.id, h("span", { class: "muted" }, ` ${pct(r.confidence)}`));
     })),
     h("dl", { class: "kv" }, MOOD_FEATURES.map((f) => {

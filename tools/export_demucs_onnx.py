@@ -100,6 +100,75 @@ class Core(torch.nn.Module):
         return x, xt
 
 
+class Embed(torch.nn.Module):
+    """The same network up to the end of the cross-transformer, pooled into the mood embedding (tools/needle/mood_embed.py):
+    mean and standard deviation of the spectrum branch over frequency and time, and of the time branch over time:
+    [1, 4 * 512]. Inputs are the ones of Core, after the same level normalisation the mood head was trained with."""
+
+    def __init__(self, m):
+        super().__init__()
+        self.m = m
+
+    def forward(self, mix, mag):
+        m = self.m
+        x = mag
+        x = (x - x.mean(dim=(1, 2, 3), keepdim=True)) / (1e-5 + x.std(dim=(1, 2, 3), keepdim=True))
+        xt = (mix - mix.mean(dim=(1, 2), keepdim=True)) / (1e-5 + mix.std(dim=(1, 2), keepdim=True))
+        for idx, encode in enumerate(m.encoder):
+            inject = None
+            if idx < len(m.tencoder):
+                tenc = m.tencoder[idx]
+                xt = tenc(xt)
+                if tenc.empty:
+                    inject = xt
+            x = encode(x, inject)
+            if idx == 0 and m.freq_emb is not None:
+                frs = torch.arange(x.shape[-2], device=x.device)
+                emb = m.freq_emb(frs).t()[None, :, :, None].expand_as(x)
+                x = x + m.freq_emb_scale * emb
+        if m.bottom_channels:
+            b, c, f, t = x.shape
+            x = m.channel_upsampler(x.reshape(b, c, f * t)).reshape(b, -1, f, t)
+            xt = m.channel_upsampler_t(xt)
+        x, xt = m.crosstransformer(x, xt)
+        return torch.cat([x.mean(dim=(2, 3)), x.std(dim=(2, 3)), xt.mean(dim=2), xt.std(dim=2)], dim=1)
+
+
+def export_embedding(out_dir: Path) -> None:
+    """models/htdemucs_embed.onnx: the mood embedding (docs/MOOD.md, Needle Tags). Inputs as Core: a 7.8 s stereo segment
+    `mix` [1, 2, 343980] and its magnitude spectrogram `spec` [1, 4, 2048, 336]; output `emb` [1, 2048]. About a third of
+    the work of a full separation, since the decoders are not run."""
+    torch.backends.mha.set_fastpath_enabled(False)
+    model = get_model("htdemucs").models[0].eval()
+    length = int(model.segment * model.samplerate)
+    g = torch.Generator().manual_seed(2)
+    t = torch.arange(length) / model.samplerate
+    mix = 0.1 * torch.randn(1, 2, length, generator=g) + 0.3 * torch.sin(2 * torch.pi * 220 * t)
+    mag = model._magnitude(model._spec(mix))
+    emb = Embed(model).eval()
+    with torch.no_grad():
+        ref = emb(mix, mag)
+        # the real model's cross-transformer output, pooled the same way
+        grabbed = {}
+        h = model.crosstransformer.register_forward_hook(lambda mod, i, o: grabbed.update(out=o))
+        model(mix)
+        h.remove()
+        fq, tm = grabbed["out"]
+        direct = torch.cat([fq.mean((2, 3)), fq.std((2, 3)), tm.mean(2), tm.std(2)], 1)
+    print(f"embedding vs the full model's cross-transformer: max error {(ref - direct).abs().max().item():.2e}")
+    assert (ref - direct).abs().max().item() < 1e-3
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "htdemucs_embed.onnx"
+    torch.onnx.export(emb, (mix, mag), str(path), input_names=["mix", "spec"], output_names=["emb"],
+                      opset_version=17, do_constant_folding=True, dynamo=False)
+    import onnxruntime as ort
+    got = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"]).run(None, {"mix": mix.numpy(), "spec": mag.numpy()})[0]
+    err = np.abs(got - ref.numpy()).max()
+    print(f"ONNX vs PyTorch: max error {err:.2e}")
+    assert err < 1e-2, "ONNX export differs from PyTorch"
+    print("wrote", path, f"({path.stat().st_size / 1e6:.0f} MB)")
+
+
 def export_coreml(model, out_dir: Path) -> None:
     """CoreML ML Program (fp32, CPU+GPU), compiled to .mlmodelc by macOS's CoreML."""
     import shutil
@@ -189,7 +258,9 @@ def main(out_dir: Path) -> None:
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     out = Path(args[0] if args else "models")
-    if "--coreml" in sys.argv:
+    if "--embedding" in sys.argv:
+        export_embedding(out)
+    elif "--coreml" in sys.argv:
         torch.backends.mha.set_fastpath_enabled(False)   # the fused attention path can't be traced
         export_coreml(get_model("htdemucs").models[0].eval(), out)
     else:

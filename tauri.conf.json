@@ -8,6 +8,7 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
-    "resources": { "models/htdemucs.onnx": "models/htdemucs.onnx", "models/htdemucs.json": "models/htdemucs.json" }
+    "resources": { "models/htdemucs.onnx": "models/htdemucs.onnx", "models/htdemucs.json": "models/htdemucs.json",
+                   "models/htdemucs_embed.onnx": "models/htdemucs_embed.onnx" }
   }
 }

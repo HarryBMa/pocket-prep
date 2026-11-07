@@ -22,14 +22,14 @@ pub struct OrtBackend {
 
 /// Intra-op threads (`CLUBCRAFT_ORT_THREADS` overrides). The performance cores of Apple silicon
 /// scale up to ~8 threads for this model.
-fn threads() -> usize {
+pub(crate) fn threads() -> usize {
     if let Some(n) = std::env::var("CLUBCRAFT_ORT_THREADS").ok().and_then(|v| v.parse().ok()) {
         return n;
     }
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8)
 }
 
-fn opt_level() -> GraphOptimizationLevel {
+pub(crate) fn opt_level() -> GraphOptimizationLevel {
     match std::env::var("CLUBCRAFT_ORT_OPT").ok().as_deref() {
         Some("0") => GraphOptimizationLevel::Disable,
         Some("1") => GraphOptimizationLevel::Level1,
@@ -79,7 +79,7 @@ fn shared_arena() -> bool {
 }
 
 /// Session builder for the CPU provider, or DirectML (Windows GPU) when `gpu` is set.
-fn builder(gpu: bool) -> Result<ort::session::builder::SessionBuilder> {
+pub(crate) fn builder(gpu: bool) -> Result<ort::session::builder::SessionBuilder> {
     let b = Session::builder()?;
     #[cfg(windows)]
     if gpu {

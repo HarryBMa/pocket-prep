@@ -78,9 +78,10 @@ pub fn conn() -> MutexGuard<'static, Connection> {
         // Columns added after the first schema (older libraries get them here, empty).
         // grid_offset_ms / downbeat_shift: the user's beat grid nudge on top of the analysis grid.
         // key_shift: semitones the deck shifts the track's key by when it plays it (the file is not changed).
-        // mood / mood_manual / mood_conf / mood_features: see mood.rs.
+        // mood / mood_manual / mood_conf / mood_features / mood_emb (the 2,048-number embedding, f32 little endian): see mood.rs.
         for (col, decl) in [("grid_offset_ms", "REAL DEFAULT 0"), ("downbeat_shift", "INTEGER DEFAULT 0"), ("key_shift", "INTEGER DEFAULT 0"),
-                            ("mood", "TEXT"), ("mood_manual", "INTEGER DEFAULT 0"), ("mood_conf", "REAL"), ("mood_features", "TEXT")] {
+                            ("mood", "TEXT"), ("mood_manual", "INTEGER DEFAULT 0"), ("mood_conf", "REAL"), ("mood_features", "TEXT"),
+                            ("mood_emb", "BLOB")] {
             let has: bool = c.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name=?").unwrap()
                 .exists([col]).unwrap();
             if !has {

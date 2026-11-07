@@ -13,6 +13,7 @@ mod analysis;
 mod config;
 mod db;
 mod deck;
+mod embed;
 mod export;
 mod jobs;
 mod library;

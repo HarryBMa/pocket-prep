@@ -330,6 +330,10 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
     let range = (config::setting_f64("bpm_min").max(40.0), config::setting_f64("bpm_max").max(60.0));
     let before = load_analysis(track_id);
     let mut a = analyse_audio(&audio, stems_ref.as_ref(), range);
+    // The mood embedding (Needle Tags) when the model is installed; without it the mood comes from the nine numbers.
+    progress(0.8, "Mood model");
+    let emb = crate::embed::available().then(|| crate::embed::embedding(&audio, &mut |_| true)
+        .map_err(|e| eprintln!("mood embedding for track {track_id}: {e:#}")).ok()).flatten().map(|e| mood::embedding_to_blob(&e));
     // A grid nudge is relative to the grid it was made on. If the new analysis moved the grid
     // (anchor or tempo), the old nudge would now be wrong, so it is cleared and that is logged.
     let grid_moved = before.as_ref().is_some_and(|b| {
@@ -348,10 +352,10 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
                 db::log(c, "grid_nudge_reset", json!({"track_id": track_id, "why": "re-analysis moved the beat grid"}), None)?;
             }
         }
-        c.execute("UPDATE tracks SET bpm=?, musical_key=?, camelot=?, energy=?, duration=?, analysed_at=?, mood_features=? WHERE id=?",
+        c.execute("UPDATE tracks SET bpm=?, musical_key=?, camelot=?, energy=?, duration=?, analysed_at=?, mood_features=?, mood_emb=COALESCE(?, mood_emb) WHERE id=?",
                   params![a["bpm"].as_f64(), a["key"].as_str(), a["camelot"].as_str(), a["energy"].as_i64(),
                           a["duration_ms"].as_f64().map(|d| d / 1000.0), a["analysed_at"].as_f64(),
-                          a["mood_features"].to_string(), track_id])?;
+                          a["mood_features"].to_string(), emb, track_id])?;
         mood::refresh(c)?;
         // Place automatic cues only if the user hasn't set any.
         let user: Option<i64> = c.query_row("SELECT 1 FROM cues WHERE track_id=? AND auto=0", [track_id], |r| r.get(0)).ok();
