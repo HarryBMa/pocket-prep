@@ -35,7 +35,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from chunked import nsdr, separate_chunked, torch_predictor
-from data import (Prefetcher, StemBank, augment, hours, keep_awake, load_musdb, load_teacher,
+from data import (Prefetcher, StemBank, augment, hours, keep_awake, load_excerpts, load_musdb, load_teacher,
                   musdb_split)
 from needle import SOURCES, Needle, NeedleConfig, apply_masks, count_macs, istft, network_input
 
@@ -125,6 +125,8 @@ def main():
     ap.add_argument("--musdb", required=True, help="MUSDB18-HQ root (with train/ and test/)")
     ap.add_argument("--teacher", action="append", default=[], help="distill.py cache folder (repeatable)")
     ap.add_argument("--teacher-share", type=float, default=0.5, help="fraction of stems drawn from teacher tracks")
+    ap.add_argument("--teacher-seconds", type=int, default=0,
+                    help="keep only the busiest N seconds of each teacher track (0 = whole tracks); saves RAM on long DJ tracks")
     ap.add_argument("--stems", action="append", default=[], help="import_stems.py folder of real stems (repeatable)")
     ap.add_argument("--stems-share", type=float, default=0.25, help="fraction of stems drawn from --stems tracks")
     ap.add_argument("--name", required=True)
@@ -208,7 +210,7 @@ def main():
     split = musdb_split(a.musdb)
     train = load_musdb(a.musdb, "train", split["train"])
     valid = load_musdb(a.musdb, "train", split["valid"])
-    teacher = [tr for d in a.teacher for tr in load_teacher(d)]       # teacher stems (distill.py)
+    teacher = [tr for d in a.teacher for tr in (load_excerpts(d, a.teacher_seconds) if a.teacher_seconds else load_teacher(d))]       # teacher stems (distill.py)
     real = [tr for d in a.stems for tr in load_teacher(d)]            # real stems (import_stems.py), same layout
     share_t = a.teacher_share if teacher else 0.0
     share_r = a.stems_share if real else 0.0

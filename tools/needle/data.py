@@ -83,6 +83,29 @@ def load_teacher(cache, threads=8):
         return list(zip((f.name for f in folders), ex.map(lambda f: read_stems(f, "flac"), folders)))
 
 
+def busiest_excerpt(stems, seconds):
+    """stems int16 (S, C, N) -> the `seconds`-long excerpt whose quietest stem is loudest (1-s
+    steps): the part of a song where all four stems play, which teaches the most per second.
+    Lets hundreds of long DJ tracks fit in RAM (2 minutes each instead of 6+)."""
+    n = stems.shape[-1]
+    secs, L = n // SAMPLE_RATE, seconds * SAMPLE_RATE
+    if n <= L:
+        return stems
+    p = (stems[..., :secs * SAMPLE_RATE].astype(np.float32) ** 2).mean(1)
+    p = p.reshape(len(stems), secs, SAMPLE_RATE).mean(-1)              # (S, secs)
+    win = np.stack([np.convolve(q, np.ones(seconds), "valid") for q in p]).min(0)
+    start = int(win.argmax()) * SAMPLE_RATE
+    return np.ascontiguousarray(stems[..., start:start + L])
+
+
+def load_excerpts(cache, seconds, threads=8):
+    """Like load_teacher, but keeps only the busiest `seconds` of each track."""
+    folders = sorted(p.parent for p in Path(cache).glob("*/done"))
+    with ThreadPoolExecutor(threads) as ex:
+        return list(zip((f.name for f in folders),
+                        ex.map(lambda f: busiest_excerpt(read_stems(f, "flac"), seconds), folders)))
+
+
 def hours(tracks):
     return sum(t.shape[-1] for _, t in tracks) / SAMPLE_RATE / 3600
 
