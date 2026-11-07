@@ -101,9 +101,11 @@ class Core(torch.nn.Module):
 
 
 class Embed(torch.nn.Module):
-    """The same network up to the end of the cross-transformer, pooled into the mood embedding (tools/needle/mood_embed.py):
-    mean and standard deviation of the spectrum branch over frequency and time, and of the time branch over time:
-    [1, 4 * 512]. Inputs are the ones of Core, after the same level normalisation the mood head was trained with."""
+    """The mood embedding (docs/MOOD.md, Needle Tags): only the four convolutional encoders of HTDemucs, both branches
+    (the transformer, 75 % of the network, is not needed: tools/needle/mood_layers.py measured the layers). The outputs of
+    encoder layers 2 and 3 are pooled into mean and standard deviation: spectrum branch over frequency and time, time
+    branch over time. [1, 2 * 96 + ... ] = 2,304 numbers, layer 2 first: 192 + 192 + 192 + 192, then layer 3: 4 * 384.
+    Inputs are the ones of Core, after the same level normalisation the mood head was trained with."""
 
     def __init__(self, m):
         super().__init__()
@@ -114,6 +116,7 @@ class Embed(torch.nn.Module):
         x = mag
         x = (x - x.mean(dim=(1, 2, 3), keepdim=True)) / (1e-5 + x.std(dim=(1, 2, 3), keepdim=True))
         xt = (mix - mix.mean(dim=(1, 2), keepdim=True)) / (1e-5 + mix.std(dim=(1, 2), keepdim=True))
+        pooled = []
         for idx, encode in enumerate(m.encoder):
             inject = None
             if idx < len(m.tencoder):
@@ -126,18 +129,18 @@ class Embed(torch.nn.Module):
                 frs = torch.arange(x.shape[-2], device=x.device)
                 emb = m.freq_emb(frs).t()[None, :, :, None].expand_as(x)
                 x = x + m.freq_emb_scale * emb
-        if m.bottom_channels:
-            b, c, f, t = x.shape
-            x = m.channel_upsampler(x.reshape(b, c, f * t)).reshape(b, -1, f, t)
-            xt = m.channel_upsampler_t(xt)
-        x, xt = m.crosstransformer(x, xt)
-        return torch.cat([x.mean(dim=(2, 3)), x.std(dim=(2, 3)), xt.mean(dim=2), xt.std(dim=2)], dim=1)
+            if idx >= 2:
+                # the pooled values are of the encoder outputs, taken before the frequency embedding (idx 0 only)
+                pooled += [x.mean(dim=(2, 3)), x.std(dim=(2, 3)), xt.mean(dim=2), xt.std(dim=2)]
+        return torch.cat(pooled, dim=1)
+
+
+EMBEDDING_FILE = "htdemucs_mood.onnx"
 
 
 def export_embedding(out_dir: Path) -> None:
-    """models/htdemucs_embed.onnx: the mood embedding (docs/MOOD.md, Needle Tags). Inputs as Core: a 7.8 s stereo segment
-    `mix` [1, 2, 343980] and its magnitude spectrogram `spec` [1, 4, 2048, 336]; output `emb` [1, 2048]. About a third of
-    the work of a full separation, since the decoders are not run."""
+    """models/htdemucs_mood.onnx (about 11 MB): inputs as Core, a 7.8 s stereo segment `mix` [1, 2, 343980] and its
+    magnitude spectrogram `spec` [1, 4, 2048, 336]; output `emb` [1, 2304]."""
     torch.backends.mha.set_fastpath_enabled(False)
     model = get_model("htdemucs").models[0].eval()
     length = int(model.segment * model.samplerate)
@@ -148,17 +151,19 @@ def export_embedding(out_dir: Path) -> None:
     emb = Embed(model).eval()
     with torch.no_grad():
         ref = emb(mix, mag)
-        # the real model's cross-transformer output, pooled the same way
+        # the real model's encoder outputs, pooled the same way (what tools/needle/mood_layers.py saved)
         grabbed = {}
-        h = model.crosstransformer.register_forward_hook(lambda mod, i, o: grabbed.update(out=o))
+        hooks = [m.register_forward_hook(lambda mod, i, o, k=k: grabbed.update({f"f{k}": o})) for k, m in enumerate(model.encoder)]
+        hooks += [m.register_forward_hook(lambda mod, i, o, k=k: grabbed.update({f"t{k}": o})) for k, m in enumerate(model.tencoder)]
         model(mix)
-        h.remove()
-        fq, tm = grabbed["out"]
-        direct = torch.cat([fq.mean((2, 3)), fq.std((2, 3)), tm.mean(2), tm.std(2)], 1)
-    print(f"embedding vs the full model's cross-transformer: max error {(ref - direct).abs().max().item():.2e}")
-    assert (ref - direct).abs().max().item() < 1e-3
+        for h in hooks:
+            h.remove()
+        direct = torch.cat([v for k in (2, 3) for v in (grabbed[f"f{k}"].mean((2, 3)), grabbed[f"f{k}"].std((2, 3)),
+                                                         grabbed[f"t{k}"].mean(2), grabbed[f"t{k}"].std(2))], 1)
+    print(f"embedding {tuple(ref.shape)} vs the full model's encoder outputs: max error {(ref - direct).abs().max().item():.2e}")
+    assert ref.shape == (1, 2304) and (ref - direct).abs().max().item() < 1e-3
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "htdemucs_embed.onnx"
+    path = out_dir / EMBEDDING_FILE
     torch.onnx.export(emb, (mix, mag), str(path), input_names=["mix", "spec"], output_names=["emb"],
                       opset_version=17, do_constant_folding=True, dynamo=False)
     import onnxruntime as ort

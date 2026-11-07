@@ -117,51 +117,55 @@ are what make it fit your library. A few per mood is enough to move it.
 
 ## Needle Tags: an embedding model instead of nine numbers (`tools/needle/`)
 
-An Essentia-style two-stage model with no non-commercial licence in it. `mood_embed.py` runs htdemucs
-(MIT, Meta) on the middle two minutes of a track and takes the output of its cross-transformer
-(where the time and the spectrum branch meet), pooled over time, plus the level and busyness of
-each stem: 2,056 numbers per track. `mood_head.py` trains a small logistic regression on top
-(standardised numbers, L2 penalty chosen by an inner cross-validation, every mood weighted equally).
-The trained head is `tools/needle/mood_head_v1.json` (8 moods, 2,048 weights each).
+An Essentia-style two-stage model with no non-commercial licence in it. `mood_embed.py` runs the four convolutional
+encoders of htdemucs (MIT, Meta) on the middle two minutes of a track and pools the outputs of layers 2 and 3
+(mean and standard deviation, both branches): 2,304 numbers per track. `mood_head.py` trains a small logistic
+regression on top (standardised numbers, L2 penalty chosen by an inner cross-validation, every mood weighted equally).
+The trained head is `tools/needle/mood_head_v2.json` (8 moods, 2,304 weights each).
 
-5-fold cross-validation, with all tracks of one artist kept in the same fold (so it can't learn an
+The transformer, 75 % of the network, is left out on purpose. `mood_layers.py` measured how deep the embedding has to
+reach, with 5-fold cross-validation in which all tracks of one artist stay in the same fold (so it can't learn an
 artist's sound):
 
-| Test set | DKPRP's nine numbers | Essentia (no training) | Needle Tags |
-|---|---|---|---|
-| 4 club moods, 88 tracks (Beatport tags) | 49 % | 60 % | **65 %** |
-| 4 other moods, 120 Jamendo tracks (the artists' tags, noisy) | 38 % | about 55 % | **60 %** |
-| All 8 moods, 88 club + 72 Jamendo | 39 % | - | **69 %** |
+| Method | Model file | 4 club moods (88) | 4 other moods, Jamendo (120) | All 8 moods |
+|---|---|---|---|---|
+| The nine numbers, fitted | none | 48 % | 38 % | 34 % |
+| Ordinary audio statistics (mel bands, `mood_classic.py`) | none | 57 % | 43 % | 46 % |
+| Essentia Discogs-EffNet, no training (non-commercial) | - | 60 % | about 55 % | - |
+| **Encoders only (shipped)** | **12 MB** | **63 %** | **55 %** | **61 %** |
+| Encoders and transformer (first version) | 145 MB | 65 % | 60 % | 69 % |
 
-The eight-mood result is flattering: the club tracks and the Jamendo tracks differ in how they are
-mastered, so part of it is telling the two sources apart. Read it with the first two rows. Weak
-spots: melodic (7 tracks, 29 % recall) and deep, which is mistaken for tech house about half the time.
-The label sets are small and the tags are not your own. Both go up with your corrections.
+Adding the nine numbers to the embedding didn't help (62 / 57 / 58 %). The eight-mood column is flattering: the club
+tracks and the Jamendo tracks differ in how they are mastered, so part of it is telling the two sources apart. Read it
+with the first two columns. The differences between the last two rows are within what 100-180 tracks can resolve for the
+club moods, and about 5 points for the others. Weak spots: melodic (7 tracks, 14 % recall) and deep, which is mistaken
+for tech house about half the time. The label sets are small and the tags are not your own; both improve with your
+corrections.
 
 ### In the app
 
-The app uses it. When `models/htdemucs_embed.onnx` is installed, analysing a track also computes its embedding
-(`src/embed.rs`, `vendor/clubcraft/crates/stems/src/embed.rs`; 15 segments of 7.8 s from the middle of the track,
-about 2 s per track on the GPU through DirectML, about 15 s on the processor). It is saved with the track
-(`mood_emb`, 8 KB), a "Mood model" job fills in the tracks analysed before, and the mood comes from the head
-(`mood_head_v1.json`, built into the app). Without the model file everything works as before, from the nine numbers.
+When `models/htdemucs_mood.onnx` is installed, analysing a track also computes its embedding (`src/embed.rs`,
+`vendor/clubcraft/crates/stems/src/embed.rs`): 15 segments of 7.8 s from the middle of the track, under a second per
+track on the processor, on every platform. It is saved with the track (`mood_emb`, 9 KB), a "Mood model" job fills in the
+tracks analysed before (and re-does any made by an older model), and the mood comes from the head (built into the app).
+Without the model file everything works as before, from the nine numbers.
 
-- **Your moods teach it.** Setting a mood by hand moves the head a little towards that track (a few gradient steps
-  with a pull back to the trained weights). On the labelled tracks, correcting 3 of the head's mistakes fixed about 9 %
-  of the other mistakes and kept 98 % of the rest right; one wrong pick changes nothing measurable.
-- **Same answer as PyTorch.** The embedding computed in Rust matches the one the head was trained on (cosine 0.9999;
+- **Your moods teach it.** Setting a mood by hand moves the head a little towards that track (a few gradient steps with
+  a pull back to the trained weights). On the labelled tracks, correcting 3 of the head's mistakes fixed about 9 % of the
+  other mistakes and kept 98 % of the rest right; one wrong pick changes nothing measurable.
+- **Same answer as PyTorch.** The embedding computed in Rust matches the one the head was trained on (cosine 1.0000;
   `cargo test --release embedding_matches_pytorch -- --ignored`).
-- **DirectML only after a check.** The first time, the GPU result on a test signal is compared with the processor's;
-  if they disagree the processor is used (`POCKET_PREP_EMBED_CPU=1` forces it).
-- **Cost.** The model file is 145 MB, on top of the stem model, in every installer. On the Mac it runs on the processor
-  (the CoreML path of ONNX Runtime gives wrong numbers for this network).
+- **Cost.** 12 MB in the installer. (The first version used the transformer too: 145 MB, and 14 s per track on the
+  processor.)
 - **Why this panel changed.** For a track with an embedding, "Why this mood" shows the model's probabilities, not
   distances; the nine numbers are still shown.
-
-When Needle is trained, the same recipe can use its encoder instead.
+- **Tempo isn't in the embedding.** A 174 BPM track can come out as pop, because the head hears timbre, not tempo.
+  Adding the measured tempo to the head didn't improve the cross-validated accuracy, so it isn't done.
 
 Redo it: `python mood_embed.py list.tsv out.npz` (Needle venv; `list.tsv` is "mood<TAB>path"), then
-`python mood_head.py --luke a.npz --jam b.npz --groups artists.tsv --save mood_head.json`.
+`python mood_head.py --luke a.npz --jam b.npz --groups artists.tsv --save mood_head.json`, and
+`uv run ... tools/export_demucs_onnx.py models --embedding` for the ONNX file the app loads. When Needle is trained, the
+same recipe can use its encoder instead.
 
 ## Limits and next steps
 

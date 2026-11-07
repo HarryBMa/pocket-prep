@@ -7,7 +7,7 @@ cross-validation), and the accuracy is counted on tracks the head never saw (out
 
 Usage (the Needle venv):
   python mood_head.py --luke emb_luke.npz --jam emb_jam.npz [--keep keep.txt] [--only deep,melodic,tech_house,peaktime]
-                      [--features all|embedding|stems] [--save head.json]
+                      [--groups artists.tsv] [--save head.json]
 Labels come from the npz ("?" = unlabelled, ignored). --keep limits the files used (one name per line).
 """
 import argparse, json, collections
@@ -101,7 +101,6 @@ def main():
     ap.add_argument("--jam")
     ap.add_argument("--keep")
     ap.add_argument("--only", default="")
-    ap.add_argument("--features", default="all", choices=["all", "embedding", "stems"])
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--groups", help="TSV of 'file<TAB>group' (artist): a group is never split between training and test")
     ap.add_argument("--save")
@@ -116,10 +115,6 @@ def main():
     only = a.only.split(",") if a.only else MOODS
     m = np.array([(l in only) and (keep is None or f in keep) for l, f in zip(labels, files)])
     x, labels, files = x[m], labels[m], files[m]
-    if a.features == "embedding":
-        x = x[:, :-8]
-    elif a.features == "stems":
-        x = x[:, -8:]
     ids = [mo for mo in MOODS if (labels == mo).sum() >= a.folds]
     sel = np.isin(labels, ids)
     x, labels, files = x[sel], labels[sel], files[sel]

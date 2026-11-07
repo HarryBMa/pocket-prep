@@ -1,10 +1,10 @@
 """Needle Tags, part 1: an embedding for every track, taken from the Demucs the app already runs.
 
 Like Essentia's Discogs-EffNet, this is a frozen network turned into a fixed-size vector; a small head
-(mood_head.py) is then trained on top. The network is htdemucs (MIT licence, Meta): the output of its
-cross-transformer, where the time and the spectrum branch meet, pooled over time (mean and standard
-deviation), plus how loud and how busy each separated stem is. The app makes the stems anyway, so the
-same pass could give the embedding for free.
+(mood_head.py) is then trained on top. The network is htdemucs (MIT licence, Meta). Only its four convolutional
+encoders are needed (the transformer is 75 % of the weights and did not help enough, see mood_layers.py): the
+outputs of encoder layers 2 and 3, both branches, pooled over time as mean and standard deviation, 2,304 numbers.
+The app runs the same thing from a 12 MB ONNX file (tools/export_demucs_onnx.py --embedding).
 
 Usage (the Needle venv, which has torch + demucs):
   python mood_embed.py <list.tsv> <out.npz> [--seconds 120]
@@ -32,35 +32,21 @@ def load(path, seconds, duration=None):
 
 
 @torch.no_grad()
-def embed(model, hook, wav, dev):
+def embed(model, grabbed, wav, dev):
     seg = int(7.8 * SR)
-    chunks = [wav[:, i:i + seg] for i in range(0, wav.shape[1] - seg + 1, seg)]
     feats = []
-    for c in chunks:
-        x = torch.from_numpy(c)[None].to(dev)
+    for i in range(0, wav.shape[1] - seg + 1, seg):
+        x = torch.from_numpy(wav[:, i:i + seg])[None].to(dev)
         ref = x.mean(0)
         x = (x - ref.mean()) / (ref.std() + 1e-8)                       # as demucs does before the network
-        hook.clear()
-        y = model(x)                                                      # (1, 4 stems, 2, T)
-        fq, tm = hook.out                                                 # (1, C, F, T1), (1, C, T2)
-        v = [fq.mean((2, 3)), fq.std((2, 3)), tm.mean(2), tm.std(2)]
-        # stems: level against the mix (dB) and share of 0.5 s windows that carry sound
-        e = (y ** 2).mean((0, 2))                                         # (stems, T)
-        mix = (x ** 2).mean() + 1e-10
-        w = e[:, : e.shape[1] // (SR // 2) * (SR // 2)].reshape(4, -1, SR // 2).mean(2)
-        level = 10 * torch.log10(e.mean(1) / mix + 1e-10)
-        active = (w > w.max() * 1e-3).float().mean(1)
-        feats.append(torch.cat([torch.cat(v, 1)[0], level, active]).cpu().numpy())
+        grabbed.clear()
+        model(x)
+        row = []
+        for k in (2, 3):
+            f, t = grabbed[f"f{k}"], grabbed[f"t{k}"]                     # (1, C, F, T1), (1, C, T2)
+            row += [f.mean((2, 3)), f.std((2, 3)), t.mean(2), t.std(2)]
+        feats.append(torch.cat(row, 1)[0].cpu().numpy())
     return np.mean(feats, axis=0)
-
-
-class Hook:
-    def __init__(self, module):
-        self.out = None
-        module.register_forward_hook(lambda m, i, o: setattr(self, "out", o))
-
-    def clear(self):
-        self.out = None
 
 
 def main():
@@ -71,7 +57,10 @@ def main():
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     model = get_model("htdemucs").models[0].to(dev).eval()
-    hook = Hook(model.crosstransformer)
+    grabbed = {}
+    for k in (2, 3):
+        model.encoder[k].register_forward_hook(lambda m, i, o, k=k: grabbed.__setitem__(f"f{k}", o))
+        model.tencoder[k].register_forward_hook(lambda m, i, o, k=k: grabbed.__setitem__(f"t{k}", o))
     labels, files, vecs = [], [], []
     rows = [l.rstrip("\n").split("\t") for l in open(a.list, encoding="utf-8") if "\t" in l]
     for n, (label, path) in enumerate(rows):
@@ -79,7 +68,7 @@ def main():
             wav = load(path, a.seconds)
             if wav.shape[1] < 10 * SR:
                 raise ValueError("too short")
-            vecs.append(embed(model, hook, wav, dev))
+            vecs.append(embed(model, grabbed, wav, dev))
             labels.append(label)
             files.append(path.replace("\\", "/").rsplit("/", 1)[-1])
         except Exception as e:

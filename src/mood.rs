@@ -126,9 +126,9 @@ pub fn rank(f: &Features, protos: &[[(f64, f64); N]]) -> Vec<(usize, f64, f64)> 
 // ── Needle Tags: the embedding head ──────────────────────────────────────────
 
 /// Length of the embedding (clubcraft_stems::embed::EMBEDDING_LEN).
-pub const EMB_LEN: usize = 2048;
+pub const EMB_LEN: usize = 2304;
 
-/// The trained head (tools/needle/mood_head_v1.json): standardise the embedding, one weight per number and mood,
+/// The trained head (tools/needle/mood_head_v2.json): standardise the embedding, one weight per number and mood,
 /// softmax. Its moods are `MOODS` ids.
 struct Head {
     classes: Vec<usize>, // MOODS index of each output
@@ -141,7 +141,7 @@ struct Head {
 fn head() -> &'static Head {
     static HEAD: std::sync::OnceLock<Head> = std::sync::OnceLock::new();
     HEAD.get_or_init(|| {
-        let v: Value = serde_json::from_str(include_str!("../tools/needle/mood_head_v1.json")).expect("mood head");
+        let v: Value = serde_json::from_str(include_str!("../tools/needle/mood_head_v2.json")).expect("mood head");
         let floats = |k: &str| -> Vec<f32> { v[k].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect() };
         let classes: Vec<usize> = v["moods"].as_array().unwrap().iter().map(|m| index(m.as_str().unwrap()).expect("mood id")).collect();
         let w: Vec<f32> = v["W"].as_array().unwrap().iter().flat_map(|row| row.as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32)).collect();

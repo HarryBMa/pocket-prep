@@ -1,7 +1,8 @@
 //! Mood embedding (added by Pocket Prep / DKPRP, not part of upstream ClubCraft).
 //!
-//! The same HTDemucs network as the separation, cut after its cross-transformer and pooled into 2,048 numbers
-//! (`tools/export_demucs_onnx.py --embedding` writes `models/htdemucs_embed.onnx`). A small head on top turns the
+//! The convolutional encoders of the same HTDemucs network as the separation (not the transformer, 75 % of the
+//! weights), pooled into 2,304 numbers (`tools/export_demucs_onnx.py --embedding` writes `models/htdemucs_mood.onnx`,
+//! 12 MB). A small head on top turns the
 //! vector into a mood (docs/MOOD.md, "Needle Tags"). The pipeline mirrors `tools/needle/mood_embed.py`, which the
 //! head was trained with: the middle two minutes, 7.8 s segments without overlap, every segment normalised by the
 //! mean and standard deviation of its mono mix (as `demucs.apply_model` does), the vectors averaged.
@@ -15,8 +16,8 @@ use ort::session::Session;
 use ort::value::Tensor;
 use std::path::Path;
 
-/// Length of the embedding: mean and standard deviation of the spectrum branch and of the time branch, 512 each.
-pub const EMBEDDING_LEN: usize = 2048;
+/// Length of the embedding: mean and standard deviation of encoder layers 2 and 3, both branches (192 * 4 + 384 * 4).
+pub const EMBEDDING_LEN: usize = 2304;
 /// How much of the track is used, from its middle, in seconds.
 pub const EXCERPT_SECONDS: f64 = 120.0;
 
@@ -29,19 +30,14 @@ pub struct Embedder {
 }
 
 impl Embedder {
-    /// Loads `<dir>/htdemucs_embed.onnx` (CPU), using the geometry of `<dir>/htdemucs.json`.
+    /// Loads `<dir>/htdemucs_mood.onnx` (CPU), using the geometry of `<dir>/htdemucs.json`.
     pub fn load(dir: &Path) -> Result<Embedder> {
-        Self::load_with(dir, false)
-    }
-
-    /// `gpu`: DirectML (Windows) instead of the CPU provider.
-    pub fn load_with(dir: &Path, gpu: bool) -> Result<Embedder> {
         let man = Manifest::load(dir, "htdemucs")?;
-        let path = dir.join("htdemucs_embed.onnx");
+        let path = dir.join("htdemucs_mood.onnx");
         if !path.exists() {
             bail!("missing {}", path.display());
         }
-        let session = builder(gpu)?
+        let session = builder(false)?
             .with_optimization_level(opt_level())?
             .with_intra_threads(threads())?
             .commit_from_file(&path)

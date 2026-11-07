@@ -36,7 +36,7 @@ jobs:
         run: |
           uv run --python 3.12 --with demucs==4.0.1 --with torch==2.7.1 --with torchaudio==2.7.1 \
             --with onnx --with onnxruntime --with "numpy<2.3" tools/export_demucs_onnx.py models
-      - name: Export the mood embedding model (ONNX, every platform: it runs on the processor on the Mac)
+      - name: Export the mood embedding model (ONNX, 12 MB, every platform)
         shell: bash
         run: |
           uv run --python 3.12 --with demucs==4.0.1 --with torch==2.7.1 --with torchaudio==2.7.1             --with onnx --with onnxruntime --with "numpy<2.3" tools/export_demucs_onnx.py models --embedding

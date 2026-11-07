@@ -1,7 +1,7 @@
 //! Needle Tags: the mood embedding of a track (docs/MOOD.md).
 //!
-//! HTDemucs (the network that makes the stems) cut after its cross-transformer and pooled into 2,048 numbers,
-//! run on the middle two minutes of the track. `models/htdemucs_embed.onnx` is made by
+//! The convolutional encoders of HTDemucs (the network that makes the stems), pooled into 2,304 numbers, run on the
+//! middle two minutes of the track. `models/htdemucs_mood.onnx` (12 MB) is made by
 //! `tools/export_demucs_onnx.py --embedding`; the code is `clubcraft_stems::embed`. The embedding is saved with the
 //! track (`mood_emb`) and a small head (mood.rs) turns it into a mood, so the model runs once per track.
 //! Without the model file everything still works: the mood then comes from the nine measured numbers.
@@ -25,52 +25,15 @@ fn model_dir() -> PathBuf {
 /// The embedding model is installed (and the stem model, whose geometry it reads).
 pub fn available() -> bool {
     let d = model_dir();
-    d.join("htdemucs_embed.onnx").exists() && d.join("htdemucs.json").exists()
+    d.join("htdemucs_mood.onnx").exists() && d.join("htdemucs.json").exists()
 }
 
-/// DirectML (the GPU, Windows) is about eight times faster than the processor, but a GPU path can silently give wrong
-/// numbers (see the stems backend), so it is used only after it agrees with the processor on a test signal.
-/// POCKET_PREP_EMBED_CPU forces the processor.
-fn load_embedder() -> Result<Embedder> {
-    #[cfg(windows)]
-    if std::env::var_os("POCKET_PREP_EMBED_CPU").is_none() {
-        match Embedder::load_with(&model_dir(), true) {
-            Ok(gpu) => match gpu_agrees(&gpu) {
-                Ok(true) => return Ok(gpu),
-                Ok(false) => eprintln!("mood embedding: DirectML disagrees with the processor; using the processor"),
-                Err(e) => eprintln!("mood embedding: DirectML check failed ({e:#}); using the processor"),
-            },
-            Err(e) => eprintln!("mood embedding: DirectML unavailable ({e:#}); using the processor"),
-        }
-    }
-    Embedder::load(&model_dir())
-}
-
-/// A tone with noise, 8.5 s: one segment through the GPU and through a temporary processor session.
-#[cfg(windows)]
-fn gpu_agrees(gpu: &Embedder) -> Result<bool> {
-    let mut x = 12345u32;
-    let mut noise = move || {
-        x = x.wrapping_mul(1664525).wrapping_add(1013904223);
-        (x >> 8) as f32 / (1u32 << 24) as f32 - 0.5
-    };
-    let n = (8.5 * 44_100.0) as usize;
-    let tone = |i: usize, f: f32| (i as f32 * f * std::f32::consts::TAU / 44_100.0).sin();
-    let left: Vec<f32> = (0..n).map(|i| 0.3 * tone(i, 110.0) + 0.05 * tone(i, 3000.0) + 0.1 * noise()).collect();
-    let right: Vec<f32> = (0..n).map(|i| 0.3 * tone(i, 110.0) + 0.05 * tone(i, 2500.0) + 0.1 * noise()).collect();
-    let audio = AudioBuffer::new(44_100, left, right);
-    let a = gpu.embed(&audio, &mut |_| true)?;
-    let b = Embedder::load(&model_dir())?.embed(&audio, &mut |_| true)?;
-    let dot: f64 = a.iter().zip(&b).map(|(x, y)| (*x * *y) as f64).sum();
-    let norm = |v: &[f32]| v.iter().map(|x| (*x * *x) as f64).sum::<f64>().sqrt();
-    Ok(dot / (norm(&a) * norm(&b)) > 0.999)
-}
-
-/// The embedding of already decoded audio. The model is loaded on first use (a few seconds) and kept.
+/// The embedding of already decoded audio, on the processor (the encoders are small: under a second per track). The
+/// model is loaded on first use and kept.
 pub fn embedding(audio: &AudioBuffer, progress: &mut dyn FnMut(f32) -> bool) -> Result<Vec<f32>> {
     let mut g = EMBEDDER.lock().unwrap_or_else(|e| e.into_inner());
     if g.is_none() {
-        *g = Some(load_embedder()?);
+        *g = Some(Embedder::load(&model_dir())?);
     }
     g.as_ref().unwrap().embed(audio, progress)
 }
@@ -90,7 +53,8 @@ pub fn backfill(h: &jobs::Handle) -> Result<Value> {
     if !available() {
         return Ok(json!({"skipped": "no embedding model"}));
     }
-    let ids: Vec<i64> = db::query("SELECT id FROM tracks WHERE deleted=0 AND mood_emb IS NULL AND analysed_at IS NOT NULL ORDER BY id", &[])?
+    let ids: Vec<i64> = db::query("SELECT id FROM tracks WHERE deleted=0 AND (mood_emb IS NULL OR length(mood_emb) <> ?) AND analysed_at IS NOT NULL ORDER BY id",
+                         &[json!(mood::EMB_LEN * 4)])?
         .iter().filter_map(|r| r["id"].as_i64()).collect();
     let (mut done, mut failed) = (0, 0);
     for (i, id) in ids.iter().enumerate() {
