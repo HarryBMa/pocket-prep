@@ -1,6 +1,6 @@
 # Plan: importing cues edited on the deck back into Pocket Prep
 
-Status: plan only, nothing built. Facts are from Pajoniiir `p4-core` (components
+Status: plan only, nothing built. Facts are from the deck firmware's `p4-core` (components
 `hot_cue_store`, `media_identity`, `library`, `web_server`) and `docs/M3_CUE_MIGRATION.md`.
 
 ## What the deck stores, and where
@@ -23,7 +23,7 @@ them. So "importing deck cues" means hot cue pads A-H (singles and loops).
 same merge.
 
 **The media identity** (`media_persistent_id_derive`) is
-`SHA-256("pajoniiir.hotcue.v2" ‖ export_digest[32] ‖ path_len u16 LE ‖ path ‖ file_size u64 LE ‖ fat_mtime i64 LE)`
+`SHA-256(<hot-cue domain tag, a fixed string in the firmware source> ‖ export_digest[32] ‖ path_len u16 LE ‖ path ‖ file_size u64 LE ‖ fat_mtime i64 LE)`
 where:
 
 - `export_digest` = SHA-256 of `PIONEER/rekordbox/export.pdb` as the deck read it

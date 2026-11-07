@@ -1,6 +1,6 @@
 //! Talking to the deck: status, signed firmware updates, wired recovery.
 //!
-//! Wireless (normal): the deck runs Pajoniiir's update service. Turn on
+//! Wireless (normal): the deck runs its update service. Turn on
 //! "Wi-Fi Remote" on the deck, join its Wi-Fi network, then this module can
 //! read /api/status and /api/firmware and upload a signed .ddjota bundle to
 //! /api/ota/p4. The deck checks the signature itself before it erases anything.

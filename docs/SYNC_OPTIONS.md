@@ -1,7 +1,7 @@
 # Getting the library onto the deck: three options
 
 Design note, 2026-11-04. Nothing here is built. Facts about the deck come from the
-Pajoniiir docs (`docs/SHARED_P4_BOARDS.md`, `docs/HARDWARE_WIRING.md`,
+deck firmware's docs (`docs/SHARED_P4_BOARDS.md`, `docs/HARDWARE_WIRING.md`,
 `p4-core/components/wifi_link`); speeds marked *estimate* must be measured on a deck.
 
 ## What the hardware does today

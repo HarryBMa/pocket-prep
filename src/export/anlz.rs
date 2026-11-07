@@ -10,7 +10,7 @@
 //!     4 bytes  total section size (header + data)
 //!     ...      rest of the header, then the data
 //!
-//! References: Deep Symmetry's ANLZ notes and Pajoniiir's rekordbox_anlz.c.
+//! References: Deep Symmetry's ANLZ notes and the deck firmware's ANLZ reader.
 
 fn be32(v: u32) -> [u8; 4] { v.to_be_bytes() }
 

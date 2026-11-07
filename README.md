@@ -1,7 +1,6 @@
 # DKPRP
 
-Preparation app for the DECK001 (formerly Pocket Prep / Pocket Deck; an ESP32-P4 standalone DJ deck running
-[Pajoniiir](https://github.com/dvucinozd/Pajoniiir) firmware). Import music, analyse it (tempo, beat
+Preparation app for the DECK001 (formerly Pocket Prep / Pocket Deck; an ESP32-P4 standalone DJ deck). Import music, analyse it (tempo, beat
 grid, key, energy, sections, hot cues), split stems (Demucs), and export a
 rekordbox-format USB drive that the DECK001 and CDJs read. Works offline. Windows and macOS.
 

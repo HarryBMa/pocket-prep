@@ -56,7 +56,7 @@ existing library carries over. Old MP3 stems are marked "not made" and need rema
 4. **"Add to the existing library"** (merging into a rekordbox export we didn't write) isn't built;
    such drives are refused (src/export/usb.rs foreign_library, test with a real rekordbox export).
 5. **Dragging files from Explorer/Finder doesn't import** (HTML drag and drop is kept for playlists).
-6. CDJ compatibility of export.pdb untested on hardware (data pages only). rekordcrate and Pajoniiir parse it.
+6. CDJ compatibility of export.pdb untested on hardware (data pages only). rekordcrate and the deck firmware's parser read it.
 7. Stems are hard-clipped at 16-bit (~0.01 % of drum samples on brickwalled masters).
 8. Export rewrites all ANLZ files and the PDB each time; doesn't remove deleted tracks from the stick.
 9. Deck side not built: POCKETDECK/ reading, file upload (docs/SYNC_OPTIONS.md), cue import
@@ -73,9 +73,9 @@ Windows installer ~301 MB (215 MB of it is the offline WebView2 runtime).
   offset byte at +9. Album: subtype 0x80, name offset byte at +21. Key row: id, id, name.
 - DeviceSQL strings: short ASCII = ((len+1)<<1)|1, then the bytes; long ASCII = 0x40 + u16 len + pad;
   UTF-16LE = 0x90 + u16 len + pad.
-- ANLZ: big-endian. PMAI header size 28, and its segment size = whole file. Pajoniiir walks sections and
+- ANLZ: big-endian. PMAI header size 28, and its segment size = whole file. The deck firmware walks sections and
   rejects any trailing bytes. PWV3 needs entry size 1, count = data length, marker 0x00960000.
-  PWV4 = 6-byte entries; Pajoniiir reads [0] as height and [3..5] as colour.
+  PWV4 = 6-byte entries; the firmware reads [0] as height and [3..5] as colour.
 - Demucs ONNX: inputs/outputs are normalised outside the graph (DirectML bug, and it keeps the graph
   simple). Segment 343980 samples, 25 % overlap, triangular weights, no random shift.
 

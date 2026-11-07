@@ -1,9 +1,9 @@
 //! Writer for rekordbox's device database, PIONEER/rekordbox/export.pdb.
 //!
-//! This is the file CDJs and the Pocket Deck firmware (Pajoniiir) read to list
+//! This is the file CDJs and the Pocket Deck firmware read to list
 //! tracks. The format is reverse-engineered; the references are
 //!   https://djl-analysis.deepsymmetry.org/rekordbox-export-analysis/exports.html
-//!   Pajoniiir: firmware/p4-core/components/library/rekordbox_pdb.c
+//!   the deck firmware's PDB reader (p4-core, components/library/rekordbox_pdb.c)
 //!
 //! Shape of the file
 //! -----------------
