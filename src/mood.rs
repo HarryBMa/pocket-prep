@@ -10,8 +10,8 @@
 //! 2. **Compare.** Each mood has a typical value and a spread for every number ([`MOODS`]).
 //!    The distance to a mood is how many spreads the track is away from its typical values,
 //!    averaged over the numbers (a weighted, scaled Euclidean distance). The nearest mood wins.
-//!    The confidence is how clearly it wins (the nearest mood's share of exp(-d²/2) over all
-//!    moods).
+//!    The confidence is how clearly it wins (the nearest mood's share of exp(-d²/2τ²) over all
+//!    moods, τ = 0.35).
 //! 3. **Learn.** When you set a track's mood by hand, that track pulls the mood's typical
 //!    values towards itself: typical = (3 · built-in + sum of your tracks) / (3 + your tracks).
 //!    Every automatic mood is then worked out again. This is a nearest-centroid classifier,
@@ -70,6 +70,8 @@ pub const MOODS: &[Mood] = &[
            proto: [(98.0, 12.0), (-13.0, 3.0), (0.35, 0.12), (0.02, 0.02), (0.65, 0.15), (0.65, 0.15), (0.2, 0.3), (0.08, 0.08), (0.6, 0.7)] },
 ];
 
+/// How sharply the confidence falls off with distance (see `rank`).
+const TAU: f64 = 0.35;
 /// Weight of the built-in typical values against your own hand-picked tracks.
 const PRIOR: f64 = 3.0;
 
@@ -111,7 +113,9 @@ pub fn rank(f: &Features, protos: &[[(f64, f64); N]]) -> Vec<(usize, f64, f64)> 
         }
         if w > 0.0 { (sum / w).sqrt() } else { f64::INFINITY }
     }).collect();
-    let like: Vec<f64> = d.iter().map(|d| (-d * d / 2.0).exp()).collect();
+    // exp(-d²/2τ²) with τ = 0.35 spreads: a mood half a spread nearer than the next reads as
+    // clearly ahead (a plain τ = 1 makes eight moods look almost equally likely).
+    let like: Vec<f64> = d.iter().map(|d| (-d * d / (2.0 * TAU * TAU)).exp()).collect();
     let total: f64 = like.iter().sum::<f64>().max(1e-300);
     let mut out: Vec<(usize, f64, f64)> = (0..d.len()).map(|m| (m, d[m], like[m] / total)).collect();
     out.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
