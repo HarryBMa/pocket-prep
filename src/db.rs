@@ -79,11 +79,12 @@ pub fn conn() -> MutexGuard<'static, Connection> {
         // grid_offset_ms / downbeat_shift: the user's beat grid nudge on top of the analysis grid.
         // key_shift: semitones the deck shifts the track's key by when it plays it (the file is not changed).
         // mood / mood_manual / mood_conf / mood_features / mood_emb (the embedding, f32 little endian): see mood.rs.
+        // lufs: integrated loudness; lead_s / tail_s: seconds of near silence at the start / end (analysis::quiet_edges).
         // edited: JSON list of the analysed values you changed by hand ("bpm", "key", "energy"): a re-analysis keeps them.
         for (col, decl) in [("grid_offset_ms", "REAL DEFAULT 0"), ("downbeat_shift", "INTEGER DEFAULT 0"), ("key_shift", "INTEGER DEFAULT 0"),
                             ("mood", "TEXT"), ("mood_manual", "INTEGER DEFAULT 0"), ("mood_conf", "REAL"), ("mood_features", "TEXT"),
                             ("mood_emb", "BLOB"),
-                            ("edited", "TEXT")] {
+                            ("edited", "TEXT"), ("lufs", "REAL"), ("lead_s", "REAL"), ("tail_s", "REAL")] {
             let has: bool = c.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name=?").unwrap()
                 .exists([col]).unwrap();
             if !has {

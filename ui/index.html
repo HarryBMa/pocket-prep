@@ -123,7 +123,7 @@
                 <th class="c-art"><span class="sr">Artwork</span></th>
                 <th data-sort="title">Track</th><th data-sort="artist">Artist</th>
                 <th class="num" data-sort="bpm">BPM</th><th data-sort="camelot">Key</th><th class="c-mood" data-sort="mood">Mood</th>
-                <th class="num" data-sort="energy">Energy</th><th class="c-stems" data-sort="stems">Stems</th>
+                <th class="num" data-sort="energy">Energy</th><th class="num" data-sort="lufs" title="Integrated loudness (LUFS)">Loudness</th><th class="c-stems" data-sort="stems">Stems</th>
                 <th data-sort="analysed_at">Analysis</th><th class="c-menu"><span class="sr">Actions</span></th>
               </tr></thead>
               <tbody></tbody>
@@ -221,6 +221,7 @@
                   <label>Lowest BPM <input name="bpm_min" type="number" min="40" max="200"></label>
                   <label>Highest BPM <input name="bpm_max" type="number" min="60" max="300"></label>
                 </div>
+                <label>Loudness target (LUFS) <input name="target_lufs" type="number" min="-20" max="-3" step="0.5" title="The export writes the gain (dB) that brings each track to this loudness; the deck can use it to level tracks"></label>
               </fieldset>
               <fieldset>
                 <legend>DECK001</legend>

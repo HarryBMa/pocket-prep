@@ -35,6 +35,54 @@ pub fn load_analysis(track_id: i64) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
+/// Seconds of near silence at the start and at the end of a track: 100 ms windows of the mono mix, "near silence" being
+/// more than 30 dB under the track's loud level (its 95th percentile). A club track starts and ends with sound; a long
+/// stretch of nothing is dead air that the deck would play, and an autopilot mix would wait for.
+pub fn quiet_edges(audio: &clubcraft_audio::decode::AudioBuffer) -> (f64, f64) {
+    let win = (audio.sample_rate as usize / 10).max(1);
+    let n = audio.left.len().min(audio.right.len()) / win;
+    if n < 20 {
+        return (0.0, 0.0);
+    }
+    let rms: Vec<f64> = (0..n).map(|i| {
+        let e: f64 = (i * win..(i + 1) * win).map(|j| { let m = (audio.left[j] as f64 + audio.right[j] as f64) * 0.5; m * m }).sum();
+        (e / win as f64).sqrt()
+    }).collect();
+    let mut sorted = rms.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let reference = sorted[n * 95 / 100];
+    if reference < 1e-4 {
+        return (0.0, 0.0);
+    }
+    let thr = reference * 0.0316;
+    let first = rms.iter().position(|&v| v >= thr).unwrap_or(0);
+    let last = rms.iter().rposition(|&v| v >= thr).unwrap_or(n - 1);
+    (first as f64 * 0.1, (n - 1 - last) as f64 * 0.1)
+}
+
+/// Loudness and the near-silent start and end for tracks analysed before they were measured (reads the files again).
+pub fn backfill_levels(h: &crate::jobs::Handle) -> Result<Value> {
+    let ids: Vec<i64> = db::query("SELECT id FROM tracks WHERE deleted=0 AND analysed_at IS NOT NULL AND lead_s IS NULL ORDER BY id", &[])?
+        .iter().filter_map(|r| r["id"].as_i64()).collect();
+    let (mut done, mut failed) = (0, 0);
+    for (i, id) in ids.iter().enumerate() {
+        if h.cancelled() {
+            break;
+        }
+        h.progress(i as f64 / ids.len().max(1) as f64, &format!("{} of {}", i + 1, ids.len()));
+        let res = (|| -> Result<()> {
+            let t = db::track(*id)?.ok_or_else(|| anyhow!("unknown track"))?;
+            let audio = clubcraft_audio::decode::decode_native(std::path::Path::new(t["path"].as_str().unwrap_or("")))?;
+            let (lead, tail) = quiet_edges(&audio);
+            let lufs = load_analysis(*id).and_then(|a| a["loudness_lufs"].as_f64());
+            db::tx(|c| Ok(c.execute("UPDATE tracks SET lufs=?, lead_s=?, tail_s=? WHERE id=?", params![lufs, lead, tail, id])?))?;
+            Ok(())
+        })();
+        match res { Ok(()) => done += 1, Err(e) => { failed += 1; eprintln!("levels for track {id}: {e:#}"); } }
+    }
+    Ok(json!({"measured": done, "failed": failed}))
+}
+
 /// Edits of the analysed numbers (tempo, key, energy) from the library list or the track panel. The key is a Camelot
 /// code ("8A") and its name follows from it; energy is 1 to 10; tempo is above 0. A value of null puts the analysed
 /// value back. Every number you set is remembered in `edited`, so a re-analysis keeps it. Other fields are not touched.
@@ -377,6 +425,7 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
     let range = (config::setting_f64("bpm_min").max(40.0), config::setting_f64("bpm_max").max(60.0));
     let before = load_analysis(track_id);
     let mut a = analyse_audio(&audio, stems_ref.as_ref(), range);
+    let (lead_s, tail_s) = quiet_edges(&audio);
     // The mood embedding (Needle Tags) when the model is installed; without it the mood comes from the nine numbers.
     progress(0.8, "Mood model");
     let emb = crate::embed::available().then(|| crate::embed::embedding(&audio, &mut |_| true)
@@ -408,6 +457,7 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
                   params![a["bpm"].as_f64(), a["key"].as_str(), a["camelot"].as_str(), a["energy"].as_i64(),
                           a["duration_ms"].as_f64().map(|d| d / 1000.0), a["analysed_at"].as_f64(),
                           a["mood_features"].to_string(), emb, track_id])?;
+        c.execute("UPDATE tracks SET lufs=?, lead_s=?, tail_s=? WHERE id=?", params![a["loudness_lufs"].as_f64(), lead_s, tail_s, track_id])?;
         mood::refresh(c)?;
         // Place automatic cues only if the user hasn't set any.
         let user: Option<i64> = c.query_row("SELECT 1 FROM cues WHERE track_id=? AND auto=0", [track_id], |r| r.get(0)).ok();
@@ -427,6 +477,21 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Near-silence at the edges: 2 s of nothing, 20 s of sound, 3 s of nothing, with a loud level around it.
+    #[test]
+    fn quiet_edges_finds_dead_air() {
+        let sr = 44_100usize;
+        let mut x = vec![0.0f32; sr * 25];
+        for i in 2 * sr..22 * sr {
+            x[i] = 0.5 * (i as f32 * 220.0 * std::f32::consts::TAU / sr as f32).sin();
+        }
+        let a = clubcraft_audio::decode::AudioBuffer::new(sr as u32, x.clone(), x);
+        let (lead, tail) = quiet_edges(&a);
+        assert!((lead - 2.0).abs() < 0.25 && (tail - 3.0).abs() < 0.25, "{lead} {tail}");
+        let loud = clubcraft_audio::decode::AudioBuffer::new(sr as u32, vec![0.3; sr * 25], vec![0.3; sr * 25]);
+        assert_eq!(quiet_edges(&loud), (0.0, 0.0));
+    }
 
     /// A key shift moves the tonic by semitones and keeps the mode: +3 semitones from C major is Eb major,
     /// two down from A minor is G minor, 12 is the same key.

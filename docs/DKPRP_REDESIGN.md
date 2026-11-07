@@ -114,3 +114,13 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   like the same song twice (same artist and title, ignoring case and "(Original Mix)").
 - **Edit selected…** (selection bar, two or more tracks): set the artist, album, genre, year, comment or key shift on all
   of them at once; each change can be undone.
+- **Loudness**: a Loudness column (integrated LUFS) and a target in Settings (default -9 LUFS). The export writes
+  `loudness_lufs` and the `gain_db` that reaches the target (limited to -12..+6 dB) into POCKETDECK/analysis for the deck.
+- **Near silence at the start or end**: tracks that start with more than 2 s or end with more than 6 s of near silence
+  (30 dB under the loud level) are flagged in "Needs attention", and the export writes `audible_start_ms` and
+  `audible_end_ms` so an autopilot mix doesn't wait for dead air. Older tracks are measured by a "Loudness and silence
+  check" job after the update.
+- **Cue names**: in Edit mode a hot cue (and a memory cue, "Name") can be named; the name shows on the pad and goes to the
+  deck as `cue_labels` in POCKETDECK/analysis, because the rekordbox files have no field for it.
+- **Check before exporting**: the plan lists, per track, what the export will do and what to know first (unplayable file,
+  missing file, converted copy used, no stems, near silence, key shift, loudness gain). Nothing is written until Export.

@@ -232,6 +232,13 @@ td.num .cell-edit { text-align: right; min-width: 78px; }
 .warn-line > span, .ok-line > span { flex: 1; min-width: 0; }
 .ok-line { font-size: 12.5px; color: var(--ink-2); }
 .ok-line .ic { color: var(--ok); }
+.dry-run { margin: 8px 0; font-size: 12.5px; }
+.dry-run summary { cursor: pointer; color: var(--ink-2); }
+.dry-run ul { margin: 6px 0 0; padding-left: 16px; display: grid; gap: 4px; }
+.dry-run ul ul { margin: 2px 0 0; color: var(--ink-2); }
+td.lufs { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.pad-t { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pad-n { position: absolute; top: -6px; left: -4px; width: 18px; height: 18px; padding: 0; border: 0; background: rgba(0,0,0,.45); color: #fff; border-radius: 50%; display: grid; place-items: center; }
 .c-idx { width: 36px; color: var(--ink-3); }
 .c-art { width: 50px; } .c-stems { width: 58px; text-align: center; } .c-menu { width: 34px; }
 td.c-title { font-weight: 500; } td.c-artist { color: var(--ink-2); }

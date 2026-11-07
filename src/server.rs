@@ -30,7 +30,7 @@ struct Ui;
 
 const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
     rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
-    mood, mood_manual, mood_conf, edited";
+    mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -96,6 +96,8 @@ pub fn startup_jobs() {
         queue_outdated_analysis();
         Ok(Some(json!({"converted": n})))
     });
+    // Loudness and near-silent start/end for tracks analysed before those were measured.
+    jobs::submit("levels", "Loudness and silence check", "cpu", None, |h| Ok(Some(analysis::backfill_levels(h)?)));
     // Mood embeddings for tracks analysed before the model was installed (a no-op when there is nothing to do).
     jobs::submit("mood", "Mood model", "cpu", None, |h| Ok(Some(crate::embed::backfill(h)?)));
 }

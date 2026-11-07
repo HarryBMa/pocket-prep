@@ -237,6 +237,8 @@ function findDuplicates() {
 // track list already knows. "Convert for the deck" makes a copy the deck can play and clears the first one.
 function issues(t) {
   const out = [];
+  if (t.lead_s > 2) out.push(`Starts with ${Math.round(t.lead_s)} s of near silence`);
+  if (t.tail_s > 6) out.push(`Ends with ${Math.round(t.tail_s)} s of near silence (an autopilot mix would wait for it)`);
   if (t.file_missing) out.push("File not found: it was moved, renamed or its drive is not connected");
   if (t.deck_problem) out.push(t.deck_problem);
   if (state.dups?.has(t.id)) out.push(`Same artist and title as ${state.dups.get(t.id).map((id) => `#${id}`).join(", ")}`);
@@ -308,7 +310,7 @@ function withMoodGroups(vis, rows) {
   vis.forEach(({ t }, k) => {
     if (k === 0 || vis[k - 1].t.mood !== t.mood) {
       const group = vis.filter((x) => x.t.mood === t.mood).map((x) => x.t), m = moodOf(t.mood);
-      out.push(h("tr", { class: "group", "aria-hidden": "true" }, h("td", { colspan: "11" },
+      out.push(h("tr", { class: "group", "aria-hidden": "true" }, h("td", { colspan: "12" },
         h("span", { class: "mood", style: `--mood:${m ? MOOD_COLOR[m.id] : "#8a8a90"}` }, h("i"), m ? m.label : "No mood yet"),
         h("span", { class: "muted" }, `${plural(group.length, "track")} · ${fmtDur(group.reduce((a, x) => a + (x.duration || 0), 0))}`))));
     }
@@ -317,6 +319,8 @@ function withMoodGroups(vis, rows) {
   return out;
 }
 // Key in the track colours by Camelot number, so neighbouring keys look related.
+// Loudness gain the export writes: what brings the track to the target in Settings, within -12..+6 dB (the server decides).
+const fmtGain = (t) => { const g = Math.max(-12, Math.min(6, (state.settings?.target_lufs ?? -9) - t.lufs)); return `${g >= 0 ? "+" : "−"}${Math.abs(g).toFixed(1)} dB`; };
 const keyColor = (camelot) => COLORS[1 + ((parseInt(camelot, 10) || 1) - 1) % 8];
 function artCell(t) {
   if (t.has_artwork) return h("img", { class: "art", src: `/api/tracks/${t.id}/artwork`, alt: "", loading: "lazy" });
@@ -344,6 +348,8 @@ function renderTracks() {
         t.key_shift ? h("span", { class: "shift-tag" }, fmtShift(t.key_shift)) : null) : ""),
       h("td", { class: "c-mood" + (t.mood_manual ? " edited" : ""), "data-edit": "mood" }, moodPill(t)),
       h("td", { class: "num" + (wasEdited(t, "energy") ? " edited" : ""), "data-edit": "energy" }, t.energy != null ? String(t.energy) : ""),
+      h("td", { class: "num lufs", title: t.lufs != null ? `${t.lufs.toFixed(1)} LUFS. The export writes ${fmtGain(t)} for the deck (target ${state.settings?.target_lufs ?? -9} LUFS).` : null },
+        t.lufs != null ? t.lufs.toFixed(1) : ""),
       h("td", { class: "c-st c-stems" }, stemPill(t)),
       h("td", { class: "c-an" }, analysisCell(t)),
       h("td", { class: "c-menu" }, h("button", { class: "row-menu", "aria-label": `Actions for ${t.title || "track"}`, title: "Actions",
@@ -823,7 +829,8 @@ function renderDetail() {
     pad.addEventListener("click", () => { if (cue) player.currentTime = cue.start_ms / 1000; else setCue(i + 1, player.currentTime * 1000).catch(fail); });
     pad.addEventListener("contextmenu", (e) => { e.preventDefault(); if (cue) setCue(i + 1, null).catch(fail); });
     return h("div", { class: "pad-w" }, pad, h("span", { class: "pad-t" }, cue ? (cue.label || fmtMs(cue.start_ms)) : "–"),
-      cue && state.cueEdit ? h("button", { class: "pad-x", "aria-label": `Clear hot cue ${letter}`, title: "Clear", onclick: () => setCue(i + 1, null).catch(fail) }, "×") : null);
+      cue && state.cueEdit ? h("button", { class: "pad-x", "aria-label": `Clear hot cue ${letter}`, title: "Clear", onclick: () => setCue(i + 1, null).catch(fail) }, "×") : null,
+      cue && state.cueEdit ? h("button", { class: "pad-n", "aria-label": `Name hot cue ${letter}`, title: "Name this cue", onclick: () => renameCue(cue) }, "✎") : null);
   }));
   const mems = t.cues.filter((c) => !c.slot).sort((a, b) => a.start_ms - b.start_ms);
   const memList = h("div", { class: "mem" },
@@ -833,6 +840,7 @@ function renderDetail() {
       h("span", { class: "m" }, "M"),
       h("span", { class: "t" }, fmtMs(c.start_ms), c.label ? h("span", { class: "muted" }, ` · ${c.label}`) : null),
       h("button", { class: "ghost small", onclick: () => { player.currentTime = c.start_ms / 1000; } }, "Jump"),
+      h("button", { class: "ghost small", title: "Name this cue", onclick: () => renameCue(c) }, "Name"),
       h("button", { class: "ghost small icon-btn", "aria-label": `Delete memory cue at ${fmtMs(c.start_ms)}`, title: "Delete",
                     onclick: () => removeMemory(c).catch(fail) }, icon("x", "ic sm"))))
     : h("div", { class: "muted", style: "font-size:12px" }, "None"));
@@ -854,7 +862,7 @@ function renderDetail() {
 
   const ph = t.phrases, why = issues(t);
   const meta = [t.bpm ? `${fmtBpm(t.bpm)} BPM` : null, t.camelot ? `${t.shifted_camelot || t.camelot} ${t.shifted_key || t.musical_key || ""}`.trim() + (t.key_shift ? ` (${fmtShift(t.key_shift)})` : "") : null,
-                t.energy != null ? `${t.energy} energy` : null, fmtTime(t.duration)].filter(Boolean).join(" · ");
+                t.energy != null ? `${t.energy} energy` : null, t.lufs != null ? `${t.lufs.toFixed(1)} LUFS` : null, fmtTime(t.duration)].filter(Boolean).join(" · ");
   fill(d,
     h("div", { class: "tp-head" },
       t.has_artwork ? h("img", { class: "tp-art", src: `/api/tracks/${t.id}/artwork`, alt: "" }) : h("div", { class: "tp-art", "aria-hidden": "true" }, icon("library")),
@@ -1014,6 +1022,14 @@ async function putCues(cues, message) {
   state.current.cues = r.cues;
   toast(message, r.undo);
   renderDetail();
+}
+// Cue names live in DKPRP (the pads, the waveform) and go to the deck as hints in POCKETDECK/analysis; the rekordbox files
+// have no field for them.
+async function renameCue(cue) {
+  const name = await ask(cue.slot ? `Name for hot cue ${PAD[cue.slot - 1]}` : "Name for this memory cue", cue.label || "", "Save");
+  if (name == null) return;
+  const cues = state.current.cues.map((c) => ({ ...c, label: c.slot === cue.slot && c.start_ms === cue.start_ms ? (name || null) : c.label }));
+  putCues(cues, name ? `Cue named “${name}”` : "Cue name cleared").catch(fail);
 }
 function setCue(slot, ms) {
   const cues = state.current.cues.filter((c) => c.slot !== slot).map((c) => ({ ...c }));
@@ -1502,6 +1518,15 @@ function renderTarget(p) {
     p ? h("span", { class: "muted tnum" }, p.fits ? `Uses up to ${fmtBytes(p.bytes)}, leaving about ${fmtBytes(Math.max(0, p.free - p.bytes))}` : `Needs ${fmtBytes(p.bytes)}, only ${fmtBytes(p.free)} free`) : null);
 }
 let planSeq = 0;
+// The dry run: what each track needs before you export. Nothing is written until you press Export.
+function dryRun(p) {
+  const rows = (p.details || []).filter((d) => d.notes.length);
+  if (!p.details?.length) return null;
+  const skipped = p.details.filter((d) => d.skipped).length;
+  return h("details", { class: "dry-run", open: rows.some((d) => d.skipped || d.notes.some((n) => /can't be played|missing/.test(n))) ? true : null },
+    h("summary", {}, rows.length ? `Check before exporting: ${plural(rows.length, "track")} with notes${skipped ? `, ${skipped} skipped` : ""}` : "Check before exporting: nothing to flag"),
+    rows.length ? h("ul", {}, rows.map((d) => h("li", {}, h("b", {}, `${d.artist ? d.artist + " – " : ""}${d.title || "Untitled"}`), h("ul", {}, d.notes.map((n) => h("li", { class: d.skipped ? "alert-text" : "" }, n)))))) : null);
+}
 async function updatePlan() {
   const plan = $("#plan"), btn = $("#doExport"), seq = ++planSeq;
   btn.disabled = true; btn.textContent = "Export";
@@ -1524,6 +1549,7 @@ async function updatePlan() {
         h("dt", {}, "With stems"), h("dd", {}, body.include_stems ? String(p.with_stems) : "Stems off"),
         h("dt", {}, "Size"), h("dd", {}, `up to ${fmtBytes(p.bytes)} (${fmtBytes(p.free)} free)`)),
       p.unanalysed ? h("div", { class: "muted" }, `${p.unanalysed} tracks aren't analysed yet; they'll be analysed during the export (slower).`) : null,
+      dryRun(p),
       ...deckWarnings(p.warnings),
       p.fits ? null : h("div", { class: "alert-text" }, h("b", {}, "Doesn't fit. "), "Choose fewer playlists or turn off stems."),
       p.target_problem ? h("div", { class: "alert-text" }, p.target_problem) : null,
@@ -1719,4 +1745,5 @@ renderTracks();
 renderDeckPill();
 refreshAll().then(pollJobs).catch(fail);
 api("/api/system").then((s) => { state.system = s; renderSystem(); }).catch(() => {});
+api("/api/settings").then((s) => { state.settings = s; renderTracks(); }).catch(() => {});
 checkDeck();

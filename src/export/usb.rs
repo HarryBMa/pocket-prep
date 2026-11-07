@@ -201,6 +201,53 @@ fn track_path(t: &Row) -> PathBuf {
     crate::convert::deck_file(t["id"].as_i64().unwrap_or(0), &original)
 }
 
+/// Gain in dB that brings a track of `lufs` to the target loudness in Settings, kept within -12..+6 dB; 0 when unknown.
+pub fn gain_db(lufs: Option<f64>) -> f64 {
+    let target = config::setting_f64("target_lufs");
+    lufs.map(|l| ((target - l).clamp(-12.0, 6.0) * 10.0).round() / 10.0).unwrap_or(0.0)
+}
+
+/// For each track what the export would do and what to know first: the dry run behind the plan.
+fn details(tracks: &[Row], include_stems: bool) -> Vec<Value> {
+    tracks.iter().map(|t| {
+        let tid = t["id"].as_i64().unwrap_or(0);
+        let original = PathBuf::from(t["path"].as_str().unwrap_or(""));
+        let src = track_path(t);
+        let mut notes: Vec<String> = vec![];
+        let mut skipped = false;
+        if !original.exists() {
+            notes.push("The file is missing, so this track is skipped".into());
+            skipped = true;
+        } else if let Some(why) = deck_problem(&src) {
+            notes.push(format!("{why}. It is still exported (CDJs play it); use Convert for the deck"));
+        }
+        if src != original && !skipped {
+            notes.push("The 16-bit FLAC copy is exported instead of the original".into());
+        }
+        if t["analysed_at"].is_null() {
+            notes.push("Not analysed yet: it will be analysed during the export".into());
+        }
+        if include_stems && t["stems"] != "done" {
+            notes.push("No stems: exported without them".into());
+        }
+        if t["lead_s"].as_f64().unwrap_or(0.0) > 2.0 {
+            notes.push(format!("Starts with {:.0} s of near silence", t["lead_s"].as_f64().unwrap_or(0.0)));
+        }
+        if t["tail_s"].as_f64().unwrap_or(0.0) > 6.0 {
+            notes.push(format!("Ends with {:.0} s of near silence", t["tail_s"].as_f64().unwrap_or(0.0)));
+        }
+        if let Some(n) = t["key_shift"].as_i64().filter(|n| *n != 0) {
+            notes.push(format!("Key shift {n:+} is written for the deck"));
+        }
+        let gain = gain_db(t["lufs"].as_f64());
+        if gain.abs() >= 0.1 {
+            notes.push(format!("Loudness gain {gain:+.1} dB is written for the deck"));
+        }
+        json!({"id": tid, "title": t["title"], "artist": t["artist"], "skipped": skipped,
+               "bytes": std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0), "notes": notes})
+    }).collect()
+}
+
 fn warnings(tracks: &[Row]) -> Vec<Value> {
     tracks.iter().filter_map(|t| {
         // A converted copy is what is exported, so it is the file that has to be playable.
@@ -225,7 +272,7 @@ pub fn plan(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool) -> Re
         "tracks": tracks.len(), "playlists": pls.len(), "bytes": need, "free": free, "fits": (need as f64) < free as f64 * 0.98,
         "unanalysed": tracks.iter().filter(|t| t["analysed_at"].is_null()).count(),
         "with_stems": tracks.iter().filter(|t| t["stems"] == "done").count(),
-        "warnings": warnings(&tracks), "target_problem": target_problem(Path::new(root)),
+        "warnings": warnings(&tracks), "details": details(&tracks, include_stems), "target_problem": target_problem(Path::new(root)),
         "foreign_library": foreign_library(Path::new(root)),
     }))
 }
@@ -389,7 +436,15 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
             "file_path": audio_path, "bpm": a["bpm"], "key": a["key"], "camelot": a["camelot"],
             "energy": a["energy"], "phrases": a["phrases"],
             // Semitones the deck shifts the key by while playing this file (see docs/DECK_KEY_SHIFT.md).
-            "key_shift": t["key_shift"].as_i64().unwrap_or(0)}).to_string())?;
+            "key_shift": t["key_shift"].as_i64().unwrap_or(0),
+            // Loudness the deck can level to: measured LUFS, and the gain (dB) that reaches the target in Settings.
+            "loudness_lufs": t["lufs"], "gain_db": gain_db(t["lufs"].as_f64()),
+            // Where the sound starts and ends, so an autopilot mix doesn't wait for dead air at the end.
+            "audible_start_ms": (t["lead_s"].as_f64().unwrap_or(0.0) * 1000.0).round(),
+            "audible_end_ms": (a["duration_ms"].as_f64().unwrap_or(0.0) - t["tail_s"].as_f64().unwrap_or(0.0) * 1000.0).max(0.0).round(),
+            // Names you gave cues in DKPRP (the rekordbox files have no field for them).
+            "cue_labels": cue_rows.iter().filter(|q| q["label"].as_str().is_some_and(|l| !l.is_empty()))
+                .map(|q| json!({"slot": q["slot"], "start_ms": q["start_ms"], "label": q["label"]})).collect::<Vec<_>>()}).to_string())?;
     }
 
     // Name tables
@@ -597,6 +652,15 @@ mod export_tests {
         db::update_track(tid, &json!({"key_shift": -3}).as_object().unwrap().clone()).unwrap();
         export_to(&card.to_string_lossy(), None, true, &|_, _| {}, &|| false).unwrap();
         assert_eq!(key_shift(&card), -3);
+        // The deck's hints also carry loudness gain, where the sound starts and ends, and the cue names; the plan lists
+        // what each track needs (the dry run).
+        let f = std::fs::read_dir(card.join("POCKETDECK/analysis")).unwrap().flatten().next().unwrap().path();
+        let hints: Value = serde_json::from_slice(&std::fs::read(f).unwrap()).unwrap();
+        assert!(hints["gain_db"].is_number() && hints["audible_end_ms"].as_f64().unwrap() > 0.0 && hints["cue_labels"].is_array(), "{hints}");
+        let p = plan(&card.to_string_lossy(), None, true).unwrap();
+        let d = p["details"].as_array().unwrap();
+        assert_eq!(d.len(), 1);
+        assert!(d[0]["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("Key shift -3")), "{d:?}");
 
         // Edits from the list: key (Camelot), energy and tempo are validated, remembered, and survive a re-analysis;
         // null puts the analysed value back.

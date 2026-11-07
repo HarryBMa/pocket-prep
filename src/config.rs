@@ -31,6 +31,7 @@ pub fn defaults() -> Value {
         "deck_address": "http://192.168.4.1",
         "bpm_min": 85,                  // BPM range used when halving/doubling detected tempo
         "bpm_max": 175,
+        "target_lufs": -9.0,            // loudness the deck should play tracks at; the export writes the gain to get there
     })
 }
 
