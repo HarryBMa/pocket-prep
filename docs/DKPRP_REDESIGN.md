@@ -90,3 +90,6 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   preview. Saved per computer (browser storage); the deck keeps its own setting.
 - **Logo:** five solid coral bars, the deck's solid contour style. `tools/make_icons.py` (Pillow)
   draws the app icons from the same geometry.
+- **Mood** (next to Key and Energy): one label per track (Deep, Melodic, Tech house, Peak time,
+  Hard techno, Drum & bass, Mainstream pop, Downtempo). It is repeatable and learns from the
+  moods you set by hand. The library can be grouped by it. Method and limits: `docs/MOOD.md`.
