@@ -202,6 +202,20 @@ async fn get_artwork(P(tid): P<i64>, req: Request) -> Response {
     serve_file(path, req).await
 }
 
+/// Stem waveforms for the track panel: 150 columns per second (like the PWV5 detail waveform), base64.
+async fn get_stem_peaks(P(tid): P<i64>) -> R {
+    blocking(move || {
+        if !stems::has_stems(tid) {
+            return Err(not_found("No stems for this track"));
+        }
+        use base64::Engine;
+        let p = stems::peaks(tid, 150.0)?;
+        let b64 = |v: &Vec<u8>| base64::engine::general_purpose::STANDARD.encode(v);
+        Ok(json!({"cols_per_s": 150, "names": stems::STEM_NAMES,
+                  "peaks": stems::STEM_NAMES.iter().zip(&p).map(|(n, v)| (n.to_string(), json!(b64(v)))).collect::<serde_json::Map<_, _>>()}))
+    }).await
+}
+
 async fn get_stem(P((tid, name)): P<(i64, String)>, req: Request) -> Response {
     match tokio::task::spawn_blocking(move || stems::stem_preview(tid, &name)).await {
         Ok(Ok(path)) => serve_file(path, req).await,
@@ -443,6 +457,7 @@ pub fn router() -> Router {
         .route("/api/tracks/{tid}/waveform", get(get_waveform))
         .route("/api/tracks/{tid}/audio", get(get_audio))
         .route("/api/tracks/{tid}/stem/{name}", get(get_stem))
+        .route("/api/tracks/{tid}/stems/peaks", get(get_stem_peaks))
         .route("/api/tracks/{tid}/artwork", get(get_artwork))
         .route("/api/tracks/{tid}/cues", put(put_cues))
         .route("/api/tracks/{tid}/stems", delete(delete_stems))

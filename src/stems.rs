@@ -171,6 +171,26 @@ pub fn read_stems(track_id: i64) -> Result<StemAudio> {
     Ok(out)
 }
 
+/// Peak envelope of each stem for drawing: `cols_per_s` columns per second, each the largest
+/// absolute sample of either channel in that column, scaled so the loudest column of all four
+/// stems is 255 (so the stems keep their loudness relative to each other).
+pub fn peaks(track_id: i64, cols_per_s: f64) -> Result<[Vec<u8>; 4]> {
+    Ok(peaks_of(&read_stems(track_id)?, cols_per_s))
+}
+
+fn peaks_of(audio: &StemAudio, cols_per_s: f64) -> [Vec<u8>; 4] {
+    let hop = (RATE as f64 / cols_per_s).max(1.0);
+    let cols: Vec<Vec<f32>> = audio.iter().map(|(l, r)| {
+        let n = (l.len() as f64 / hop).ceil() as usize;
+        (0..n).map(|c| {
+            let (a, b) = ((c as f64 * hop) as usize, (((c + 1) as f64 * hop) as usize).min(l.len()));
+            l[a..b].iter().zip(&r[a..b]).fold(0f32, |m, (x, y)| m.max(x.abs()).max(y.abs()))
+        }).collect()
+    }).collect();
+    let top = cols.iter().flatten().fold(1e-6f32, |m, v| m.max(*v));
+    std::array::from_fn(|i| cols[i].iter().map(|v| (v / top * 255.0).round() as u8).collect())
+}
+
 /// Total samples per channel, from the stem file's STREAMINFO.
 pub fn stem_frames(track_id: i64) -> Result<u64> {
     let r = claxon::FlacReader::open(stem_file(track_id))?;
@@ -279,6 +299,20 @@ pub fn remove(track_id: i64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One column per 1/150 s, the loudest stem scaled to 255, quieter stems in proportion.
+    #[test]
+    fn stem_peaks() {
+        let n = RATE as usize;                               // one second
+        let tone = |amp: f32| (0..n).map(|i| amp * ((i as f32) * 0.05).sin()).collect::<Vec<f32>>();
+        let audio: StemAudio = [(tone(0.8), tone(0.8)), (tone(0.4), vec![0.0; n]), (vec![0.0; n], vec![0.0; n]), (tone(0.2), tone(0.1))];
+        let p = peaks_of(&audio, 150.0);
+        assert_eq!(p[0].len(), 150);
+        assert_eq!(*p[0].iter().max().unwrap(), 255);
+        assert!((p[1][10] as i32 - 128).abs() <= 2, "{}", p[1][10]);
+        assert!(p[2].iter().all(|&v| v == 0));
+        assert!((p[3][10] as i32 - 64).abs() <= 2, "{}", p[3][10]);
+    }
 
     #[test]
     fn header_puts_data_at_4096() {

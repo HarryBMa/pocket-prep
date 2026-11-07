@@ -9,18 +9,18 @@ colour.
 | symbol | source | deck meaning | DKPRP use |
 |---|---|---|---|
 | `i-library` | deck `list-music` | BROWSE | Library tab, artwork placeholder |
-| `i-export` | deck `usb` | USB library | Export tab, dock |
-| `i-deck` | deck `audio-lines` | LIVE | Deck tab, dock device panel |
+| `i-export` | deck `usb` | USB library | Export tab, export card |
+| `i-deck` | deck `audio-lines` | LIVE | Deck tab, deck pill, stems column |
 | `i-settings` | deck `settings` | SETTINGS | Settings tab |
-| `i-play`, `i-pause` | deck `play`, `pause` | PLAY / STOP | transport |
-| `i-lock` | deck `key` | KEYLOCK | preview key lock |
+| `i-play`, `i-pause` | deck `play`, `pause` | PLAY / STOP | preview bar |
 | `i-prev`, `i-next` | Lucide `skip-back`, `skip-forward` | – | previous / next track |
 | `i-volume` | Lucide `volume-2` | – | preview volume |
-| `i-jobs` | Lucide `list-checks` | – | jobs |
+| `i-jobs` | Lucide `list-checks` | – | analysis queue |
 | `i-list`, `i-folder` | Lucide `list`, `folder` | – | playlist, folder |
 | `i-search`, `i-x`, `i-check` | Lucide | – | search, close, checklist |
 | `i-sun`, `i-moon` | Lucide | – | theme switch (the deck is dark only) |
+| `i-download`, `i-chevron`, `i-more`, `i-plus` | Lucide `download`, `chevron-right`, `ellipsis-vertical`, `plus` | – | import, playlists toggle, row menu, new playlist |
 
 Deck icons not used in DKPRP yet: `repeat-2` (LOOP), `arrow-left-right` (BEAT JUMP), `magnet`
 (QUANTIZE), `grid-3x3` (grid editor), `plane` (AUTO PILOT), `siren` (live warning), `square`,
-`plus`, `minus`, `repeat`, `folder-up`, `chevron-*`.
+`minus`, `repeat`, `folder-up`, `key` (KEYLOCK; DKPRP no longer previews tempo).
