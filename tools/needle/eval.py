@@ -102,6 +102,7 @@ def main():
                                    "stems\\ni_test); the mixture is the sum of the stems")
     ap.add_argument("--frames", type=int, help="chunk length (default: the checkpoint's)")
     ap.add_argument("--overlap", type=int, default=8)
+    ap.add_argument("--shifts", type=int, default=1, help="average this many shifted passes (chunked.separate_chunked)")
     ap.add_argument("--name", help="results name (default: the run folder's name)")
     ap.add_argument("--workers", type=int, default=4, help="museval processes (each needs up to ~6-10 GB for a long song)")
     ap.add_argument("--gpu-mem", type=float, default=0.25, help="cap on this process's share of GPU memory (only the network runs there)")
@@ -126,7 +127,7 @@ def main():
         torch.cuda.set_per_process_memory_fraction(a.gpu_mem)
         predict = torch_predictor(model)
         name = a.name or Path(a.checkpoint).parent.name
-        extra = {"checkpoint": str(a.checkpoint), "config": ck["config"], "frames": cfg.frames, "overlap": a.overlap,
+        extra = {"checkpoint": str(a.checkpoint), "config": ck["config"], "frames": cfg.frames, "overlap": a.overlap, "shifts": a.shifts,
                  "step": ck.get("step")}
 
         torch.set_num_threads(4)               # the STFT side runs on the CPU, next to the museval workers
@@ -134,7 +135,7 @@ def main():
         def estimate(n, mix):
             # only the network runs on the GPU (a few hundred MB); the whole-song STFT, masks and
             # iSTFT stay in system RAM, so a long song can't fill the GPU next to a training run
-            return separate_chunked(predict, torch.from_numpy(mix), cfg, a.overlap).numpy()
+            return separate_chunked(predict, torch.from_numpy(mix), cfg, a.overlap, shifts=a.shifts).numpy()
     else:
         name = a.name or Path(a.estimates).name
         extra = {"estimates": str(a.estimates)}

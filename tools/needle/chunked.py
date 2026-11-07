@@ -65,7 +65,26 @@ def chunked_masks(predict, x: torch.Tensor, frames: int, overlap: int = 8, batch
 
 
 @torch.no_grad()
-def separate_chunked(predict, wav: torch.Tensor, cfg: NeedleConfig, overlap: int = 8, batch: int = 64) -> torch.Tensor:
+def separate_chunked(predict, wav: torch.Tensor, cfg: NeedleConfig, overlap: int = 8, batch: int = 64,
+                     shifts: int = 1) -> torch.Tensor:
+    """separate_once(), optionally `shifts` times with the audio delayed a little each time, and
+    the stems averaged (the "shift trick" Demucs uses). Pass k is delayed by k/shifts of a hop plus
+    k/shifts of a chunk step, so every pass sees different STFT frames and different chunk
+    borders; their errors partly cancel. Costs `shifts` times the compute, no extra memory or
+    weights: useful when only a selected section is separated and there is time to spare."""
+    if shifts <= 1:
+        return separate_once(predict, wav, cfg, overlap, batch)
+    step = (cfg.frames - overlap) * cfg.hop
+    out = None
+    for k in range(shifts):
+        d = k * cfg.hop // shifts + k * step // shifts
+        stems = separate_once(predict, F.pad(wav, (d, 0)), cfg, overlap, batch)[..., d:d + wav.shape[-1]]
+        out = stems if out is None else out + stems
+    return out / shifts
+
+
+@torch.no_grad()
+def separate_once(predict, wav: torch.Tensor, cfg: NeedleConfig, overlap: int = 8, batch: int = 64) -> torch.Tensor:
     """Separate a whole track the way the device would. wav (C, N) -> stems (S, C, N), on the CPU.
 
     Front end (STFT, log1p) and back end (masks normalised to sum to 1, iSTFT) are the same as
