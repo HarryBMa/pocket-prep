@@ -104,6 +104,9 @@ Two virtual environments, because TensorFlow 2.18 needs an older numpy than the 
     # float SDR on the 50 test tracks, and the teacher baseline
     .venv\Scripts\python eval.py --checkpoint runs\b16_f32\best.pt --musdb F:\needle\data\musdb18hq
     .venv\Scripts\python eval.py --estimates F:\needle\data\teacher_musdb_test --name htdemucs_ft --musdb F:\needle\data\musdb18hq
+    .venv\Scripts\python eval.py --checkpoint runs\b16_f32\best.pt --refs F:\needle\data\stems\ni_test   # real-stem test set
+    .venv\Scripts\python eval.py ... --shifts 2 --name b16_f32_sh2                                     # two shifted passes
+    .venv\Scripts\python paired.py results\b16_f32_test.json results\b16_f32_stems_test.json          # is B really better?
 
     # quantise (calibrated on training mixtures, never test), compile with Vela, then int8/int16 SDR
     .venv-export\Scripts\python export_vela.py --checkpoint runs\b16_f32\best.pt --frames 32 --out build\b16_f32 `
@@ -150,7 +153,8 @@ MoisesDB test (30 songs, many genres); house = NI house test (6 songs, 2 with vo
 | b16, frames 64, MUSDB only | 501 k | 3.0 h | 5.25 / 4.00 / 3.27 / 5.39 | **4.48** | 5.33 | 2.31 |
 | b12, frames 32, MUSDB only | 282 k | 3.2 h | 4.69 / 3.64 / 3.07 / 4.83 | 4.06 | 5.08 | 2.48 |
 
-Real stems: `--stems` with MoisesDB, NI Stems, mshoxxDB and sample-pack kits at share 0.25.
+Real stems: `--stems` with MoisesDB, NI Stems, mshoxxDB, WavGrind and sample-pack kits (545 songs,
+16.7 h) at `--stems-share 0.6` (MUSDB 0.4).
 
 Paired song-level differences against b16 frames 32 MUSDB only (`paired.py`: mean over songs of
 the per-song difference, 95 % bootstrap interval):
