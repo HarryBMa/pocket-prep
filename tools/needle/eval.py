@@ -51,7 +51,7 @@ def track_list(a):
              (lambda f=f: read_audio(f / "mixture.wav", dtype="float32"))) for n, f in folders], a.subset
 
 
-def score_track(refs, ests):
+def score_track(refs, ests, inaudible_db=None):
     """refs, ests: float32 (S, C, N). Returns {metric: {source: median over 1-s windows}}.
     A stem that is silent for the whole song (an instrumental's vocals) has no SDR; museval
     refuses such references, so those stems are left out and reported as NaN (ignored in the
@@ -62,6 +62,17 @@ def score_track(refs, ests):
     r = np.ascontiguousarray(refs[live, :, :n].transpose(0, 2, 1))  # museval wants (sources, samples, channels)
     e = np.ascontiguousarray(ests[live, :, :n].transpose(0, 2, 1))
     sdr, isr, sir, sar = museval.evaluate(r, e, win=SAMPLE_RATE, hop=SAMPLE_RATE)
+    if inaudible_db is not None:
+        # Teacher stems are never exactly silent: an intro without vocals still has a -70 dB
+        # residue in the teacher's vocal stem, and its SDR in that window is meaningless (huge
+        # negative). Leave out windows where a stem is more than inaudible_db below the mix.
+        w = sdr.shape[1]                                             # museval's 1-s windows
+        win_power = lambda p: p[:, :w * SAMPLE_RATE].reshape(p.shape[0], w, SAMPLE_RATE).mean(-1)
+        stem_e = win_power((r ** 2).sum(-1))                         # (live sources, windows)
+        mix_e = win_power(((r.sum(0)) ** 2).sum(-1)[None])           # (1, windows)
+        quiet = stem_e < mix_e * 10 ** (-inaudible_db / 10)
+        for m in (sdr, sir, sar):
+            m[quiet] = np.nan
     return {k: {s: float(np.nanmedian(v[live.index(i)])) if i in live else float("nan") for i, s in enumerate(SOURCES)}
             for k, v in (("SDR", sdr), ("SIR", sir), ("SAR", sar))}
 
@@ -102,6 +113,9 @@ def main():
                                    "stems\\ni_test); the mixture is the sum of the stems")
     ap.add_argument("--frames", type=int, help="chunk length (default: the checkpoint's)")
     ap.add_argument("--overlap", type=int, default=8)
+    ap.add_argument("--skip-inaudible-db", type=float,
+                    help="leave out 1-s windows where a reference stem is this many dB below the mix "
+                         "(for teacher-made references, which are never exactly silent; e.g. 40)")
     ap.add_argument("--shifts", type=int, default=1, help="average this many shifted passes (chunked.separate_chunked)")
     ap.add_argument("--name", help="results name (default: the run folder's name)")
     ap.add_argument("--workers", type=int, default=4, help="museval processes (each needs up to ~6-10 GB for a long song)")
@@ -156,7 +170,7 @@ def main():
                     per_track[pending.pop(f)] = f.result()
             refs = load_refs()
             mix = load_mix() if load_mix else refs.sum(0)
-            pending[pool.submit(score_track, refs, estimate(n, mix))] = n
+            pending[pool.submit(score_track, refs, estimate(n, mix), a.skip_inaudible_db)] = n
             print(f"separated {i + 1}/{len(tracks)}: {n}", flush=True)
         for f in list(pending):
             per_track[pending.pop(f)] = f.result()
