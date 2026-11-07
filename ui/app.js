@@ -198,6 +198,7 @@ async function loadTracks() {
   const q = encodeURIComponent($("#search").value.trim());
   state.tracks = await api(`/api/tracks?q=${q}&playlist=${state.playlist}`);
   state.loaded = true;
+  findDuplicates();
   renderTracks();
   if (!state.playlist && !q) $("#allCount").textContent = state.tracks.length || "";
 }
@@ -209,12 +210,36 @@ const FILTERS = {
   unanalysed: (t) => !t.analysed_at,
   stems: (t) => t.stems === "done",
   attention: (t) => issues(t).length > 0,
+  mixes: (t) => mixesWith(t),
 };
+// Mixing partners of the track picked when "Mixes with selected" was chosen: the same key, one step either way on the
+// Camelot wheel, or the other mode of the same number (relative major/minor), and a tempo within 6 %.
+function mixesWith(t) {
+  const base = state.tracks.find((x) => x.id === state.mixBase);
+  if (!base || base.id === t.id) return false;
+  const code = (x) => /^(\d+)([AB])$/.exec(x.shifted_camelot || x.camelot || "");
+  const [a, b] = [code(base), code(t)];
+  if (!a || !b) return false;
+  const d = Math.abs(+a[1] - +b[1]), step = Math.min(d, 12 - d);
+  const keyOk = a[2] === b[2] ? step <= 1 : step === 0;
+  const tempo = (x) => (x.bpm || 0) * 1;
+  return keyOk && tempo(base) > 0 && tempo(t) > 0 && Math.abs(tempo(t) / tempo(base) - 1) <= 0.06;
+}
+// Tracks that look like the same song twice (same artist and title, ignoring case, spaces and "(Original Mix)").
+function findDuplicates() {
+  const norm = (s) => (s || "").toLowerCase().replace(/\(original mix\)|\(extended mix\)/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  const groups = new Map();
+  for (const t of state.tracks) { if (!t.title) continue; const k = `${norm(t.artist)}|${norm(t.title)}`; groups.set(k, [...(groups.get(k) || []), t.id]); }
+  state.dups = new Map();
+  for (const ids of groups.values()) if (ids.length > 1) ids.forEach((id) => state.dups.set(id, ids.filter((x) => x !== id)));
+}
 // What would go wrong at the booth: the server's check of the file (deck_problem: a 24-bit WAV, an M4A...) and what the
 // track list already knows. "Convert for the deck" makes a copy the deck can play and clears the first one.
 function issues(t) {
   const out = [];
+  if (t.file_missing) out.push("File not found: it was moved, renamed or its drive is not connected");
   if (t.deck_problem) out.push(t.deck_problem);
+  if (state.dups?.has(t.id)) out.push(`Same artist and title as ${state.dups.get(t.id).map((id) => `#${id}`).join(", ")}`);
   if (!t.artist) out.push("No artist");
   if (!t.analysed_at && jobFor(t.id, "analyse")?.status === "failed") out.push("Analysis failed");
   if (t.stems === "failed") out.push("Stems failed");
@@ -402,6 +427,19 @@ $("#menu").addEventListener("keydown", (e) => {
   if (e.key === "Escape") { e.stopPropagation(); closeMenu(); }
   if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); b[(i + (e.key === "ArrowDown" ? 1 : -1) + b.length) % b.length]?.focus(); }
 });
+async function bulkEdit(ids, key, label) {
+  const raw = await ask(`${label} for ${plural(ids.length, "track")}`, "", "Apply");
+  if (raw == null) return;
+  const num = key === "year" || key === "key_shift";
+  const value = num ? (raw.trim() === "" ? null : +raw) : raw.trim();
+  if (num && value != null && !Number.isFinite(value)) return toast("That isn't a number", null, true);
+  try {
+    for (const id of ids) await api(`/api/tracks/${id}`, { method: "PATCH", body: { [key]: value } });
+    toast(`${label} set on ${plural(ids.length, "track")}`);
+    await loadTracks();
+    if (state.current && ids.includes(state.current.id)) openTrack(state.current.id);
+  } catch (e) { fail(e); }
+}
 async function convertForDeck(ids) {
   try {
     const r = await api("/api/convert", { body: { ids } });
@@ -568,6 +606,13 @@ $$("#tracks thead th[data-sort]").forEach((th) => {
   th.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
 });
 $$("#filters button").forEach((b) => b.addEventListener("click", () => {
+  if (b.dataset.filter === "mixes") {
+    const one = state.selected.size === 1 ? state.tracks.find((t) => state.selected.has(t.id)) : null;
+    if (!one && state.mixBase == null) return toast("Select one track first, then show what mixes with it");
+    if (one) state.mixBase = one.id;
+    const base = state.tracks.find((t) => t.id === state.mixBase);
+    b.textContent = base ? `Mixes with ${(base.title || "track").slice(0, 22)}` : "Mixes with selected";
+  }
   state.filter = b.dataset.filter;
   $$("#filters button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
   renderTracks();
@@ -591,6 +636,10 @@ function renderContext() {
   const parts = [h("span", { class: "sel-count" }, `${ids.length} selected`)];
   parts.push(h("button", { class: "ghost small", onclick: () => api("/api/analyse", { body: { ids } }).then(() => { toast(`Analysing ${ids.length}`); pollJobs(); }).catch(fail) },
     sel.every((t) => t.analysed_at) ? "Re-analyse" : "Analyse"));
+  if (ids.length > 1) parts.push(h("button", { class: "ghost small", onclick: (e) => openMenu(e.currentTarget, [
+    ...[["artist", "Artist"], ["album", "Album"], ["genre", "Genre"], ["year", "Year"], ["comment", "Comment"]].map(([k, label]) => ({ label: `Set ${label.toLowerCase()} for ${ids.length}…`, run: () => bulkEdit(ids, k, label) })),
+    "-", { label: `Set key shift for ${ids.length}…`, run: () => bulkEdit(ids, "key_shift", "Key shift (semitones, -12 to 12)") },
+  ]), title: "Change one field on all selected tracks (each can be undone)" }, "Edit selected…"));
   const unplayable = sel.filter((t) => t.deck_problem).map((t) => t.id);
   if (unplayable.length) parts.push(h("button", { class: "ghost small", onclick: () => convertForDeck(unplayable),
     title: "16-bit FLAC copies the deck can play; the originals stay as they are" }, `Convert ${unplayable.length} for the deck`));

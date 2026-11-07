@@ -108,3 +108,9 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   Left / Right move the playhead (1 s, Shift 10 s, Alt a beat, Ctrl a bar); Page Up / Page Down jump between cues.
   Hot and memory cues and the downbeats are drawn on every stem lane, and a double-click on any lane sets the next free
   hot cue there.
+- **Mixes with selected**: select one track and choose the chip; the list shows the tracks in the same key, one step
+  either way on the Camelot wheel, or the other mode of the same number, within 6 % of its tempo (the shifted key counts).
+- **Needs attention** also flags a file that can't be found (moved, renamed, drive not connected) and tracks that look
+  like the same song twice (same artist and title, ignoring case and "(Original Mix)").
+- **Edit selected…** (selection bar, two or more tracks): set the artist, album, genre, year, comment or key shift on all
+  of them at once; each change can be undone.

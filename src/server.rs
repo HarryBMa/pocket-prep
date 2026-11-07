@@ -148,6 +148,7 @@ async fn list_tracks(Query(tq): Query<TrackQuery>) -> R {
             if let Some(m) = convert::state(id, &path).as_object() {
                 m.iter().for_each(|(k, v)| { t.insert(k.clone(), v.clone()); });
             }
+            t.insert("file_missing".into(), json!(!path.exists()));
         }
         let words: Vec<String> = tq.q.to_lowercase().split_whitespace().map(str::to_string).collect();
         if !words.is_empty() {
