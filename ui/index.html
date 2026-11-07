@@ -130,7 +130,6 @@
             <div id="tableNote" class="table-note" hidden></div>
             <div id="empty" class="empty" hidden>
               <h2>No tracks yet</h2>
-              <p>Import a folder of music. Tracks are analysed automatically: tempo, beat grid, key, energy and phrases.</p>
               <button class="primary" id="emptyImport">Import a folder</button>
             </div>
           </div>
@@ -144,7 +143,6 @@
       <div class="page wide">
         <div class="page-head">
           <h1>Export to DECK001</h1>
-          <p class="lede">Writes a rekordbox-format library the DECK001 reads, plus stems and phrase data. CDJs can read the same card. Audio files are copied as they are, never converted.</p>
         </div>
         <div class="export-grid">
           <div class="export-steps">
@@ -153,7 +151,6 @@
                 <label class="check inline"><input type="checkbox" id="allDrives"> Show all drives</label>
                 <button class="ghost small" id="refreshDrives">Refresh</button></div>
               <div id="drives" class="cards" role="radiogroup" aria-label="Target drive"></div>
-              <p class="hint">Only removable FAT32 or exFAT drives can be chosen. The system drive is never offered, and a rekordbox library another program wrote is never overwritten.</p>
             </section>
             <section class="panel">
               <div class="panel-head"><h2><span class="step">2</span>Content</h2></div>
@@ -168,7 +165,7 @@
           <aside class="panel export-summary" aria-label="Export plan">
             <div class="panel-head"><h2><span class="step">3</span>Plan</h2></div>
             <div id="exportTarget" class="target"></div>
-            <div id="plan" class="plan">Choose a drive to see what will be copied.</div>
+            <div id="plan" class="plan">No drive selected</div>
             <button class="primary wide-btn" id="doExport" disabled>Export</button>
             <div id="exportJob"></div>
           </aside>
@@ -179,8 +176,7 @@
     <!-- DECK -->
     <section id="view-deck" class="view" role="tabpanel" aria-label="Deck">
       <div class="page wide">
-        <div class="page-head"><h1>DECK001</h1>
-          <p class="lede">Status and firmware of the deck over its Wi-Fi Remote. Wired recovery is kept separate below.</p></div>
+        <div class="page-head"><h1>DECK001</h1></div>
         <div class="deck-grid">
           <section class="panel device">
             <div class="panel-head"><h2>Device</h2><span class="spacer"></span><button class="ghost small" id="deckRefresh">Check again</button></div>
@@ -189,9 +185,9 @@
           <section class="panel">
             <div class="panel-head"><h2>Firmware update</h2><span class="tag">Wi-Fi</span></div>
             <ol class="steps">
-              <li>On the deck, open Settings and turn on <b>Wi-Fi Remote</b>.</li>
-              <li>On this computer, join the deck's Wi-Fi network (<b>Pajoniiir</b>).</li>
-              <li>Choose the signed update file (<b>.ddjota</b>). The deck checks the signature before it installs anything, and rolls back by itself if the new firmware doesn't start.</li>
+              <li><b>Wi-Fi Remote</b> on</li>
+              <li>Join <b>Pajoniiir</b></li>
+              <li>Signed <b>.ddjota</b> file</li>
             </ol>
             <button class="primary" id="otaPick">Choose update file…</button>
             <input type="file" id="otaFile" accept=".ddjota" hidden>
@@ -200,9 +196,8 @@
         </div>
         <details class="panel recovery">
           <summary>USB recovery <span class="tag danger-tag">Overwrites firmware</span></summary>
-          <p>For a first install, or a deck that won't start. Connect the deck's USB-C <b>UART</b> port. This overwrites the deck's firmware, and asks you to type FLASH first.</p>
           <div class="recovery-form">
-            <label>Port <select id="ports"></select></label>
+            <label>UART port <select id="ports"></select></label>
             <label>ESP-IDF build folder <input id="buildDir" placeholder="C:\…\build"></label>
             <button class="danger" id="flashBtn">Flash over USB</button>
           </div>
@@ -225,7 +220,6 @@
                   <label>Lowest BPM <input name="bpm_min" type="number" min="40" max="200"></label>
                   <label>Highest BPM <input name="bpm_max" type="number" min="60" max="300"></label>
                 </div>
-                <p class="hint">Detected tempos outside this range are halved or doubled into it.</p>
               </fieldset>
               <fieldset>
                 <legend>DECK001</legend>
@@ -240,7 +234,6 @@
                 <label class="field">Style <select id="waveStyle"></select></label>
               </div>
               <canvas id="wavePreview" class="wave-preview" width="840" height="120" aria-label="Preview of the chosen waveform theme"></canvas>
-              <p class="hint">The same themes and styles as the DECK001 waveform settings, so a track looks the same here and on the deck.</p>
             </section>
             <section class="panel">
               <div class="panel-head"><h2>System</h2></div>
@@ -249,7 +242,6 @@
           </div>
           <section class="panel history-panel">
             <div class="panel-head"><h2>History</h2></div>
-            <p class="hint">Every change is kept here. Undo any change that can be reversed (Ctrl+Z undoes the last one).</p>
             <div id="history" class="history"></div>
           </section>
         </div>

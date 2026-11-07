@@ -160,7 +160,7 @@ async function loadPlaylists() {
     return h("div", { class: "folder" + (open ? " open" : "") }, btn, h("div", { class: "children" }, build(p.id)));
   });
   const tree = build(0);
-  $("#tree").replaceChildren(...(tree.length ? tree : [h("div", { class: "tree-empty" }, "No playlists yet.")]));
+  $("#tree").replaceChildren(...(tree.length ? tree : []));
   $("#allTracks").classList.toggle("active", state.playlist === 0);
 }
 async function playlistMenu(p) {
@@ -168,7 +168,7 @@ async function playlistMenu(p) {
   if (name === null) return;
   if (name === "") {
     await api(`/api/playlists/${p.id}`, { method: "DELETE" });
-    toast(`Deleted ${p.is_folder ? "folder" : "playlist"} "${p.name}". Tracks stay in the library.`);
+    toast(`Deleted ${p.is_folder ? "folder" : "playlist"} "${p.name}"`);
     if (state.playlist === p.id) selectPlaylist(0); else loadPlaylists();
   } else { await api(`/api/playlists/${p.id}`, { method: "PATCH", body: { name } }); loadPlaylists(); }
 }
@@ -286,8 +286,7 @@ function withMoodGroups(vis, rows) {
       const group = vis.filter((x) => x.t.mood === t.mood).map((x) => x.t), m = moodOf(t.mood);
       out.push(h("tr", { class: "group", "aria-hidden": "true" }, h("td", { colspan: "11" },
         h("span", { class: "mood", style: `--mood:${m ? MOOD_COLOR[m.id] : "#8a8a90"}` }, h("i"), m ? m.label : "No mood yet"),
-        h("span", { class: "muted" }, `${plural(group.length, "track")} · ${fmtDur(group.reduce((a, x) => a + (x.duration || 0), 0))}`),
-        m ? h("span", { class: "muted about" }, m.about) : null)));
+        h("span", { class: "muted" }, `${plural(group.length, "track")} · ${fmtDur(group.reduce((a, x) => a + (x.duration || 0), 0))}`))));
     }
     out.push(rows[k]);
   });
@@ -343,7 +342,7 @@ function renderTracks() {
   const note = $("#tableNote");
   note.hidden = state.loaded && (rows.length > 0 || libEmpty);
   note.textContent = !state.loaded ? "Loading library…"
-    : state.tracks.length === 0 && state.playlist && !$("#search").value ? "This playlist is empty. Drag tracks onto it in the sidebar."
+    : state.tracks.length === 0 && state.playlist && !$("#search").value ? "Empty playlist"
     : state.tracks.length === 0 ? "No tracks match the search." : "No tracks match this filter.";
   $$("#tracks thead th[data-sort]").forEach((th) => th.setAttribute("aria-sort", state.sort?.key === th.dataset.sort ? (state.sort.dir > 0 ? "ascending" : "descending") : "none"));
   renderContext();
@@ -491,7 +490,7 @@ async function removeSelected() {
   const ids = [...state.selected];
   if (!ids.length) return;
   const r = await api("/api/tracks/remove", { body: { ids } });
-  toast(`Removed ${ids.length} from the library (files are kept)`, r.undo);
+  toast(`Removed ${ids.length} from the library`, r.undo);
   state.selected.clear();
   if (state.current && ids.includes(state.current.id)) closeDetail();
   loadTracks();
@@ -626,9 +625,7 @@ function renderDetail() {
   const t = state.current;
   const d = $("#detail");
   if (!t) {
-    fill(d, h("div", { class: "tp-empty" },
-      h("p", {}, h("b", {}, "Select a track to prepare it.")),
-      h("p", { class: "hint" }, "Check the beat grid against the waveform, set cues, fix tags and make stems.")), moodSummary(), exportCard());
+    fill(d, h("div", { class: "tp-empty" }), moodSummary(), exportCard());
     return;
   }
   const field = (label, key, type = "text") => {
@@ -663,7 +660,7 @@ function renderDetail() {
       h("button", { class: "ghost small", onclick: () => { player.currentTime = c.start_ms / 1000; } }, "Jump"),
       h("button", { class: "ghost small icon-btn", "aria-label": `Delete memory cue at ${fmtMs(c.start_ms)}`, title: "Delete",
                     onclick: () => removeMemory(c).catch(fail) }, icon("x", "ic sm"))))
-    : h("div", { class: "muted", style: "font-size:12px" }, "None. Press M to add one at the playhead."));
+    : h("div", { class: "muted", style: "font-size:12px" }, "None"));
 
   // Stems: solo one at a time through the same player, or make them.
   const sj = jobFor(t.id, "stems");
@@ -696,13 +693,13 @@ function renderDetail() {
     splitSuggestion(t),
     why.length ? h("div", { class: "warn-line" }, "Needs attention: ", why.join(" · ")) : null,
     h("section", { "aria-label": "Waveforms", class: "tp-waves" },
-      secH("Waveform", h("span", { class: "spacer" }), h("span", { class: "muted" }, `${WAVE_THEMES[waveTheme].name} · ${WAVE_STYLES[waveStyle].name}`),
+      secH("Waveform", h("span", { class: "spacer" }),
         h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
           h("button", { class: "ghost small", "aria-label": "Zoom out", title: "Zoom out", onclick: () => zoomWave(0.5) }, "−"),
           h("button", { class: "ghost small", "aria-label": "Zoom in", title: "Zoom in", onclick: () => zoomWave(2) }, "+"))),
       waveStack),
     h("section", { "aria-label": "Hot cues", class: "tp-cues" },
-      secH("Hot cues", h("span", { class: "muted" }, "keys 1–8"), h("span", { class: "spacer" }),
+      secH("Hot cues", h("span", { class: "spacer" }),
         h("button", { class: "ghost small", "aria-pressed": String(!!state.cueEdit), onclick: () => { state.cueEdit = !state.cueEdit; renderDetail(); } }, state.cueEdit ? "Done" : "Edit")),
       pads, state.cueEdit ? memList : null),
     t.sections?.length ? h("section", { "aria-label": "Sections and phrases" },
@@ -720,10 +717,10 @@ function renderDetail() {
             h("button", { "aria-label": "Later by 1 ms (], Shift for 10 ms)", title: "Later by 1 ms (], Shift+] for 10 ms)", onclick: (e) => gridNudge(e.shiftKey ? 10 : 1) }, "›")),
           h("button", { class: "ghost small", title: "Back to the analysis grid", onclick: gridReset }, "Reset"),
           h("button", { class: "ghost small", title: "Move the bar start one beat later", onclick: () => gridNudge(0, 1) }, "Downbeat +1"))
-        : h("div", { class: "muted" }, "Appears after analysis")),
+        : h("div", { class: "muted" }, "Not analysed")),
       h("section", { "aria-label": "Stems", class: "tp-stems" }, secH("Stems"), stems)),
     h("details", { class: "details", open: state.detailsOpen ? true : null, ontoggle: (e) => { state.detailsOpen = e.currentTarget.open; } },
-      h("summary", { class: "sec-h" }, "Track details", h("span", { class: "spacer" }), h("span", { class: "muted" }, "tags, rating, phrases")),
+      h("summary", { class: "sec-h" }, "Track details"),
       h("div", { class: "fields" },
         field("Title", "title"), field("Artist", "artist"), field("Album", "album"),
         field("Genre", "genre"), field("BPM", "bpm", "number"), field("Year", "year", "number"),
@@ -742,9 +739,8 @@ function renderDetail() {
 // moods (mood.rs); "Automatic" hands the track back to the analysis.
 function moodPicker(t) {
   if (!t.analysed_at || !MOODS.length) return null;
-  const auto = t.mood_why?.ranking?.[0], autoMood = moodOf(auto?.id);
   const sel = h("select", { "aria-label": "Mood", class: "mood-sel" },
-    h("option", { value: "", selected: !t.mood_manual }, autoMood ? `Automatic (${autoMood.label}, ${Math.round(auto.confidence * 100)} %)` : "Automatic"),
+    h("option", { value: "", selected: !t.mood_manual }, "Auto"),
     MOODS.map((m) => h("option", { value: m.id, selected: !!t.mood_manual && t.mood === m.id }, m.label)));
   sel.addEventListener("change", () => saveMood(sel.value || null));
   return h("div", { class: "tp-mood" }, moodPill(t), sel);
@@ -754,7 +750,7 @@ async function saveMood(id) {
     const body = id ? { mood: id, mood_manual: 1 } : { mood_manual: 0 };
     const r = await api(`/api/tracks/${state.current.id}`, { method: "PATCH", body });
     const m = moodOf(r.track.mood);
-    toast(id ? `Mood: ${m?.label}. Automatic moods learn from it` : `Mood back to automatic: ${m?.label || "none"}`, r.undo);
+    toast(id ? `Mood: ${m?.label}` : `Mood: automatic (${m?.label || "none"})`, r.undo);
     await openTrack(state.current.id);
     loadTracks();
   } catch (e) { fail(e); }
@@ -781,7 +777,7 @@ function moodWhy(t) {
       return [h("dt", { title: f.about[0].toUpperCase() + f.about.slice(1) }, FEATURE_LABEL[f.id] || f.id),
               h("dd", {}, v == null ? (f.id === "vocals" ? "needs stems" : "–") : (FEATURE_FMT[f.id] || pct)(v))];
     }).flat()),
-    h("p", { class: "hint" }, "Same audio, same mood. Each mood has typical values for these numbers; the nearest wins. Setting a mood by hand moves that mood's typical values towards the track."));
+  );
 }
 
 // ── Preview bar: listen to check a track; it never changes anything ─────────
@@ -1145,7 +1141,6 @@ function renderInlineJobs() {
       el.append(h("div", { class: "plan" }, h("b", {}, "Export complete"),
         h("div", {}, `Exported ${j.result.tracks} tracks (${j.result.copied} files copied), ${j.result.playlists} playlists, ${j.result.stems} with stems.` +
           (j.result.missing_files ? ` ${j.result.missing_files} files were missing and skipped.` : "")),
-        h("div", { class: "muted" }, "Eject the drive before unplugging it."),
         ...deckWarnings(j.result.warnings)));
     }
   }
@@ -1171,7 +1166,6 @@ const exp = { root: null, drives: [], plan: null };
 function foreignLibrary(why) {
   return h("div", { class: "suggest" },
     h("span", {}, why, " Exporting would replace it, so DKPRP won't."),
-    h("button", { class: "ghost small", disabled: true, title: "Coming soon: keeps every existing track, cue and playlist" }, "Add to the existing library"),
     h("button", { class: "ghost small", onclick: () => { exp.root = null; loadExport(); } }, "Choose another drive"));
 }
 
@@ -1196,14 +1190,14 @@ async function loadExport() {
       h("div", { class: "bar", title: `${Math.round(used * 100)}% used` }, h("i", { style: `width:${used * 100}%` })),
       h("div", { class: "muted tnum" }, `${fmtBytes(d.free)} free of ${fmtBytes(d.total)}`),
       d.problem ? h("div", { class: "alert-text" }, d.problem) : null,
-      d.has_export ? h("div", { class: "muted" }, "Has a rekordbox library: checked in the plan before anything is written") : null);
+      d.has_export ? h("div", { class: "muted" }, "Has a rekordbox library") : null);
     c.addEventListener("click", () => { exp.root = d.root; loadExport(); });
     return c;
-  }) : [h("p", { class: "muted" }, "No removable drives found. Insert an SD card or USB stick, then Refresh.")]));
+  }) : [h("p", { class: "muted" }, "No removable drives")]));
   const lists = state.playlists.filter((p) => !p.is_folder);
   const ticked = new Set($$("#exportPlaylists input:checked").map((i) => +i.value));
   $("#exportPlaylists").replaceChildren(...(lists.length ? lists.map((p) => h("label", { class: "check" }, h("input", { type: "checkbox", value: p.id, checked: ticked.has(p.id) }), `${p.name} (${p.count})`))
-    : [h("span", { class: "muted" }, "No playlists yet.")]));
+    : [h("span", { class: "muted" }, "No playlists")]));
   updatePlan();
 }
 $$("input[name=scope]").forEach((r) => r.addEventListener("change", () => { $("#exportPlaylists").hidden = $("input[name=scope]:checked").value !== "playlists"; updatePlan(); }));
@@ -1234,7 +1228,7 @@ async function updatePlan() {
   btn.disabled = true; btn.textContent = "Export";
   plan.classList.remove("bad");
   renderTarget(null);
-  if (!exp.root) { plan.textContent = "Choose a drive to see what will be copied."; return; }
+  if (!exp.root) { plan.textContent = "No drive selected"; return; }
   const body = exportBody();
   if (body.playlist_ids && !body.playlist_ids.length) { plan.textContent = "Tick at least one playlist."; return; }
   plan.textContent = "Working out the plan…";
@@ -1299,7 +1293,7 @@ async function loadDeck() {
       ...(s.reachable ? [row("Firmware", f.version || f.app_version || "?"), row("Project", f.project), row("Running partition", f.running_partition || f.slot),
                          row("Image state", f.running_image_state)] : [])),
     s.reachable && f.last_error ? h("div", { class: "alert-text" }, `Last update error: ${f.last_error}`) : null,
-    s.reachable ? null : h("p", { class: "hint", style: "margin:0" }, `Turn on Wi-Fi Remote on the deck and join its network to update or read its status. The address is set in Settings.`));
+  );
   const ports = await api("/api/deck/ports").catch(() => []);
   $("#ports").replaceChildren(...(ports.length ? ports.map((p) => h("option", { value: p.port }, `${p.port} – ${p.description}${p.espressif ? " (ESP32)" : ""}`)) : [h("option", { value: "" }, "No USB serial ports")]));
 }
