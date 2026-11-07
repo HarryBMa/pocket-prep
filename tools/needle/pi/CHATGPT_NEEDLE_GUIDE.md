@@ -163,6 +163,12 @@ real FFT of size 2048 there. float32 throughout is fine.
   track PCM goes through. Outside the section, and whenever all four gains are 1, it plays the
   normal track (the stems add up to the mix, so the switch is inaudible).
 - Gain changes ramp over 5 ms (220 frames) to avoid clicks. Loops inside the section keep working.
+- **Keylock latency.** If the stems are summed *before* the keylock stretcher (Signalsmith), a mute
+  is heard only after the stretcher's latency (djay users report about 600 ms of stem lag with
+  keylock on). Do it this way anyway (one stretcher, no extra CPU), but first measure the
+  stretcher's latency (`Keylock` lead/latency in the source) and report it. If it is above about
+  50 ms, ask the user before trying the alternative: one stretcher per stem (up to 4x the keylock
+  CPU). With keylock off there is no extra delay.
 - A new track load, eject or seek far outside the section drops the section.
 - **Tests**: host test rendering a block across the section start/end with all gains 1 equals the
   plain track within 1e-4; muting drums removes the drum stem; no allocation in the worker path
@@ -185,6 +191,15 @@ real FFT of size 2048 there. float32 throughout is fine.
 
 - Run the S4 bench and a listening check (`reference/needle_pi.py split` on the same section gives
   the expected WAVs). Report times, CPU load while playing, and any underruns.
+
+## Later (not now; ask the user first)
+
+- **Mute with tail:** when a stem is muted, keep feeding it into an echo/reverb send for a moment, so
+  it rings out instead of cutting (Serato Stem FX, djay Mute FX). Needs the stem routed to the
+  effect send before the mute gate.
+- **Store three stems, derive the fourth:** `other = section mix - (drums + bass + vocals)`. Needle's
+  stems already sum to the mix, so this is exact and saves a quarter of the stem memory.
+- **Stem effects:** per-stem filter or echo; drum swap between the two tracks of the deck.
 
 ## Things not to do
 
