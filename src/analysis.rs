@@ -458,27 +458,39 @@ mod tests {
     #[test]
     #[ignore]
     fn mood_calibration() {
-        let dir = std::path::PathBuf::from(std::env::var("POCKET_PREP_MOOD_DIR").expect("set POCKET_PREP_MOOD_DIR"));
+        // Either folders of example tracks (POCKET_PREP_MOOD_DIR, one folder per mood id) or a list
+        // (POCKET_PREP_MOOD_LIST: one "mood id<TAB>path" per line), so the music can stay where it is.
+        let mut items: Vec<(String, std::path::PathBuf)> = vec![];
+        if let Ok(list) = std::env::var("POCKET_PREP_MOOD_LIST") {
+            for l in std::fs::read_to_string(list).unwrap().lines() {
+                if let Some((m, p)) = l.split_once('\t') {
+                    items.push((m.trim().to_string(), p.trim().into()));
+                }
+            }
+        } else {
+            let dir = std::path::PathBuf::from(std::env::var("POCKET_PREP_MOOD_DIR").expect("set POCKET_PREP_MOOD_DIR or POCKET_PREP_MOOD_LIST"));
+            let mut dirs: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+            dirs.sort();
+            for d in dirs {
+                let want = d.file_name().unwrap().to_string_lossy().to_string();
+                let mut files: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.path()).collect();
+                files.sort();
+                items.extend(files.into_iter().map(|f| (want.clone(), f)));
+            }
+        }
         let protos = mood::prototypes(&[]);
         let (mut hits, mut n) = (0, 0);
-        let mut dirs: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
-        dirs.sort();
-        for d in dirs {
-            let want = d.file_name().unwrap().to_string_lossy().to_string();
-            let mut files: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.path()).collect();
-            files.sort();
-            for f in files {
-                let Ok(audio) = clubcraft_audio::decode::decode_native(&f) else { continue };
-                let a = analyse_audio(&audio, None, (85.0, 175.0));
-                let feats = mood::features_of(&a).unwrap();
-                let r = mood::rank(&feats, &protos);
-                let got = mood::MOODS[r[0].0].id;
-                n += 1;
-                hits += (got == want) as i32;
-                println!("{}", json!({"want": want, "got": got, "file": f.file_name().unwrap().to_string_lossy(),
-                                      "features": a["mood_features"],
-                                      "top": r.iter().take(3).map(|&(m, d, _)| format!("{} {:.2}", mood::MOODS[m].id, d)).collect::<Vec<_>>()}));
-            }
+        for (want, f) in items {
+            let Ok(audio) = clubcraft_audio::decode::decode_native(&f) else { continue };
+            let a = analyse_audio(&audio, None, (85.0, 175.0));
+            let feats = mood::features_of(&a).unwrap();
+            let r = mood::rank(&feats, &protos);
+            let got = mood::MOODS[r[0].0].id;
+            n += 1;
+            hits += (got == want) as i32;
+            println!("{}", json!({"want": want, "got": got, "file": f.file_name().unwrap().to_string_lossy(),
+                                  "features": a["mood_features"],
+                                  "top": r.iter().take(3).map(|&(m, d, _)| format!("{} {:.2}", mood::MOODS[m].id, d)).collect::<Vec<_>>()}));
         }
         println!("hit rate {hits}/{n}");
     }
