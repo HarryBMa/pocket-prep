@@ -138,6 +138,48 @@ MoisesDB held-out test set (30 songs, many genres) 5.26.
 - Parameters 500,968; training 2.94 h (early stop at step 190k; best validation, fast metric, 4.80).
 - Quantisation costs 0.02 dB: every layer's error is at the rounding level (quant_debug.py), so
   no quantisation-aware training is needed for this model.
-- Base 12 and base 8: base 12's first run stopped too early (patience 8 at step 75k), so it is
-  being resumed with patience 30; base 8 still to train. Base 16 with real stems (MoisesDB, NI,
-  sample packs) and base 16 at frames 64 are in progress.
+### Sizes, chunk length and real stems (7 November 2026)
+
+Float models, museval median SDR (dB). MUSDB = MUSDB18-HQ test (50 songs); MoisesDB = held-out
+MoisesDB test (30 songs, many genres); house = NI house test (6 songs, 2 with vocals).
+
+| Run | Params | Training | MUSDB (drums / bass / other / vocals) | MUSDB avg | MoisesDB | House |
+|---|---|---|---|---|---|---|
+| b16, frames 32, MUSDB only | 501 k | 2.9 h | 5.07 / 3.63 / 3.34 / 5.21 | 4.31 | 5.26 | 2.77 |
+| **b16, frames 32, + real stems** | 501 k | 3.1 h | 5.10 / 3.97 / 3.31 / 5.22 | **4.40** | **5.74** | **3.98** |
+| b16, frames 64, MUSDB only | 501 k | 3.0 h | 5.25 / 4.00 / 3.27 / 5.39 | **4.48** | 5.33 | 2.31 |
+| b12, frames 32, MUSDB only | 282 k | 3.2 h | 4.69 / 3.64 / 3.07 / 4.83 | 4.06 | 5.08 | 2.48 |
+
+Real stems: `--stems` with MoisesDB, NI Stems, mshoxxDB and sample-pack kits at share 0.25.
+
+Paired song-level differences against b16 frames 32 MUSDB only (`paired.py`: mean over songs of
+the per-song difference, 95 % bootstrap interval):
+
+| | MUSDB | MoisesDB | House |
+|---|---|---|---|
+| + real stems | +0.37 [+0.10, +0.78], 38/50 songs better | +0.46 [+0.34, +0.60], 29/30 | +1.93 [−0.16, +4.43], 5/6 |
+| frames 64 | +0.31 [+0.10, +0.62], 37/50 | +0.08 [−0.01, +0.16], 20/30 | +0.98 [−0.42, +3.23], 3/6 |
+
+- Real stems help on every test set; the MoisesDB result (29 of 30 songs better) is the clearest.
+  The 14-song validation set had suggested the opposite (4.59 vs 4.80): use test sets and paired
+  comparisons, not validation, to choose between runs.
+- Frames 64 helps pop/rock, not clearly the other genres; it needs 3 MB of int8 working memory
+  (SDRAM). Base 12 is 0.25 dB behind base 16 on MUSDB.
+- Six house songs are too few for conclusions; the 16 held-out Luke Traxx tracks
+  (`E:\needle-teacher\luke_test`, scored against htdemucs) are the next DJ test set.
+
+### Section separation (how the deck will use Needle)
+
+The DJ selects 4-16 bars and presses the stem button; only that section is separated, with about
+1 s of the track on each side as context. Agreed limit: 3 s for 16 bars, faster preferred. The
+int8 model in on-chip SRAM needs about 0.6 s of NPU time for 16 bars at 128 BPM, so spare time can
+buy quality: `--shifts 2` (eval.py, chunked.py) averages two passes with shifted audio, at 2x the
+compute and no extra memory. Playback can start immediately; the first 0.37-s chunk is ready in
+milliseconds.
+
+`pi/needle_pi.py` is a test bench of this on a Raspberry Pi or PC (numpy + TFLite, no PyTorch):
+`bench`, `split` (writes four WAVs) and `play` (loops the section, mute stems live). It agrees with
+the PyTorch pipeline to about 50 dB; on the desktop CPU 16 bars take 0.6 s. See `pi/README.md`.
+
+Next: distillation on Luke Traxx's tracks (`--teacher E:\needle-teacher\luke --teacher-seconds 120`,
+the busiest 2 minutes of each of 168 tracks), then real stems + teacher together. Base 8 not trained.
