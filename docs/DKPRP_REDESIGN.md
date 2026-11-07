@@ -93,3 +93,18 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
 - **Mood** (next to Key and Energy): one label per track (Deep, Melodic, Tech house, Peak time,
   Hard techno, Drum & bass, Mainstream pop, Downtempo). It is repeatable and learns from the
   moods you set by hand. The library can be grouped by it. Method and limits: `docs/MOOD.md`.
+
+## Working in the list and the waveforms (0.5)
+- **Resize**: drag the edge of the sidebar or the track panel (or focus it and use the arrow keys, Shift for bigger
+  steps; double-click resets). The widths are remembered.
+- **Quick edits**: click a cell of the selected row (F2 for the title). Title, artist and tempo become a box
+  (Enter saves, Esc cancels, Tab moves on); key (a Camelot grid), mood and energy open a picker. A tempo, key or energy
+  you set is kept by a re-analysis (`tracks.edited`); "Analysed value" puts the analysed one back. Every edit can be undone.
+- **Convert for the deck**: the deck plays MP3, FLAC and 16-bit WAV. For a 24-bit WAV, an AIFF or an M4A the panel, the
+  row menu and the selection bar offer a 16-bit FLAC copy (dithered, same sample rate) in `converted/` in the data folder;
+  the export writes the copy instead of the original, "Use the original" removes it.
+- **Waveforms**: a time ruler under the main waveform, the time under the pointer, and the current time in the header.
+  Click the lane labels, or focus the waveforms and press Up / Down, to choose the full mix or a stem to listen to;
+  Left / Right move the playhead (1 s, Shift 10 s, Alt a beat, Ctrl a bar); Page Up / Page Down jump between cues.
+  Hot and memory cues and the downbeats are drawn on every stem lane, and a double-click on any lane sets the next free
+  hot cue there.

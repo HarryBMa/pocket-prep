@@ -823,7 +823,7 @@ function renderDetail() {
       h("span", {}, `The deck gets a 16-bit FLAC copy${t.deck_copy_bytes ? ` (${fmtBytes(t.deck_copy_bytes)})` : ""} instead of the original.`),
       h("button", { class: "ghost small", onclick: () => removeDeckCopy([t.id]) }, "Use the original")) : null,
     h("section", { "aria-label": "Waveforms", class: "tp-waves" },
-      secH("Waveform", h("span", { class: "spacer" }),
+      secH("Waveform", h("span", { class: "wave-time", id: "waveTime", "aria-hidden": "true" }, waveTimeText()), h("span", { class: "spacer" }),
         h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
           h("button", { class: "ghost small", "aria-label": "Zoom out", title: "Zoom out", onclick: () => zoomWave(0.5) }, "−"),
           h("button", { class: "ghost small", "aria-label": "Zoom in", title: "Zoom in", onclick: () => zoomWave(2) }, "+"))),
@@ -1061,7 +1061,10 @@ function soloStem(name) {
   state.stemSolo = name;
   player.src = name ? `/api/tracks/${t.id}/stem/${name}` : `/api/tracks/${t.id}/audio`;
   player.addEventListener("loadedmetadata", () => { player.currentTime = pos; if (playing) player.play(); }, { once: true });
+  const focused = document.activeElement === waveStack;
   renderDetail();
+  markActiveLane();
+  if (focused) waveStack.focus({ preventScroll: true });
 }
 function setPlayIcon() {
   const b = $("#playBtn");
@@ -1073,6 +1076,7 @@ player.addEventListener("pause", setPlayIcon);
 player.addEventListener("timeupdate", () => {
   if (!state.current) return;
   $("#timeLabel").textContent = fmtTime(player.currentTime);
+  const wt = $("#waveTime"); if (wt) wt.textContent = waveTimeText();
   if (!state.seeking) $("#seek").value = player.currentTime;
 });
 
@@ -1109,7 +1113,10 @@ const STEM_LABEL = { drums: "DRUMS", bass: "BASS", other: "MELODY", vocals: "VOC
 const STEM_COLORS = { drums: CUE_COLORS[1], bass: CUE_COLORS[2], other: CUE_COLORS[5], vocals: CUE_COLORS[6] };
 
 function cssVar(n) { return cssCache[n] ??= getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
-const waveStack = h("div", { class: "wstack" });
+const waveStack = h("div", { class: "wstack", tabindex: "0", role: "group",
+  "aria-label": "Waveforms. Up and Down choose the full mix or a stem to listen to, Left and Right move the playhead (Shift: 10 s, Alt: a beat, Ctrl: a bar), Page Up and Page Down jump between cues, double-click sets the next hot cue." });
+const fmtClock = (s) => { s = Math.max(0, s || 0); return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`; };
+function waveTimeText() { const t = state.current; return t ? `${fmtClock(player.currentTime)} / ${fmtClock(t.duration)}` : ""; }
 const waveBox = h("div", { class: "waves", id: "waves" });
 const overviewBox = h("div", { class: "waves overview" });
 const withAlpha = (hex, a) => { const m = hex.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i); return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : hex; };
@@ -1157,12 +1164,50 @@ function drawWave(idx, ctx, bands, pal) {
 
 function destroyWaves() {
   state.ws?.destroy(); (state.stemWs || []).forEach((w) => w.destroy());
-  state.ws = null; state.stemWs = []; state.regions = null;
+  state.ws = null; state.stemWs = []; state.regions = null; state.stemRegions = [];
 }
+// Which lane is the one you listen to: the full mix, or a stem (the same as the "Listen to" buttons).
+const waveLanes = () => [null, ...STEM_ORDER.filter((s) => state.stemPeaks?.[s])];
+function markActiveLane() {
+  const act = state.stemSolo || "full";
+  $$(".wlabel", waveStack).forEach((l) => { const on = (l.dataset.lane || "") === act; l.classList.toggle("active", on); l.setAttribute("aria-current", String(on)); l.nextElementSibling?.classList.toggle("active", on); });
+}
+// Double-click a waveform: the next free hot cue goes there (snapped to the beat grid like every cue).
+function nextHotCueAt(seconds) {
+  const t = state.current;
+  const slot = [1, 2, 3, 4, 5, 6, 7, 8].find((s) => !t.cues.some((c) => c.slot === s));
+  if (!slot) return toast("All eight hot cues are in use. Clear one first.", null, true);
+  setCue(slot, seconds * 1000).catch(fail);
+}
+// Keys in the waveforms: Up/Down choose the lane you listen to; Left/Right move the playhead (1 s, Shift 10 s, Alt one beat,
+// Ctrl one bar); Page Up / Page Down jump to the previous / next cue.
+waveStack.addEventListener("keydown", (e) => {
+  const t = state.current;
+  if (!t || e.target !== waveStack || ["Tab"].includes(e.key)) return;
+  const lanes = waveLanes(), i = Math.max(0, lanes.indexOf(state.stemSolo ?? null));
+  const go = (ms) => { player.currentTime = Math.max(0, Math.min(t.duration || 0, ms / 1000)); };
+  const beat = effectiveGrid(t)?.period_ms || 500, now = player.currentTime * 1000;
+  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    e.preventDefault();
+    const n = Math.max(0, Math.min(lanes.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)));
+    if (n !== i) soloStem(lanes[n]);
+  } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    e.preventDefault();
+    const step = e.ctrlKey || e.metaKey ? beat * 4 : e.altKey ? beat : e.shiftKey ? 10000 : 1000;
+    go(now + (e.key === "ArrowRight" ? step : -step));
+  } else if (e.key === "PageUp" || e.key === "PageDown") {
+    e.preventDefault();
+    const at = t.cues.map((c) => c.start_ms).sort((a, b) => a - b);
+    const target = e.key === "PageDown" ? at.find((ms) => ms > now + 50) : [...at].reverse().find((ms) => ms < now - 500);
+    if (target != null) go(target); else toast(e.key === "PageDown" ? "No later cue" : "No earlier cue");
+  }
+});
+const hoverPlugin = () => WaveSurfer.Hover.create({ lineColor: "rgba(242,242,242,.7)", lineWidth: 1, labelBackground: "rgba(0,0,0,.78)", labelColor: "#fff", labelSize: 11,
+  formatTimeCallback: fmtClock });
 function buildWaves() {
   destroyWaves();
   const t = state.current, w = state.wave, pal = wavePalette();
-  fill(waveStack, h("span", { class: "wlabel", style: `color:${pal.solid || pal.bands[0]}` }, "FULL"), waveBox);
+  fill(waveStack, h("span", { class: "wlabel", "data-lane": "full", style: `color:${pal.solid || pal.bands[0]}`, title: "Listen to the full mix", onclick: () => soloStem(null) }, "FULL"), waveBox);
   if (!w) { waveBox.replaceChildren(h("div", { class: "wave-empty" }, t?.analysed_at ? "Loading waveform…" : "Waveform appears after analysis")); return; }
   waveBox.replaceChildren(); overviewBox.replaceChildren();
   state.bands = wavePeaks(w);
@@ -1173,19 +1218,30 @@ function buildWaves() {
     cursorColor: PLAYHEAD, cursorWidth: 2 });
   const full = (ch, ctx) => drawWave(ch[0], ctx, state.bands, pal);
   state.regions = WaveSurfer.Regions.create();
+  state.stemRegions = [];
+  const clockLabel = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
   state.ws = WaveSurfer.create({ container: waveBox, peaks: [positions(state.bands[0].length)], ...base(full, 104),
-    plugins: [state.regions, WaveSurfer.Minimap.create({ container: overviewBox, height: 26, renderFunction: full, waveColor: "#888888", progressColor: "rgba(0,0,0,0.5)",
+    plugins: [state.regions, hoverPlugin(), WaveSurfer.Timeline.create({ height: 18, formatTimeCallback: clockLabel, secondaryLabelOpacity: 0.35,
+      style: { fontSize: "10px", color: "#b6b6bb", fontFamily: "inherit" } }), WaveSurfer.Minimap.create({ container: overviewBox, height: 26, renderFunction: full, waveColor: "#888888", progressColor: "rgba(0,0,0,0.5)",
       dragToSeek: true, cursorColor: PLAYHEAD, overlayColor: "rgba(255,255,255,.12)" })] });
   state.ws.on("ready", syncMarkers);
-  const overviewRow = () => waveStack.append(h("span", { class: "wlabel", style: "color:#8a8a90" }, "OVERVIEW"), overviewBox);
+  state.ws.on("dblclick", (rx) => nextHotCueAt(rx * w.duration));
+  waveStack.firstElementChild.dataset.lane = "full";
+  const overviewRow = () => { waveStack.append(h("span", { class: "wlabel", style: "color:#8a8a90" }, "OVERVIEW"), overviewBox); markActiveLane(); };
   if (!state.stemPeaks) return overviewRow();
   for (const name of STEM_ORDER) {
     const peaks = state.stemPeaks[name];
     if (!peaks) continue;
     const box = h("div", { class: "waves" });
-    waveStack.append(h("span", { class: "wlabel", style: `color:${STEM_COLORS[name]}` }, STEM_LABEL[name]), box);
+    const label = h("span", { class: "wlabel", "data-lane": name, style: `color:${STEM_COLORS[name]}`, title: `Listen to ${STEM_LABEL[name].toLowerCase()} only`, onclick: () => soloStem(name) }, STEM_LABEL[name]);
+    waveStack.append(label, box);
     const sp = { bars: pal.bars, solid: STEM_COLORS[name] };
-    state.stemWs.push(WaveSurfer.create({ container: box, peaks: [positions(peaks.length)], ...base((ch, ctx) => drawWave(ch[0], ctx, [peaks], sp), 38) }));
+    const reg = WaveSurfer.Regions.create();
+    state.stemRegions.push(reg);
+    const sws = WaveSurfer.create({ container: box, peaks: [positions(peaks.length)], ...base((ch, ctx) => drawWave(ch[0], ctx, [peaks], sp), 38), plugins: [reg, hoverPlugin()] });
+    sws.on("dblclick", (rx) => nextHotCueAt(rx * w.duration));
+    sws.on("ready", syncMarkers);
+    state.stemWs.push(sws);
   }
   overviewRow();
 }
@@ -1200,6 +1256,15 @@ function syncMarkers() {
   const t = state.current, g = effectiveGrid(t), reg = state.regions;
   if (!reg || !state.wave) return;
   reg.clearRegions();
+  // The stem lanes carry the hot and memory cues and the downbeats, so a cue can be placed by what you see in a stem.
+  for (const sr of state.stemRegions || []) {
+    sr.clearRegions();
+    if (g && g.period_ms > 0 && (g.duration_ms - g.first_beat_ms) / g.period_ms < 3000) {
+      const beats = Math.floor((g.duration_ms - g.first_beat_ms) / g.period_ms) + 1;
+      for (let k = 0; k < beats; k++) if (((k - g.downbeat_index) % 4 + 4) % 4 === 0) sr.addRegion({ start: (g.first_beat_ms + k * g.period_ms) / 1000, color: "rgba(242,242,242,0.28)", drag: false, resize: false });
+    }
+    for (const c of t.cues) sr.addRegion({ start: c.start_ms / 1000, color: c.slot ? CUE_COLORS[c.slot - 1] : "#f2f2f2", drag: false, resize: false });
+  }
   if (g && g.period_ms > 0) {
     const down = "rgba(242,242,242,0.55)", beat = "rgba(242,242,242,0.16)";
     const beats = Math.floor((g.duration_ms - g.first_beat_ms) / g.period_ms) + 1;
