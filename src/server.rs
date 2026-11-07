@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 use crate::db::{self, Row};
 use crate::export::usb;
-use crate::{analysis, config, convert, deck, jobs, library, mood, stems};
+use crate::{analysis, config, convert, deck, jobs, library, models, mood, stems};
 
 pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -112,6 +112,9 @@ fn queue_outdated_analysis() {
 }
 
 fn queue_stems(track_ids: &[i64]) -> anyhow::Result<Vec<i64>> {
+    if !models::stems_ready() {
+        anyhow::bail!("The stems model isn't downloaded yet (Settings → System)");
+    }
     let mut out = vec![];
     for &tid in track_ids {
         if jobs::pending_for(tid, "stems") {
@@ -525,6 +528,7 @@ pub fn router() -> Router {
         .route("/api/deck/flash", post(deck_flash))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/system", get(system))
+        .route("/api/models", get(|| async { Json(models::status()) }).post(|| async { blocking(|| Ok(json!({"job": models::fetch()?}))).await }))
         .route("/api/pick", post(pick))
         .fallback(static_file)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))     // firmware bundles

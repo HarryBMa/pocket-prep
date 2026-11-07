@@ -1405,11 +1405,13 @@ async function pollJobs() {
   updateStatusCells();
   if (lastActive && active.length < lastActive) {     // something finished
     loadTracks();
+    if (state.models) loadModels();
     if (state.current) openTrack(state.current.id);
     if (exp.root) updatePlan();
   } else if (state.current && active.some((j) => j.track_id === state.current.id && j.kind === "stems")) {
     renderStemProgress();
   }
+  if (state.models?.stems_model?.job && $("#view-settings").classList.contains("active")) loadModels();
   lastActive = active.length;
   pollTimer = setTimeout(pollJobs, active.length ? 1000 : 4000);
 }
@@ -1654,7 +1656,7 @@ async function loadSettings() {
     if (el.type === "checkbox") el.checked = !!v; else el.value = v;
   }
   state.system = await api("/api/system");
-  renderSystem();
+  await loadModels();
   const hist = await api("/api/history");
   $("#history").replaceChildren(...(hist.length ? hist.slice(0, 60).map((r) => h("div", { class: "h" },
     h("span", { class: "when" }, new Date(r.at * 1000).toLocaleString()),
@@ -1663,11 +1665,19 @@ async function loadSettings() {
     : [h("p", { class: "muted" }, "No changes yet.")]));
 }
 function renderSystem() {
-  const s = state.system;
+  const s = state.system, m = state.models?.stems_model;
+  // The stems model (174 MB) isn't in the installer on Windows and Linux: fetched once, checked against the build's hash.
+  const model = !m ? "…" : m.present ? h("span", { class: "ok-text" }, icon("check", "ic sm"), "Ready")
+    : m.job ? h("span", { class: "muted" }, `Downloading ${Math.round(m.job.progress * 100)}% · ${m.job.message}`)
+    : h("span", { class: "row-btns" }, h("span", { class: "muted" }, m.fetchable ? `Not downloaded (${m.bytes ? Math.round(m.bytes / 1e6) + " MB" : "174 MB"}, once)` : "Not found"),
+        m.fetchable ? h("button", { class: "small primary", onclick: () => api("/api/models", { body: {} }).then(() => { toast("Downloading the stems model"); pollJobs(); loadModels(); }).catch(fail) }, "Download") : null,
+        !m.fetchable ? h("span", { class: "muted" }, `Put htdemucs.onnx in ${m.dir || "the models folder"}`) : null);
   $("#system").replaceChildren(h("span", { class: "k" }, "Application"), h("span", {}, `DKPRP ${s.version || ""}`),
     h("span", { class: "k" }, "Device"), h("span", {}, "DECK001"),
+    h("span", { class: "k" }, "Stems model"), model,
     h("span", { class: "k" }, "Library and stems"), h("span", {}, s.data_dir || ""));
 }
+function loadModels() { return api("/api/models").then((m) => { state.models = m; renderSystem(); }).catch(() => {}); }
 $("#settingsForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = e.target, v = {};
