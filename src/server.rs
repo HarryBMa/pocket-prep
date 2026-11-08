@@ -30,7 +30,8 @@ struct Ui;
 
 const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
     rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
-    mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s, mix_in_ms, mix_out_ms";
+    mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s, mix_in_ms, mix_out_ms, intent, grid_ok_at, \
+    (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -111,12 +112,21 @@ fn queue_outdated_analysis() {
     queue_analysis(&ids);
 }
 
+// Stems in the order the intent asks for: a section first (small), then vocal layers, remixes, and
+// plain mixes last; a backup track only when asked for by hand (it is in the list, so it goes last).
+const INTENT_ORDER: &[&str] = &["section", "vocal", "remix", "mix", "backup"];
+fn intent_rank(tid: i64) -> usize {
+    let intent = db::track(tid).ok().flatten().and_then(|t| t.get("intent").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or("mix".into());
+    INTENT_ORDER.iter().position(|i| *i == intent).unwrap_or(3)
+}
 fn queue_stems(track_ids: &[i64]) -> anyhow::Result<Vec<i64>> {
     if !models::stems_ready() {
         anyhow::bail!("The stems model isn't downloaded yet (Settings → System)");
     }
+    let mut ordered: Vec<i64> = track_ids.to_vec();
+    ordered.sort_by_key(|&t| intent_rank(t));
     let mut out = vec![];
-    for &tid in track_ids {
+    for &tid in &ordered {
         if jobs::pending_for(tid, "stems") {
             continue;
         }
@@ -314,6 +324,31 @@ async fn analyse_tracks(Json(b): Json<Value>) -> R {
 
 async fn make_stems(Json(b): Json<Value>) -> R {
     blocking(move || Ok(json!({"jobs": queue_stems(&ids(&b, "ids"))?}))).await
+}
+
+/// Prepare everything the intents ask for, for the given tracks (or the whole library): analysis where
+/// missing, stems where the intent wants them, a deck copy where the file won't play. Nothing is redone.
+async fn prepare(Json(b): Json<Value>) -> R {
+    blocking(move || {
+        let wanted = ids(&b, "ids");
+        let rows = db::query(&format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE deleted=0"), &[])?;
+        let rows: Vec<&Row> = rows.iter().filter(|r| wanted.is_empty() || r["id"].as_i64().is_some_and(|i| wanted.contains(&i))).collect();
+        let id = |r: &Row| r["id"].as_i64().unwrap_or(0);
+        let analyse: Vec<i64> = rows.iter().filter(|r| r["analysed_at"].is_null()).map(|r| id(r)).collect();
+        let stems: Vec<i64> = rows.iter().filter(|r| matches!(r["intent"].as_str(), Some("vocal" | "remix" | "section")) && !matches!(r["stems"].as_str(), Some("done" | "queued" | "running")))
+            .map(|r| id(r)).collect();
+        let convert: Vec<i64> = rows.iter().filter(|r| r["intent"] != "backup" && r["path"].as_str()
+            .is_some_and(|p| crate::convert::state(id(r), std::path::Path::new(p))["deck_problem"].is_string())).map(|r| id(r)).collect();
+        let a = queue_analysis(&analyse);
+        let s = if stems.is_empty() { vec![] } else { queue_stems(&stems)? };
+        let c: Vec<i64> = convert.iter().filter(|t| !jobs::pending_for(**t, "convert")).map(|&tid| {
+            jobs::submit("convert", &format!("Convert for the deck: {}", title_of(tid)), "cpu", Some(tid), move |h| {
+                let out = crate::convert::convert(tid, &|f, m| h.progress(f, m), &|| h.cancelled())?;
+                Ok(Some(json!({"bytes": std::fs::metadata(out)?.len()})))
+            })
+        }).collect();
+        Ok(json!({"analyse": a.len(), "stems": s.len(), "convert": c.len()}))
+    }).await
 }
 
 async fn delete_stems(P(tid): P<i64>) -> R {
@@ -521,6 +556,7 @@ pub fn router() -> Router {
         .route("/api/analyse", post(analyse_tracks))
         .route("/api/convert", post(convert_tracks))
         .route("/api/stems", post(make_stems))
+        .route("/api/prepare", post(prepare))
         .route("/api/playlists", get(get_playlists).post(new_playlist))
         .route("/api/playlists/{pid}", axum::routing::patch(rename_playlist).delete(remove_playlist))
         .route("/api/playlists/{pid}/tracks", put(order_playlist))

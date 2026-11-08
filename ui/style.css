@@ -545,7 +545,7 @@ input[type=range] { accent-color: var(--accent); padding: 0; border: 0; backgrou
 .page-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .page h1 { font-family: var(--f-display); font-weight: 400; font-size: 20px; letter-spacing: .02em; margin: 0; }
 .drawer { left: 0; bottom: var(--bar-h); top: var(--top-h); }
-.toasts { top: calc(var(--top-h) + 12px); bottom: auto; }
+.toasts { top: calc(var(--top-h) + 12px); bottom: auto; left: auto; right: 16px; transform: none; }
 .modal-box input { width: 100%; }
 
 /* ── Responsive: 1920, 1600, 1366 wide; smaller windows reflow ──────────── */
@@ -569,3 +569,8 @@ input[type=range] { accent-color: var(--accent); padding: 0; border: 0; backgrou
 .mix-pt { width: auto !important; padding: 0 8px !important; gap: 5px; font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; border-radius: 14px !important; }
 .mix-pt b { font-size: 10px; letter-spacing: .06em; color: var(--ink-3); }
 .mix-pt.own { color: var(--ink); } .mix-pt.own b { color: var(--ink); }
+/* Readiness ring (one per row) and the intent picker */
+.ready { width: 22px; height: 22px; display: block; }
+.ready.busy { animation: spin 2.4s linear infinite; }
+.intent-sel { font-size: 13px; height: 34px; border-radius: 17px; padding: 0 10px; background: var(--surface); border-color: var(--line); color: var(--ink-2); }
+.grid-ok[aria-pressed="true"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 18%, transparent); }

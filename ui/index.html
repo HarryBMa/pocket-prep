@@ -131,9 +131,7 @@
               <th data-sort="title">Track</th><th data-sort="artist">Artist</th>
               <th class="num" data-sort="bpm">BPM</th><th data-sort="camelot">Key</th><th class="c-mood" data-sort="mood">Mood</th>
               <th class="c-energy" data-sort="energy" title="Energy">Energy</th><th class="num c-lufs" data-sort="lufs" title="Integrated loudness (LUFS)">LUFS</th>
-              <th class="c-stems" data-sort="stems"><span class="sr">Stems</span></th>
-              <th class="c-an" data-sort="analysed_at"><span class="sr">Analysis</span></th>
-              <th class="c-card"><span class="sr">On the card</span></th>
+              <th class="c-an" data-sort="analysed_at" title="Ready to perform?"><span class="sr">Ready</span></th>
               <th class="c-menu"><span class="sr">Actions</span></th>
             </tr></thead>
             <tbody></tbody>
@@ -269,7 +267,7 @@
 
 <div id="menu" class="menu" role="menu" hidden></div>
 <div id="jobsPanel" class="drawer" role="dialog" aria-label="Jobs" hidden>
-  <div class="drawer-head"><b>Jobs</b><span class="spacer"></span><button class="ghost small" id="clearJobs">Clear finished</button><button class="ghost small icon-btn" id="closeJobs" aria-label="Close jobs"><svg class="ic sm"><use href="#i-x"/></svg></button></div>
+  <div class="drawer-head"><b>Jobs</b><span class="spacer"></span><button class="ghost small" id="prepareAll" title="Analyse what isn't, make the stems each track's intent asks for, convert what won't play">Prepare everything</button><button class="ghost small" id="clearJobs">Clear finished</button><button class="ghost small icon-btn" id="closeJobs" aria-label="Close jobs"><svg class="ic sm"><use href="#i-x"/></svg></button></div>
   <div id="jobsList"></div>
 </div>
 

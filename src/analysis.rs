@@ -446,7 +446,7 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
 
     db::tx(|c| {
         if grid_moved {
-            let n = c.execute("UPDATE tracks SET grid_offset_ms=0, downbeat_shift=0 WHERE id=? AND (grid_offset_ms<>0 OR downbeat_shift<>0)",
+            let n = c.execute("UPDATE tracks SET grid_offset_ms=0, downbeat_shift=0, grid_ok_at=NULL WHERE id=? AND (grid_offset_ms<>0 OR downbeat_shift<>0 OR grid_ok_at IS NOT NULL)",
                               [track_id])?;
             if n > 0 {
                 db::log(c, "grid_nudge_reset", json!({"track_id": track_id, "why": "re-analysis moved the beat grid"}), None)?;

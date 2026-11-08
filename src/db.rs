@@ -86,7 +86,10 @@ pub fn conn() -> MutexGuard<'static, Connection> {
                             ("mood_emb", "BLOB"),
                             ("edited", "TEXT"), ("lufs", "REAL"), ("lead_s", "REAL"), ("tail_s", "REAL"),
                             // mix_in_ms / mix_out_ms: where the DJ mixes this track in and out; NULL = the analysed points.
-                            ("mix_in_ms", "REAL"), ("mix_out_ms", "REAL")] {
+                            ("mix_in_ms", "REAL"), ("mix_out_ms", "REAL"),
+                            // intent: how the DJ will use the track (mix | vocal | remix | section | backup), which decides what
+                            // is prepared for it; grid_ok_at: when the DJ confirmed the beat grid by ear.
+                            ("intent", "TEXT DEFAULT 'mix'"), ("grid_ok_at", "REAL")] {
             let has: bool = c.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name=?").unwrap()
                 .exists([col]).unwrap();
             if !has {
@@ -182,7 +185,8 @@ pub fn marks(n: usize) -> String {
 
 const TRACK_EDITABLE: &[&str] = &["title", "artist", "album", "genre", "comment", "year", "rating", "color", "bpm", "musical_key",
                                     "grid_offset_ms", "downbeat_shift", "key_shift", "mood", "mood_manual", "camelot", "energy", "edited",
-                                    "mix_in_ms", "mix_out_ms"];
+                                    "mix_in_ms", "mix_out_ms", "intent", "grid_ok_at"];
+pub const INTENTS: &[&str] = &["mix", "vocal", "remix", "section", "backup"];
 
 /// The deck's key shift range, semitones either way (deck-stretch DS_MAX_SHIFT).
 pub const MAX_KEY_SHIFT: i64 = 12;
@@ -194,6 +198,11 @@ pub fn update_track(id: i64, fields: &Row) -> Result<()> {
         let n = v.as_i64().filter(|n| n.abs() <= MAX_KEY_SHIFT)
             .ok_or_else(|| anyhow::anyhow!("Key shift is a whole number of semitones between -{MAX_KEY_SHIFT} and +{MAX_KEY_SHIFT}"))?;
         fields.insert("key_shift".into(), json!(n));
+    }
+    if let Some(v) = fields.get("intent") {
+        if !v.as_str().is_some_and(|s| INTENTS.contains(&s)) {
+            return Err(anyhow::anyhow!("Intent is one of {}", INTENTS.join(", ")));
+        }
     }
     let fields: Vec<(&String, &Value)> = fields.iter().filter(|(k, _)| TRACK_EDITABLE.contains(&k.as_str())).collect();
     if fields.is_empty() {

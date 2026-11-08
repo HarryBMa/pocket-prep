@@ -143,3 +143,10 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   `IN 0:16 · OUT 5:12` pill in the tool row jumps there, `I` / `O` set them at the playhead (beat-snapped), the
   refresh glyph goes back to the analysed ones. Saved per track, undoable, written to POCKETDECK/analysis as
   `mix_in_ms` / `mix_out_ms` and named in the dry run.
+- **Intent and readiness** (0.6): each track has an intent (Mix · Vocal layer · Remix · Section · Backup: the select
+  in the open track, "Prepare as" in the row menu, "Prepare…" on a selection) that decides what gets made and what
+  "ready" means. `POST /api/prepare` queues analysis, the stems the intents ask for (sections first) and deck
+  copies; "Prepare everything" sits in the jobs drawer. The Ready column is one ring per track: plays on the deck ·
+  analysed · grid confirmed (✓ in the grid pill, or a nudge) · hot cues · stems (only for intents that want them)
+  · loudness · on the card (from the plan). Green = done, grey = to do, red = blocked, coral = running; the
+  tooltip lists what's missing. The stems and card glyph columns are gone: the ring carries them.
