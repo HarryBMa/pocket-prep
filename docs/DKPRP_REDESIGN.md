@@ -150,3 +150,8 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   analysed · grid confirmed (✓ in the grid pill, or a nudge) · hot cues · stems (only for intents that want them)
   · loudness · on the card (from the plan). Green = done, grey = to do, red = blocked, coral = running; the
   tooltip lists what's missing. The stems and card glyph columns are gone: the ring carries them.
+- **Right-click menu** (0.6): on a row (a selected row acts for the whole selection), via the row's ⋮, Shift+F10
+  or the menu key, and in the open track's ⋮: Open, Mixes with this, Prepare as (the intent, ticked), Re-analyse,
+  Make stems, Convert for the deck, Confirm the beat grid, Add to playlist (counts), New playlist with these, Remove
+  from the playlist, Remove from library. Playlists get their own: Open, Add the selected, Export only this
+  playlist, New playlist in this folder, Rename, Delete. Grouped, with glyphs and key hints, in the app's style.

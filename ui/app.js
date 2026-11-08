@@ -162,8 +162,8 @@ async function loadPlaylists() {
       if (p.is_folder) { if (open) { state.open.delete(p.id); state.openFolderTarget = null; } else { state.open.add(p.id); state.openFolderTarget = p.id; } loadPlaylists(); }
       else selectPlaylist(p.id);
     });
-    btn.addEventListener("contextmenu", (e) => { e.preventDefault(); playlistMenu(p); });
-    btn.addEventListener("keydown", (e) => { if (e.key === "F2" || (e.shiftKey && e.key === "F10")) { e.preventDefault(); playlistMenu(p); } });
+    btn.addEventListener("contextmenu", (e) => { e.preventDefault(); playlistMenu(p, e); });
+    btn.addEventListener("keydown", (e) => { if (e.key === "F2" || (e.shiftKey && e.key === "F10")) { e.preventDefault(); playlistMenu(p, btn); } });
     if (!p.is_folder) dropTarget(btn, (ids) => addToPlaylist(p.id, ids));
     if (!p.is_folder) return btn;
     return h("div", { class: "folder" + (open ? " open" : "") }, btn, h("div", { class: "children" }, build(p.id)));
@@ -173,14 +173,22 @@ async function loadPlaylists() {
   $("#allTracks").classList.toggle("active", state.playlist === 0);
   $("#plCurrent").textContent = state.playlists.find((p) => p.id === state.playlist)?.name || "";   // the button names the open playlist
 }
-async function playlistMenu(p) {
-  const name = await ask(`Rename "${p.name}" (leave empty to delete)`, p.name, "Save");
-  if (name === null) return;
-  if (name === "") {
-    await api(`/api/playlists/${p.id}`, { method: "DELETE" });
-    toast(`Deleted ${p.is_folder ? "folder" : "playlist"} "${p.name}"`);
-    if (state.playlist === p.id) selectPlaylist(0); else loadPlaylists();
-  } else { await api(`/api/playlists/${p.id}`, { method: "PATCH", body: { name } }); loadPlaylists(); }
+function playlistMenu(p, at) {
+  const kind = p.is_folder ? "folder" : "playlist";
+  openMenu(at, [
+    !p.is_folder ? { icon: "library", label: "Open", run: () => selectPlaylist(p.id) } : null,
+    !p.is_folder && state.selected.size ? { icon: "plus", label: `Add the ${plural(state.selected.size, "selected track")}`, run: () => addToPlaylist(p.id, [...state.selected]).catch(fail) } : null,
+    !p.is_folder ? { icon: "card", label: "Export only this playlist", title: "Sets the card's scope to this playlist", run: () => {
+      setCardOpen(true); $('input[name=scope][value="playlists"]').checked = true; $("#exportPlaylists").hidden = false;
+      $$("#exportPlaylists input").forEach((i) => { i.checked = +i.value === p.id; }); updatePlan(); } } : null,
+    p.is_folder ? { icon: "plus", label: "New playlist in this folder", run: () => { state.openFolderTarget = p.id; state.open.add(p.id); newPlaylist(false).catch(fail); } } : null,
+    "-",
+    { icon: "pencil", label: "Rename…", hint: "F2", run: async () => { const name = await ask(`Rename "${p.name}"`, p.name, "Save"); if (name) { await api(`/api/playlists/${p.id}`, { method: "PATCH", body: { name } }); loadPlaylists(); } } },
+    { icon: "x", label: `Delete ${kind}`, danger: true, title: "Tracks stay in the library", run: async () => {
+      await api(`/api/playlists/${p.id}`, { method: "DELETE" });
+      toast(`Deleted ${kind} “${p.name}”`);
+      if (state.playlist === p.id) selectPlaylist(0); else loadPlaylists(); } },
+  ]);
 }
 async function newPlaylist(isFolder) {
   const inFolder = state.playlists.find((p) => p.id === state.openFolderTarget);
@@ -392,6 +400,7 @@ function renderTracks() {
       if (cell && alone) { clearTimeout(state.editT); state.editT = setTimeout(() => beginEdit(t.id, cell.dataset.edit), 260); }
     });
     tr.addEventListener("dblclick", (e) => { clearTimeout(state.editT); if (!e.target.closest("input")) openFocus(t.id); });
+    tr.addEventListener("contextmenu", (e) => { if (e.target.closest("input")) return; e.preventDefault(); clearTimeout(state.editT); rowMenu(e, t); });
     tr.addEventListener("dragstart", (e) => {
       if (!state.selected.has(t.id)) { state.selected = new Set([t.id]); renderTracks(); }
       e.dataTransfer.setData("application/x-tracks", JSON.stringify([...state.selected]));
@@ -443,16 +452,30 @@ $("#sortSel").addEventListener("change", () => {
 });
 
 // ── Small menus (row and panel "⋮") ─────────────────────────────────────────
-function openMenu(anchor, items) {
+// Items: { label, run, icon?, hint? (right-hand text, e.g. a key), checked? (a tick, for a choice), danger? },
+// "-" for a line, { head } for a group title. `at` is a button (the menu hangs under it) or a pointer event
+// (the menu opens at the pointer, as a right-click menu does).
+function openMenu(at, items) {
   const m = $("#menu");
-  fill(m, items.filter(Boolean).map((it) => it === "-" ? h("hr") :
-    h("button", { role: "menuitem", class: it.danger ? "danger-item" : "", onclick: () => { closeMenu(); it.run(); } }, it.label)));
+  fill(m, items.filter(Boolean).map((it) => it === "-" ? h("hr") : it.head ? h("div", { class: "menu-head" }, it.head) :
+    h("button", { role: it.checked != null ? "menuitemradio" : "menuitem", "aria-checked": it.checked != null ? String(!!it.checked) : null,
+                  class: (it.danger ? "danger-item" : "") + (it.checked ? " checked" : ""), disabled: it.disabled ? true : null, title: it.title || null,
+                  onclick: () => { closeMenu(); it.run(); } },
+      h("span", { class: "mi-ic" }, it.icon ? icon(it.icon, "ic sm") : null), h("span", { class: "mi-label" }, it.label),
+      it.hint ? h("kbd", {}, it.hint) : null, it.checked ? icon("check", "ic sm mi-check") : null)));
   m.hidden = false;
-  const r = anchor.getBoundingClientRect(), mw = m.offsetWidth, mh = m.offsetHeight;
-  m.style.left = `${Math.max(8, Math.min(innerWidth - mw - 8, r.right - mw))}px`;
-  m.style.top = `${r.bottom + mh + 8 > innerHeight ? r.top - mh - 4 : r.bottom + 4}px`;
-  m.querySelector("button")?.focus();
-  state.menuFrom = anchor;
+  const mw = m.offsetWidth, mh = m.offsetHeight;
+  if (at instanceof Event || at?.clientX != null) {
+    m.style.left = `${Math.max(8, Math.min(innerWidth - mw - 8, at.clientX))}px`;
+    m.style.top = `${Math.max(8, Math.min(innerHeight - mh - 8, at.clientY))}px`;
+    state.menuFrom = at.target?.closest?.("tr, button, .wstack") || null;
+  } else {
+    const r = at.getBoundingClientRect();
+    m.style.left = `${Math.max(8, Math.min(innerWidth - mw - 8, r.right - mw))}px`;
+    m.style.top = `${r.bottom + mh + 8 > innerHeight ? r.top - mh - 4 : r.bottom + 4}px`;
+    state.menuFrom = at;
+  }
+  m.querySelector("button:not([disabled])")?.focus();
 }
 function closeMenu() { const m = $("#menu"); if (!m.hidden) { m.hidden = true; state.menuFrom?.focus?.(); } }
 addEventListener("mousedown", (e) => { if (!$("#menu").hidden && !$("#menu").contains(e.target)) closeMenu(); });
@@ -489,23 +512,42 @@ async function removeDeckCopy(ids) {
     if (state.current && ids.includes(state.current.id)) openTrack(state.current.id);
   } catch (e) { fail(e); }
 }
-function trackMenuItems(t) {
-  const ids = [t.id];
+// The track menu (right-click, the row's ⋮, the open track's ⋮). On a selected row it acts on the whole selection.
+function trackMenuItems(t, ids = [t.id]) {
+  const many = ids.length > 1, sel = ids.map((id) => state.tracks.find((x) => x.id === id) || t);
+  const n = (s) => (many ? ` ${ids.length} ${s}` : "");
+  const unplayable = sel.filter((x) => x.deck_problem).map((x) => x.id), copies = sel.filter((x) => x.deck_copy).map((x) => x.id);
+  const noStems = sel.filter((x) => !["done", "running", "queued"].includes(x.stems)).map((x) => x.id);
+  const intents = new Set(sel.map((x) => x.intent || "mix"));
+  const lists = state.playlists.filter((p) => !p.is_folder);
+  const inList = state.playlist ? lists.find((p) => p.id === state.playlist) : null;
   return [
-    t.deck_problem ? { label: "Convert for the deck", run: () => convertForDeck(ids) } : null,
-    t.deck_copy ? { label: "Use the original for the deck", run: () => removeDeckCopy(ids) } : null,
-    { label: t.analysed_at ? "Re-analyse" : "Analyse", run: () => api("/api/analyse", { body: { ids } }).then(() => { toast("Analysing"); pollJobs(); }).catch(fail) },
-    t.stems !== "done" && t.stems !== "running" && t.stems !== "queued" ? { label: "Make stems", run: () => api("/api/stems", { body: { ids } }).then(() => { toast("Making stems"); loadTracks(); pollJobs(); }).catch(fail) } : null,
-    ...state.playlists.filter((p) => !p.is_folder).slice(0, 8).map((p) => ({ label: `Add to "${p.name}"`, run: () => addToPlaylist(p.id, ids).catch(fail) })),
+    !many ? { icon: "play", label: state.current?.id === t.id && state.focus ? "Playing" : "Open", hint: "↵", run: () => openFocus(t.id) } : null,
+    !many && t.analysed_at ? { icon: "shuffle", label: "Mixes with this", title: "Show the tracks in a compatible key within 6 % of its tempo", run: () => { state.mixBase = t.id; $('#filters [data-filter="mixes"]').click(); } } : null,
+    { head: many ? `Prepare ${ids.length} as` : "Prepare as" },
+    ...INTENTS.map(([id, label, about]) => ({ label, title: about, checked: intents.size === 1 && intents.has(id), run: () => setIntent(ids, id) })),
     "-",
-    ...INTENTS.filter((i) => i[0] !== (t.intent || "mix")).map(([id, label]) => ({ label: `Prepare as: ${label}`, run: () => setIntent(ids, id) })),
+    { icon: "refresh", label: (sel.every((x) => x.analysed_at) ? "Re-analyse" : "Analyse") + n("tracks"), run: () => api("/api/analyse", { body: { ids } }).then(() => { toast(`Analysing${n("tracks") || ""}`); pollJobs(); }).catch(fail) },
+    noStems.length ? { icon: "deck", label: "Make stems" + n(""), run: () => api("/api/stems", { body: { ids: noStems } }).then(() => { toast("Making stems"); loadTracks(); pollJobs(); }).catch(fail) } : null,
+    unplayable.length ? { icon: "card", label: `Convert${many ? " " + unplayable.length : ""} for the deck`, title: "A 16-bit FLAC copy the deck can play; the original stays", run: () => convertForDeck(unplayable) } : null,
+    copies.length ? { icon: "card", label: "Use the original for the deck", run: () => removeDeckCopy(copies) } : null,
+    !many && t.analysed_at ? { icon: "check", label: t.grid_ok_at ? "Beat grid confirmed" : "Confirm the beat grid", checked: !!t.grid_ok_at, title: "You listened and the grid is right",
+      run: () => api(`/api/tracks/${t.id}`, { method: "PATCH", body: { grid_ok_at: t.grid_ok_at ? null : Date.now() / 1000 } }).then((r) => { toast(t.grid_ok_at ? "Beat grid unconfirmed" : "Beat grid confirmed", r.undo); loadTracks(); if (state.current?.id === t.id) openTrack(t.id); }).catch(fail) } : null,
+    lists.length ? { head: "Add to playlist" } : null,
+    ...lists.slice(0, 8).map((p) => ({ icon: "list", label: p.name, hint: String(p.count), run: () => addToPlaylist(p.id, ids).catch(fail) })),
+    { icon: "plus", label: "New playlist with " + (many ? `these ${ids.length}` : "this track"), run: () => { state.selected = new Set(ids); newPlaylist(false).catch(fail); } },
+    inList ? { icon: "x", label: `Remove from “${inList.name}”`, run: async () => {
+      const keep = state.tracks.map((x) => x.id).filter((x) => !ids.includes(x));
+      const r = await api(`/api/playlists/${state.playlist}/tracks`, { method: "PUT", body: { track_ids: keep } });
+      toast(`Removed ${ids.length} from ${inList.name}`, r.undo); state.selected.clear(); loadTracks(); loadPlaylists(); } } : null,
     "-",
-    { label: "Remove from library", danger: true, run: () => { state.selected = new Set(ids); removeSelected().catch(fail); } },
+    { icon: "x", label: "Remove from library" + n(""), hint: "Del", danger: true, title: "The files stay on disk", run: () => { state.selected = new Set(ids); removeSelected().catch(fail); } },
   ];
 }
-function rowMenu(btn, t) {
+// The row's ⋮ or a right-click: a selected row acts for the whole selection, any other row for itself.
+function rowMenu(at, t) {
   if (!state.selected.has(t.id)) { state.selected = new Set([t.id]); state.anchor = t.id; renderTracks(); }
-  openMenu(btn, trackMenuItems(t));
+  openMenu(at, trackMenuItems(t, state.selected.has(t.id) && state.selected.size > 1 ? [...state.selected] : [t.id]));
 }
 function clickRow(e, id, vi) {
   const view = state.view;
@@ -527,6 +569,7 @@ function clickRow(e, id, vi) {
 $("#tracks tbody").addEventListener("keydown", (e) => {
   if (e.target.closest("input, select")) return;
   if (e.key === "F2") { const id = +document.activeElement?.dataset?.id; if (id) { e.preventDefault(); beginEdit(id, "title"); } return; }
+  if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) { const id = +document.activeElement?.dataset?.id, t = state.tracks.find((x) => x.id === id); if (t) { e.preventDefault(); rowMenu(document.activeElement, t); } return; }
   if (!["ArrowDown", "ArrowUp", "Enter", "Home", "End"].includes(e.key) || !state.view.length) return;
   e.preventDefault();
   const view = state.view, cur = view.findIndex((t) => t.id === +document.activeElement?.dataset?.id);
@@ -953,7 +996,7 @@ function renderDetail() {
         t.lufs != null ? h("span", { class: "muted", title: `${t.lufs.toFixed(1)} LUFS. The export writes ${fmtGain(t)} for the deck (target ${state.settings?.target_lufs ?? -9} LUFS).` }, `${t.lufs.toFixed(1)} LUFS`) : null,
         h("span", { class: "muted", title: "Length" }, fmtTime(t.duration))),
       h("button", { class: "tb", "aria-label": "Track actions", title: "Actions",
-        onclick: (e) => openMenu(e.currentTarget, [...trackMenuItems(t), { label: "Close track", run: closeDetail }]) }, icon("more"))),
+        onclick: (e) => openMenu(e.currentTarget, [...trackMenuItems(t), { icon: "arrow-left", label: "Close track", hint: "Esc", run: closeDetail }]) }, icon("more"))),
     lines.length ? h("div", { class: "tp-lines" }, lines) : null,
     h("section", { "aria-label": "Waveforms", class: "tp-waves" }, waveStack),
     t.sections?.length ? h("div", { class: "phrases", role: "group", "aria-label": "Sections and phrases" }, t.sections.map((s) => h("button", { class: "phrase", style: `flex:${Math.max(1, s.end_ms - s.start_ms)} 1 0`,
