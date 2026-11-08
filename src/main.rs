@@ -23,6 +23,7 @@ mod mood;
 mod quality;
 mod server;
 mod stems;
+mod transitions;
 #[cfg(test)]
 mod testaudio;
 

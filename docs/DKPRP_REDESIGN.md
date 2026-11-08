@@ -162,3 +162,10 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   that range only: `POST /api/stems {ids, range_ms}` separates the range with 10 s of context each side and writes
   a whole-length stems file with silence outside (`tracks.stems_range`, `stems_range` in the hints). Stems that
   exist for the same range or the whole track are never made twice. Esc clears the selection before it closes the track.
+- **Stem quality** (0.6): every separation is graded from its own output (`quality.rs`: clipping per stem, the
+  reconstruction residual, vocal bleed from ClubCraft's vocal map). Poor stems turn the ring's stems segment red;
+  the open track shows the notes with *Redo*. The card's hints carry the grade.
+- **What follows** (0.6): "Mixes with this" ranks the library as the next track after the chosen one
+  (`transitions.rs`): tempo, key with the deck's shift, energy, level after gain, phrase lines, and vocal / bass
+  clashes inside the planner's transition window. The Ready column becomes a match pill (0-100); its click lists
+  the reasons, ✓ or !. Only tracks that work are shown, best first.

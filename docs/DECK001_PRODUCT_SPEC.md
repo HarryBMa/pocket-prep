@@ -38,7 +38,7 @@ Measured against the brief, so the gaps are honest. "✓" means built and tested
 | | Clipping detection, bitrate validation | ✗ | cheap to add in the loudness pass |
 | | Playlists, folders, tags (artist, album, genre, year, comment, colour, rating) | ✓ | |
 | | Smart playlists | ✗ | |
-| | Mixes-with filter (key ±1 on the wheel or relative, tempo ±6 %) | ✓ | |
+| | What follows: transitions scored with reasons (tempo, key, energy, level, phrase lines, clashes) | ✓ | 0.6: `transitions.rs`, `POST /api/transitions` |
 | Stems | 4-stem htdemucs, 8-channel FLAC, DirectML / CoreML / CPU, per-track | ✓ | |
 | | Section-only separation, stem quality grade | ✓ | 0.6: range stems with context; `quality.rs` grades every run |
 | | Vocal-only separation | ✗ | |
@@ -82,8 +82,14 @@ The output is **a transition window** ("mix out of A at bar 97, into B at bar 17
 shift 0"), not a number. The verdict lines explain it. ClubCraft `planner::choose_transition_beats`
 and `mashup::score` cover the first six rows; drums/vocals/frequency need stems on both tracks.
 
-**Suggestions (P1).** "Mixes with" grows from a filter into a ranked list with the window and the
-reasons. Same code, shown in the card column when one track is selected.
+**Suggestions (done, 0.6).** `transitions.rs` scores every analysed track as the next one after the
+chosen track: tempo (ratio, half / double time allowed; sync covers 6 %), key (Camelot rules with the
+deck's key shift), energy step, level after the export's gain, whether both mix points sit on 8-bar
+phrase lines, and clashes inside the transition window (vocals over vocals, bass over bass) from the
+sections' stem activity (analysis version 6). The window comes from `planner::choose_transition_beats`.
+`POST /api/transitions {from}` returns them best first with the reasons; "Mixes with this" in the row
+menu (or the filter glyph with one track selected) shows the ones that work, ranked, with a match
+pill (0-100) in place of the readiness ring whose click lists the reasons.
 
 ### Q2: What can I do creatively with it?
 
@@ -206,7 +212,7 @@ Nothing needs a network at any point; the models ship with the app or are fetche
 | P0 | Readiness ring (with grid OK, on the card) | **done (0.6)**: one ring per row, `grid_ok_at` |
 | P0 | Sections: select, preview, separate a range, save | **done (0.6)**: phrase-snapped selection, chips, loop, save as loop, range stems with context, no repeats |
 | P1 | Stem quality grade | **done (0.6)**: `quality.rs`, ring + open-track note, Redo |
-| P1 | Transition window + reasons, suggestions list | "mixes with" done properly |
+| P1 | Transition window + reasons, suggestions list | **done (0.6)**: `transitions.rs`, match pill with reasons |
 | P1 | Card validation after export | find it at home |
 | P1 | Sets with order, energy curve, `set.json` | the planning layer |
 | P1 | Performance simulation (the set-level dry run) | |

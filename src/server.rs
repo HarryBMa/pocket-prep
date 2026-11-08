@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 use crate::db::{self, Row};
 use crate::export::usb;
-use crate::{analysis, config, convert, deck, jobs, library, models, mood, stems};
+use crate::{analysis, config, convert, deck, jobs, library, models, mood, stems, transitions};
 
 pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -348,6 +348,21 @@ async fn make_stems(Json(b): Json<Value>) -> R {
     }).await
 }
 
+/// What follows `from` well: every analysed track (or `to`) scored as the next track, best first,
+/// with the reasons (transitions.rs). Keyed by track id for the list's "mixes with" filter.
+async fn transitions_from(Json(b): Json<Value>) -> R {
+    blocking(move || {
+        let from_id = b["from"].as_i64().ok_or_else(|| anyhow::anyhow!("from is required"))?;
+        let only = ids(&b, "to");
+        let rows = db::query(&format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE deleted=0"), &[])?;
+        let from = rows.iter().find(|r| r["id"] == json!(from_id)).and_then(transitions::side).ok_or_else(|| anyhow::anyhow!("That track isn't analysed yet"))?;
+        let mut results: Vec<Value> = rows.iter().filter(|r| r["id"] != json!(from_id) && (only.is_empty() || r["id"].as_i64().is_some_and(|i| only.contains(&i))))
+            .filter_map(transitions::side).map(|to| transitions::score(&from, &to)).collect();
+        results.sort_by(|a, b| b["score"].as_f64().unwrap_or(0.0).total_cmp(&a["score"].as_f64().unwrap_or(0.0)));
+        Ok(json!({"from": from_id, "results": results}))
+    }).await
+}
+
 /// Prepare everything the intents ask for, for the given tracks (or the whole library): analysis where
 /// missing, stems where the intent wants them, a deck copy where the file won't play. Nothing is redone.
 async fn prepare(Json(b): Json<Value>) -> R {
@@ -579,6 +594,7 @@ pub fn router() -> Router {
         .route("/api/convert", post(convert_tracks))
         .route("/api/stems", post(make_stems))
         .route("/api/prepare", post(prepare))
+        .route("/api/transitions", post(transitions_from))
         .route("/api/playlists", get(get_playlists).post(new_playlist))
         .route("/api/playlists/{pid}", axum::routing::patch(rename_playlist).delete(remove_playlist))
         .route("/api/playlists/{pid}/tracks", put(order_playlist))

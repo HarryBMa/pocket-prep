@@ -294,6 +294,11 @@ td.lufs { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 12
 .key b { font-weight: 600; } .key span { color: var(--ink-3); margin-left: 4px; font-weight: 400; }
 .key .shift-tag { font-size: 11px; margin-left: 4px; }
 /* Energy: five bars, the number on hover */
+/* Match pill: the transition score after the "mixes with" track; reasons open on click. */
+.match { font: 600 11px/1 var(--font); min-width: 26px; height: 20px; padding: 0 6px; border-radius: 10px; border: 1px solid var(--line-strong); background: transparent; color: var(--ink-2); cursor: pointer; }
+.match.good { color: var(--ok); border-color: var(--ok); }
+.match.ok { color: var(--ink); }
+.match:hover { background: var(--surface-2); }
 .ebars { display: inline-flex; gap: 2px; align-items: flex-end; height: 14px; }
 .ebars i { width: 3px; border-radius: 1px; background: var(--ink-2); }
 .ebars i.off { background: var(--line); }

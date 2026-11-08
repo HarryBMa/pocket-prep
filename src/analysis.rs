@@ -27,8 +27,8 @@ use crate::{config, db, mood, stems};
 
 const COLS_PER_S: f64 = 150.0;
 /// Bump when results change; older analyses are redone at startup (3 = ClubCraft + phrase cues,
-/// 4 = mood features, 5 = mix-in / mix-out points).
-pub const VERSION: i64 = 5;
+/// 4 = mood features, 5 = mix-in / mix-out points, 6 = stem activity per section for the transition check).
+pub const VERSION: i64 = 6;
 
 pub fn load_analysis(track_id: i64) -> Option<Value> {
     let text = std::fs::read_to_string(config::analysis_dir().join(format!("{track_id}.json"))).ok()?;
@@ -382,7 +382,9 @@ pub fn analyse_audio(audio: &AudioBuffer, stems: Option<&StemsRef>, bpm_range: (
         "mix_in_ms": ms(clubcraft_core::planner::default_mix_in(&r)),
         "mix_out_ms": ms(clubcraft_core::planner::default_mix_out(&r)),
         "sections": r.sections.iter().map(|s| json!({
-            "kind": s.kind.label(), "start_ms": ms(s.start), "end_ms": ms(s.end), "bars": s.bars, "energy": s.energy})).collect::<Vec<_>>(),
+            "kind": s.kind.label(), "start_ms": ms(s.start), "end_ms": ms(s.end), "bars": s.bars, "energy": s.energy,
+            // Mean activity of drums, bass, other, vocals (0-1): the transition check reads clashes from it.
+            "stems": s.stems})).collect::<Vec<_>>(),
         // Auto cues: slot 1-4 = hot cue A-D.
         "auto_cues": auto_cues(&r.sections, &g).iter().map(|&(slot, t, label)| json!({
             "slot": slot, "start_ms": ms(t), "label": label})).collect::<Vec<_>>(),

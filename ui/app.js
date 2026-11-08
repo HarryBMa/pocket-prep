@@ -230,18 +230,29 @@ const FILTERS = {
   attention: (t) => issues(t).length > 0,
   mixes: (t) => mixesWith(t),
 };
-// Mixing partners of the track picked when "Mixes with selected" was chosen: the same key, one step either way on the
-// Camelot wheel, or the other mode of the same number (relative major/minor), and a tempo within 6 %.
+// What follows the track picked for "Mixes with": the server scores every analysed track as the next one (tempo,
+// key with the deck's shift, energy, level after gain, phrase lines, vocal / bass clashes in the transition window)
+// and the list keeps the ones that work, best first, with the reasons on the match pill.
 function mixesWith(t) {
+  const m = state.trans?.from === state.mixBase ? state.trans.map.get(t.id) : null;
+  return !!m && m.verdict !== "no";
+}
+async function loadTransitions(from) {
+  if (state.trans?.from === from && Date.now() - state.trans.at < 30000) return;
+  try {
+    const r = await api("/api/transitions", { body: { from } });
+    state.trans = { from, at: Date.now(), map: new Map(r.results.map((x) => [x.id, x])) };
+    if (state.filter === "mixes") renderTracks();
+  } catch (e) { fail(e); }
+}
+function matchCell(t) {
+  const m = state.trans?.map.get(t.id);
+  if (!m) return "";
   const base = state.tracks.find((x) => x.id === state.mixBase);
-  if (!base || base.id === t.id) return false;
-  const code = (x) => /^(\d+)([AB])$/.exec(x.shifted_camelot || x.camelot || "");
-  const [a, b] = [code(base), code(t)];
-  if (!a || !b) return false;
-  const d = Math.abs(+a[1] - +b[1]), step = Math.min(d, 12 - d);
-  const keyOk = a[2] === b[2] ? step <= 1 : step === 0;
-  const tempo = (x) => (x.bpm || 0) * 1;
-  return keyOk && tempo(base) > 0 && tempo(t) > 0 && Math.abs(tempo(t) / tempo(base) - 1) <= 0.06;
+  const show = (at) => openMenu(at, [{ head: `After ${base?.title || "the track"} · ${m.beats / 4}-bar window` },
+    ...m.reasons.map((r) => ({ icon: r.ok ? "check" : "alert", label: r.text, run: () => {} }))]);
+  return h("button", { class: `match ${m.verdict}`, title: m.reasons.map((r) => (r.ok ? "✓ " : "! ") + r.text).join("\n"),
+    "aria-label": `Match ${m.score} of 100: ${m.reasons.map((r) => r.text).join(". ")}`, onclick: (e) => { e.stopPropagation(); show(e.currentTarget); } }, String(m.score));
 }
 // Tracks that look like the same song twice (same artist and title, ignoring case, spaces and "(Original Mix)").
 function findDuplicates() {
@@ -267,6 +278,7 @@ function issues(t) {
 }
 function visibleTracks() {
   const list = state.tracks.map((t, i) => ({ t, i })).filter(({ t }) => FILTERS[state.filter](t));
+  if (state.filter === "mixes" && !state.sort && state.trans) list.sort((a, b) => (state.trans.map.get(b.t.id)?.score || 0) - (state.trans.map.get(a.t.id)?.score || 0));
   if (state.sort) {
     const { key, dir } = state.sort;
     const val = (x) => key === "index" ? x.i : key === "mood" ? moodRank(x.t.mood) : x.t[key];
@@ -395,7 +407,7 @@ function renderTracks() {
       h("td", { class: "c-energy" + (wasEdited(t, "energy") ? " edited" : ""), "data-edit": "energy" }, energyBars(t.energy)),
       h("td", { class: "num lufs c-lufs", title: t.lufs != null ? `${t.lufs.toFixed(1)} LUFS. The export writes ${fmtGain(t)} for the deck (target ${state.settings?.target_lufs ?? -9} LUFS).` : null },
         t.lufs != null ? t.lufs.toFixed(1) : ""),
-      h("td", { class: "c-an" }, readinessCell(t)),
+      h("td", { class: "c-an" }, state.filter === "mixes" ? matchCell(t) : readinessCell(t)),
       h("td", { class: "c-menu" }, h("button", { class: "row-menu", "aria-label": `Actions for ${t.title || "track"}`, title: "Actions",
         onclick: (e) => { e.stopPropagation(); rowMenu(e.currentTarget, t); } }, icon("more", "ic sm"))));
     tr.addEventListener("click", (e) => {
@@ -448,7 +460,8 @@ function renderLibStatus() {
   const n = state.tracks.length, secs = state.tracks.reduce((a, t) => a + (t.duration || 0), 0);
   const pl = state.playlists.find((p) => p.id === state.playlist);
   $("#statusLib").textContent = !state.loaded ? "Loading library…"
-    : `${pl ? pl.name + " · " : ""}${plural(n, "track")} · ${fmtDur(secs)}` + (state.view.length !== n ? ` · ${state.view.length} shown` : "");
+    : `${pl ? pl.name + " · " : ""}${plural(n, "track")} · ${fmtDur(secs)}` + (state.view.length !== n ? ` · ${state.view.length} shown` : "")
+      + (state.filter === "mixes" && state.mixBase != null ? ` · what follows ${state.tracks.find((t) => t.id === state.mixBase)?.title || "the track"}` : "");
   const attn = state.tracks.filter((t) => issues(t).length).length;
   $("#attnCount").textContent = attn ? String(attn) : "";
 }
@@ -530,7 +543,7 @@ function trackMenuItems(t, ids = [t.id]) {
   const inList = state.playlist ? lists.find((p) => p.id === state.playlist) : null;
   return [
     !many ? { icon: "play", label: state.current?.id === t.id && state.focus ? "Playing" : "Open", hint: "↵", run: () => openFocus(t.id) } : null,
-    !many && t.analysed_at ? { icon: "shuffle", label: "Mixes with this", title: "Show the tracks in a compatible key within 6 % of its tempo", run: () => { state.mixBase = t.id; $('#filters [data-filter="mixes"]').click(); } } : null,
+    !many && t.analysed_at ? { icon: "shuffle", label: "Mixes with this", title: "Rank the library as the next track after this one, with the reasons", run: () => { state.mixBase = t.id; state.selected.clear(); $('#filters [data-filter="mixes"]').click(); } } : null,
     { head: many ? `Prepare ${ids.length} as` : "Prepare as" },
     ...INTENTS.map(([id, label, about]) => ({ label, title: about, checked: intents.size === 1 && intents.has(id), run: () => setIntent(ids, id) })),
     "-",
@@ -696,8 +709,10 @@ $$("#filters button").forEach((b) => b.addEventListener("click", () => {
     const one = state.selected.size === 1 ? state.tracks.find((t) => state.selected.has(t.id)) : null;
     if (!one && state.mixBase == null) return toast("Select one track first, then show what mixes with it");
     if (one) state.mixBase = one.id;
+    loadTransitions(state.mixBase);
     const base = state.tracks.find((t) => t.id === state.mixBase);
-    b.textContent = base ? `Mixes with ${(base.title || "track").slice(0, 22)}` : "Mixes with selected";
+    const label = base ? `What follows ${base.title || "this track"}` : "Mixes with the selected track";
+    b.title = label; b.setAttribute("aria-label", label);
   }
   state.filter = b.dataset.filter;
   $$("#filters button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
