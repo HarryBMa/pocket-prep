@@ -38,11 +38,16 @@ def list_tracks(tag, n, client_id, min_s=180, max_s=600):
     out, offset = [], 0
     while len(out) < n:
         d = api({"tags": tag, "limit": 200, "offset": offset, "durationbetween": f"{min_s}_{max_s}",
-                 "audiodlformat": "flac", "include": "licenses", "type": "albums+singles", "order": "popularity_total"},
+                 "audiodlformat": "flac", "include": "licenses", "type": "single+albumtrack", "order": "popularity_total"},
                 client_id)
         rows = d.get("results", [])
-        if not rows:
-            break
+        if not rows:                                   # the API sometimes returns an empty page: retry twice
+            empties = empties + 1 if "empties" in dir() else 1
+            if empties > 2:
+                break
+            time.sleep(3)
+            continue
+        empties = 0
         for t in rows:
             if t.get("audiodownload_allowed") and t.get("audiodownload"):
                 out.append(t)
@@ -113,9 +118,10 @@ def main():
         if not have:
             w.writerow(["id", "tag", "artist", "title", "duration_s", "license", "file", "status"])
         jobs = [(tag, t) for tag, t in seen.values()]
+        for tag in a.tags:
+            (out / tag).mkdir(exist_ok=True)
         with ThreadPoolExecutor(a.threads) as ex:
             for i, ((tag, t), (path, status)) in enumerate(zip(jobs, ex.map(lambda j: fetch(j[1], out / j[0]), jobs))):
-                (out / tag).mkdir(exist_ok=True)
                 if t["id"] not in have:
                     w.writerow([t["id"], tag, t["artist_name"], t["name"], t["duration"],
                                 t.get("license_ccurl", ""), str(path.relative_to(out)), status])
