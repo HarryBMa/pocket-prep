@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 use crate::db::{self, Row};
 use crate::export::usb;
-use crate::{analysis, config, convert, deck, jobs, library, models, mood, sets, stems, transitions};
+use crate::{analysis, config, convert, deck, jobs, library, models, mood, sets, stems, transitions, vocals};
 
 pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -31,7 +31,7 @@ struct Ui;
 pub const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
     rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
     mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s, mix_in_ms, mix_out_ms, intent, grid_ok_at, \
-    stems_range, stem_quality, (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
+    stems_range, stem_quality, clip_pct, first_vocal_ms, bitrate, sample_rate, (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -213,6 +213,8 @@ async fn get_track(P(tid): P<i64>) -> R {
         }
         // Phrase sections (intro, build, drop...) for the phrase strip under the waveform.
         t.insert("sections".into(), a.as_ref().map(|a| a["sections"].clone()).unwrap_or(json!([])));
+        // What the stems said about the singing (vocals.rs): first vocal and the sung phrases, or null.
+        t.insert("vocals".into(), vocals::load(tid).unwrap_or(Value::Null));
         // The grid as the deck will get it: the analysis grid plus the user's nudge.
         let a = a.map(|a| analysis::user_grid(&a, &t));
         t.insert("grid".into(), a.as_ref().map(|a| json!({
@@ -409,12 +411,22 @@ async fn get_playlists() -> R {
 }
 
 async fn new_playlist(Json(b): Json<Value>) -> R {
-    blocking(move || Ok(json!(library::create_playlist(b["name"].as_str().unwrap_or(""), b["parent_id"].as_i64().unwrap_or(0),
-                                                       b["is_folder"].as_bool().unwrap_or(false))?))).await
+    blocking(move || {
+        let p = library::create_playlist(b["name"].as_str().unwrap_or(""), b["parent_id"].as_i64().unwrap_or(0), b["is_folder"].as_bool().unwrap_or(false))?;
+        if b["rule"].is_object() {
+            library::set_playlist_rule(p["id"].as_i64().unwrap_or(0), Some(&b["rule"]))?;
+        }
+        Ok(json!(p))
+    }).await
 }
 
+/// Rename a playlist and / or set its rule (`rule: {...}` makes it smart, `rule: null` makes it ordinary again).
 async fn rename_playlist(P(pid): P<i64>, Json(b): Json<Value>) -> R {
-    blocking(move || { library::rename_playlist(pid, b["name"].as_str().unwrap_or(""))?; Ok(json!({"ok": true})) }).await
+    blocking(move || {
+        if let Some(name) = b["name"].as_str() { library::rename_playlist(pid, name)?; }
+        if b.get("rule").is_some() { library::set_playlist_rule(pid, b["rule"].as_object().map(|_| &b["rule"]))?; }
+        Ok(json!({"ok": true}))
+    }).await
 }
 
 async fn remove_playlist(P(pid): P<i64>) -> R {

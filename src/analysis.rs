@@ -60,9 +60,19 @@ pub fn quiet_edges(audio: &clubcraft_audio::decode::AudioBuffer) -> (f64, f64) {
     (first as f64 * 0.1, (n - 1 - last) as f64 * 0.1)
 }
 
-/// Loudness and the near-silent start and end for tracks analysed before they were measured (reads the files again).
+/// Share of samples at full scale (|x| >= 0.999), as a percentage: a mastering that clips crackles on a club system,
+/// and the deck's gain only makes it louder. 0.1 % is audible on peaks; 1 % is a brick.
+pub fn clip_pct(audio: &clubcraft_audio::decode::AudioBuffer) -> f64 {
+    let n = audio.left.len() + audio.right.len();
+    if n == 0 { return 0.0; }
+    let over = audio.left.iter().chain(&audio.right).filter(|x| x.abs() >= 0.999).count();
+    (over as f64 * 100.0 / n as f64 * 1000.0).round() / 1000.0
+}
+
+/// Loudness, the near-silent start and end, and clipping for tracks analysed before they were measured (reads the
+/// files again).
 pub fn backfill_levels(h: &crate::jobs::Handle) -> Result<Value> {
-    let ids: Vec<i64> = db::query("SELECT id FROM tracks WHERE deleted=0 AND analysed_at IS NOT NULL AND lead_s IS NULL ORDER BY id", &[])?
+    let ids: Vec<i64> = db::query("SELECT id FROM tracks WHERE deleted=0 AND analysed_at IS NOT NULL AND (lead_s IS NULL OR clip_pct IS NULL) ORDER BY id", &[])?
         .iter().filter_map(|r| r["id"].as_i64()).collect();
     let (mut done, mut failed) = (0, 0);
     for (i, id) in ids.iter().enumerate() {
@@ -75,7 +85,8 @@ pub fn backfill_levels(h: &crate::jobs::Handle) -> Result<Value> {
             let audio = clubcraft_audio::decode::decode_native(std::path::Path::new(t["path"].as_str().unwrap_or("")))?;
             let (lead, tail) = quiet_edges(&audio);
             let lufs = load_analysis(*id).and_then(|a| a["loudness_lufs"].as_f64());
-            db::tx(|c| Ok(c.execute("UPDATE tracks SET lufs=?, lead_s=?, tail_s=? WHERE id=?", params![lufs, lead, tail, id])?))?;
+            let clip = clip_pct(&audio);
+            db::tx(|c| Ok(c.execute("UPDATE tracks SET lufs=?, lead_s=?, tail_s=?, clip_pct=? WHERE id=?", params![lufs, lead, tail, clip, id])?))?;
             Ok(())
         })();
         match res { Ok(()) => done += 1, Err(e) => { failed += 1; eprintln!("levels for track {id}: {e:#}"); } }
@@ -432,6 +443,7 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
     let before = load_analysis(track_id);
     let mut a = analyse_audio(&audio, stems_ref.as_ref(), range);
     let (lead_s, tail_s) = quiet_edges(&audio);
+    let clip = clip_pct(&audio);
     // The mood embedding (Needle Tags) when the model is installed; without it the mood comes from the nine numbers.
     progress(0.8, "Mood model");
     let emb = crate::embed::available().then(|| crate::embed::embedding(&audio, &mut |_| true)
@@ -463,7 +475,7 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
                   params![a["bpm"].as_f64(), a["key"].as_str(), a["camelot"].as_str(), a["energy"].as_i64(),
                           a["duration_ms"].as_f64().map(|d| d / 1000.0), a["analysed_at"].as_f64(),
                           a["mood_features"].to_string(), emb, track_id])?;
-        c.execute("UPDATE tracks SET lufs=?, lead_s=?, tail_s=? WHERE id=?", params![a["loudness_lufs"].as_f64(), lead_s, tail_s, track_id])?;
+        c.execute("UPDATE tracks SET lufs=?, lead_s=?, tail_s=?, clip_pct=? WHERE id=?", params![a["loudness_lufs"].as_f64(), lead_s, tail_s, clip, track_id])?;
         mood::refresh(c)?;
         // Place automatic cues only if the user hasn't set any.
         let user: Option<i64> = c.query_row("SELECT 1 FROM cues WHERE track_id=? AND auto=0", [track_id], |r| r.get(0)).ok();
@@ -647,6 +659,18 @@ mod tests {
     fn section(kind: SectionKind, start_bar: i32, bars: u32, g: &clubcraft_core::BeatGrid) -> clubcraft_core::Section {
         clubcraft_core::Section { kind, start: g.time_of_bar(start_bar as f64), end: g.time_of_bar((start_bar + bars as i32) as f64),
                                   start_bar, bars, energy: 0.5, stems: [0.0; 4] }
+    }
+
+    /// Clipping is the share of samples at full scale: a clean tone has none, a tone pushed 6 dB over has most.
+    #[test]
+    fn clipping_share() {
+        let n = 44100;
+        let tone: Vec<f32> = (0..n).map(|i| (2.0 * std::f64::consts::PI * 440.0 * i as f64 / 44100.0).sin() as f32 * 0.5).collect();
+        let clean = clubcraft_audio::decode::AudioBuffer::new(44100, tone.clone(), tone.clone());
+        assert_eq!(clip_pct(&clean), 0.0);
+        let hot: Vec<f32> = tone.iter().map(|x| (x * 4.0).clamp(-1.0, 1.0)).collect();
+        let c = clip_pct(&clubcraft_audio::decode::AudioBuffer::new(44100, hot.clone(), hot));
+        assert!(c > 50.0, "{c}");
     }
 
     #[test]

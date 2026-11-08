@@ -178,3 +178,15 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   transition verdict (click: the reasons and the window), running time and the deck's load estimate. *Order by…*
   hands the tracks to ClubCraft's planner (balanced, by key, by tempo, rising energy; undoable). The export writes
   `POCKETDECK/sets/<playlist id>.json` for every playlist on the card: order, card paths, windows and verdicts.
+
+## 0.7: vocals, checks, smart playlists
+
+- **Vocals** (needs stems): after a whole-track separation the vocal map gives the first sung beat (a memory cue
+  "Vocal", `first_vocal_ms`) and the sung phrases (`vocals.rs`); the open track shows them as chips (Chorus 16,
+  Verse 8, with the quality on hover), the hints carry both.
+- **Checks**: `tracks.clip_pct` from the loudness pass; a track that clips 0.1 % or more, or a lossy file under
+  192 kbps, shows under Needs attention, in the open track and in the export's dry run.
+- **Smart playlists**: *Smart* in the playlists popover opens a rule editor (words, genre, tempo, energy, Camelot
+  keys after the key shift, moods, intents, with stems). The playlist (funnel glyph) fills itself from the rule
+  wherever a playlist is read: the list, the card's scope, sets, export. Right-click → *Edit rule…* or *Make
+  ordinary*. Tracks can't be dropped on or removed from it; the rule decides.

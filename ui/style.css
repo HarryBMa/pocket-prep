@@ -543,6 +543,11 @@ input[type=range] { accent-color: var(--accent); padding: 0; border: 0; backgrou
 .modal-box { background: var(--panel); border: 1px solid var(--line-strong); border-radius: 4px; padding: 16px 18px; width: min(460px, 92vw); box-shadow: var(--shadow); }
 .modal-box h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
 .modal-box input { width: 100%; }
+.rule-form { display: grid; gap: 8px; }
+.rule-form .rf { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
+.rule-form .pair { display: flex; align-items: center; gap: 6px; } .rule-form .pair input { width: 90px; }
+.rule-form select { width: 100%; font: inherit; background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 4px; padding: 4px; }
+.rule-form .chk { display: flex; align-items: center; gap: 6px; color: var(--ink); } .rule-form .chk input { width: auto; }
 .modal-box .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .toasts { position: fixed; bottom: calc(var(--bar-h) + 14px); left: 50%; transform: translateX(-50%); display: grid; gap: 6px; z-index: 40; }
 .toast { background: var(--ink); color: var(--panel); padding: 8px 12px; border-radius: var(--r); display: flex; gap: 14px; align-items: center; box-shadow: var(--shadow); font-size: 13px; }

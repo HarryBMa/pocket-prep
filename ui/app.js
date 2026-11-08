@@ -167,7 +167,7 @@ async function loadPlaylists() {
     const btn = h("button", { class: "nav-item" + (state.playlist === p.id ? " active" : ""), "data-playlist": p.id,
                               "aria-expanded": p.is_folder ? String(open) : null, title: "Right-click to rename or delete" },
       p.is_folder ? h("span", { class: "chev", "aria-hidden": "true" }, open ? "▾" : "▸") : null,
-      icon(p.is_folder ? "folder" : "list", "ic sm"),
+      icon(p.is_folder ? "folder" : p.rule ? "funnel" : "list", "ic sm"),
       h("span", { class: "nm" }, p.name), p.is_folder ? null : h("span", { class: "count" }, String(p.count)));
     btn.addEventListener("click", () => {
       if (p.is_folder) { if (open) { state.open.delete(p.id); state.openFolderTarget = null; } else { state.open.add(p.id); state.openFolderTarget = p.id; } loadPlaylists(); }
@@ -175,7 +175,8 @@ async function loadPlaylists() {
     });
     btn.addEventListener("contextmenu", (e) => { e.preventDefault(); playlistMenu(p, e); });
     btn.addEventListener("keydown", (e) => { if (e.key === "F2" || (e.shiftKey && e.key === "F10")) { e.preventDefault(); playlistMenu(p, btn); } });
-    if (!p.is_folder) dropTarget(btn, (ids) => addToPlaylist(p.id, ids));
+    if (!p.is_folder && !p.rule) dropTarget(btn, (ids) => addToPlaylist(p.id, ids));
+    if (p.rule) btn.title = `Smart playlist: ${ruleText(p.rule)}. Right-click to edit the rule`;
     if (!p.is_folder) return btn;
     return h("div", { class: "folder" + (open ? " open" : "") }, btn, h("div", { class: "children" }, build(p.id)));
   });
@@ -188,7 +189,8 @@ function playlistMenu(p, at) {
   const kind = p.is_folder ? "folder" : "playlist";
   openMenu(at, [
     !p.is_folder ? { icon: "library", label: "Open", run: () => selectPlaylist(p.id) } : null,
-    !p.is_folder && state.selected.size ? { icon: "plus", label: `Add the ${plural(state.selected.size, "selected track")}`, run: () => addToPlaylist(p.id, [...state.selected]).catch(fail) } : null,
+    p.rule ? { icon: "funnel", label: "Edit rule…", hint: ruleText(p.rule), run: () => editRule(p).catch(fail) } : null,
+    !p.is_folder && !p.rule && state.selected.size ? { icon: "plus", label: `Add the ${plural(state.selected.size, "selected track")}`, run: () => addToPlaylist(p.id, [...state.selected]).catch(fail) } : null,
     !p.is_folder ? { icon: "card", label: "Export only this playlist", title: "Sets the card's scope to this playlist", run: () => {
       setCardOpen(true); $('input[name=scope][value="playlists"]').checked = true; $("#exportPlaylists").hidden = false;
       $$("#exportPlaylists input").forEach((i) => { i.checked = +i.value === p.id; }); updatePlan(); } } : null,
@@ -212,6 +214,76 @@ async function newPlaylist(isFolder) {
 }
 $("#newPlaylist").addEventListener("click", () => newPlaylist(false).catch(fail));
 $("#newFolder").addEventListener("click", () => newPlaylist(true).catch(fail));
+$("#newSmart").addEventListener("click", () => editRule(null).catch(fail));
+
+// ── Smart playlists: a rule instead of a track list ──────────────────────────
+// The rule is JSON the server evaluates (library::smart_track_ids): text, bpm_min/max, energy_min/max, keys,
+// moods, intents, stems, genre. The editor is one form; the playlist shows what matches right now.
+function ruleText(r) {
+  if (!r) return "";
+  const parts = [];
+  if (r.bpm_min != null || r.bpm_max != null) parts.push(`${r.bpm_min ?? "…"}–${r.bpm_max ?? "…"} BPM`);
+  if (r.keys?.length) parts.push(r.keys.join(" "));
+  if (r.energy_min != null || r.energy_max != null) parts.push(`energy ${r.energy_min ?? 1}–${r.energy_max ?? 10}`);
+  if (r.moods?.length) parts.push(r.moods.map((m) => MOODS.find((x) => x.id === m)?.label || m).join(", "));
+  if (r.intents?.length) parts.push(r.intents.map((i) => INTENTS.find((x) => x[0] === i)?.[1] || i).join(", "));
+  if (r.stems) parts.push("with stems");
+  if (r.genre) parts.push(`genre ${r.genre}`);
+  if (r.text) parts.push(`“${r.text}”`);
+  return parts.join(" · ") || "everything";
+}
+async function editRule(p) {
+  const r = p?.rule || {};
+  const inFolder = !p && state.playlists.find((x) => x.id === state.openFolderTarget);
+  const field = (label, el) => h("label", { class: "rf" }, h("span", {}, label), el);
+  const num = (k, ph) => h("input", { type: "number", step: "any", value: r[k] ?? "", placeholder: ph, "aria-label": k });
+  const name = h("input", { value: p?.name || "", placeholder: "Name", "aria-label": "Name" });
+  const text = h("input", { value: r.text || "", placeholder: "Words in title, artist, album, genre, comment" });
+  const genre = h("input", { value: r.genre || "", placeholder: "Genre contains…" });
+  const keys = h("input", { value: (r.keys || []).join(" "), placeholder: "Camelot codes, e.g. 8A 9A 8B (after the key shift)" });
+  const [bmin, bmax, emin, emax] = [num("bpm_min", "min"), num("bpm_max", "max"), num("energy_min", "1"), num("energy_max", "10")];
+  const multi = (opts, chosen, label) => h("select", { multiple: true, size: String(Math.min(6, opts.length)), "aria-label": label },
+    opts.map(([v, l]) => h("option", { value: v, selected: chosen.includes(v) ? true : null }, l)));
+  const moods = multi(MOODS.map((m) => [m.id, m.label]), r.moods || [], "Moods");
+  const intents = multi(INTENTS.map((i) => [i[0], i[1]]), r.intents || [], "Intents");
+  const stems = h("input", { type: "checkbox", checked: r.stems ? true : null });
+  const form = h("div", { class: "rule-form" },
+    p ? null : field("Name", name),
+    field("Words", text), field("Genre", genre),
+    field("Tempo", h("div", { class: "pair" }, bmin, h("span", { class: "muted" }, "to"), bmax)),
+    field("Energy", h("div", { class: "pair" }, emin, h("span", { class: "muted" }, "to"), emax)),
+    field("Keys", keys),
+    field("Moods", moods), field("Intent", intents),
+    field("Stems", h("label", { class: "chk" }, stems, " only tracks with stems")));
+  const box = $("#modal .modal-box"), back = document.activeElement;
+  const close = () => { $("#modal").hidden = true; back?.focus?.(); };
+  const rule = () => {
+    const n = (el) => (el.value === "" ? undefined : +el.value);
+    const sel = (el) => [...el.selectedOptions].map((o) => o.value);
+    const out = { text: text.value.trim() || undefined, genre: genre.value.trim() || undefined, bpm_min: n(bmin), bpm_max: n(bmax), energy_min: n(emin), energy_max: n(emax),
+                  keys: keys.value.toUpperCase().split(/[\s,]+/).filter(Boolean), moods: sel(moods), intents: sel(intents), stems: stems.checked || undefined };
+    for (const k of Object.keys(out)) if (out[k] === undefined || (Array.isArray(out[k]) && !out[k].length)) delete out[k];
+    return out;
+  };
+  const save = async () => {
+    try {
+      if (p) { await api(`/api/playlists/${p.id}`, { method: "PATCH", body: { rule: rule() } }); toast(`Rule saved for “${p.name}”`); }
+      else {
+        const nm = name.value.trim() || "Smart playlist";
+        const made = await api("/api/playlists", { body: { name: nm, parent_id: inFolder ? state.openFolderTarget : 0, is_folder: false, rule: rule() } });
+        toast(`Smart playlist “${nm}” made`); close(); selectPlaylist(made.id); return;
+      }
+      close(); loadPlaylists(); if (state.playlist === p?.id) loadTracks();
+    } catch (e) { fail(e); }
+  };
+  box.replaceChildren(h("h3", {}, p ? `Rule for “${p.name}”` : "New smart playlist" + (inFolder ? ` in “${inFolder.name}”` : "")), form,
+    h("div", { class: "buttons" }, p ? h("button", { class: "ghost", title: "Keeps the playlist, with the tracks it has now, without a rule", onclick: async () => {
+        try { await api(`/api/playlists/${p.id}`, { method: "PATCH", body: { rule: null } }); toast("Now an ordinary playlist"); close(); loadPlaylists(); } catch (e) { fail(e); } } }, "Make ordinary") : null,
+      h("button", { class: "ghost", onclick: close }, "Cancel"), h("button", { class: "primary", onclick: save }, p ? "Save" : "Create")));
+  form.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } });
+  $("#modal").hidden = false;
+  (p ? text : name).focus();
+}
 $("#allTracks").addEventListener("click", () => selectPlaylist(0));
 
 function selectPlaylist(id) { state.playlist = id; state.selected.clear(); state.anchor = null; setPlaylistsOpen(false); loadPlaylists(); loadTracks(); }
@@ -275,12 +347,16 @@ function findDuplicates() {
 }
 // What would go wrong at the booth: the server's check of the file (deck_problem: a 24-bit WAV, an M4A...) and what the
 // track list already knows. "Convert for the deck" makes a copy the deck can play and clears the first one.
+// A lossy file under 192 kbps (the export's dry run says the same).
+const lowBitrate = (t) => /\.(mp3|m4a|aac|ogg|opus)$/i.test(t.path || "") && t.bitrate > 0 && t.bitrate < 192;
 function issues(t) {
   const out = [];
   if (t.lead_s > 2) out.push(`Starts with ${Math.round(t.lead_s)} s of near silence`);
   if (t.tail_s > 6) out.push(`Ends with ${Math.round(t.tail_s)} s of near silence (an autopilot mix would wait for it)`);
   if (t.file_missing) out.push("File not found: it was moved, renamed or its drive is not connected");
   if (t.deck_problem) out.push(t.deck_problem);
+  if (t.clip_pct >= 0.1) out.push(`Clips: ${t.clip_pct.toFixed(1)} % of samples at full scale`);
+  if (lowBitrate(t)) out.push(`Low bitrate (${t.bitrate} kbps): thin on a club system`);
   if (state.dups?.has(t.id)) out.push(`Same artist and title as ${state.dups.get(t.id).map((id) => `#${id}`).join(", ")}`);
   if (!t.artist) out.push("No artist");
   if (!t.analysed_at && jobFor(t.id, "analyse")?.status === "failed") out.push("Analysis failed");
@@ -302,7 +378,8 @@ function visibleTracks() {
   }
   return list;
 }
-const canReorder = () => state.playlist && !state.sort && state.filter === "all";
+const isSmart = (pid) => !!state.playlists.find((p) => p.id === pid)?.rule;
+const canReorder = () => state.playlist && !isSmart(state.playlist) && !state.sort && state.filter === "all";
 
 // Latest job of a kind for a track (the jobs list is newest first).
 const jobFor = (id, kind) => state.jobs.find((j) => j.track_id === id && j.kind === kind);
@@ -550,7 +627,7 @@ function trackMenuItems(t, ids = [t.id]) {
   const unplayable = sel.filter((x) => x.deck_problem).map((x) => x.id), copies = sel.filter((x) => x.deck_copy).map((x) => x.id);
   const noStems = sel.filter((x) => !["done", "running", "queued"].includes(x.stems)).map((x) => x.id);
   const intents = new Set(sel.map((x) => x.intent || "mix"));
-  const lists = state.playlists.filter((p) => !p.is_folder);
+  const lists = state.playlists.filter((p) => !p.is_folder && !p.rule);        // smart playlists fill themselves
   const inList = state.playlist ? lists.find((p) => p.id === state.playlist) : null;
   return [
     !many ? { icon: "play", label: state.current?.id === t.id && state.focus ? "Playing" : "Open", hint: "↵", run: () => openFocus(t.id) } : null,
@@ -761,13 +838,13 @@ function renderContext() {
     title: "16-bit FLAC copies the deck can play; the originals stay as they are" }, `Convert ${unplayable.length} for the deck`));
   const noStems = sel.filter((t) => t.stems !== "done" && t.stems !== "running" && t.stems !== "queued").map((t) => t.id);
   if (noStems.length) parts.push(h("button", { class: "ghost small", onclick: () => api("/api/stems", { body: { ids: noStems } }).then(() => { toast(`Making stems for ${noStems.length}`); loadTracks(); pollJobs(); }).catch(fail) }, "Make stems"));
-  const lists = state.playlists.filter((p) => !p.is_folder);
+  const lists = state.playlists.filter((p) => !p.is_folder && !p.rule);
   if (lists.length) {
     const s = h("select", { class: "small", "aria-label": "Add to playlist" }, h("option", { value: "" }, "Add to playlist…"), lists.map((p) => h("option", { value: p.id }, p.name)));
     s.addEventListener("change", () => { if (s.value) addToPlaylist(+s.value, ids).catch(fail); s.value = ""; });
     parts.push(s);
   }
-  if (state.playlist) parts.push(h("button", { class: "ghost small", onclick: async () => {
+  if (state.playlist && !isSmart(state.playlist)) parts.push(h("button", { class: "ghost small", onclick: async () => {
     const keep = state.tracks.map((t) => t.id).filter((x) => !state.selected.has(x));
     const r = await api(`/api/playlists/${state.playlist}/tracks`, { method: "PUT", body: { track_ids: keep } });
     toast(`Removed ${ids.length} from playlist`, r.undo); state.selected.clear(); loadTracks(); loadPlaylists();
@@ -1236,7 +1313,11 @@ function candidates(t) {
       }
       return found.sort((x, y) => y.bars - x.bars).slice(0, 3);
     };
-    out.push(...runs("instrumental", "Instrumental"), ...runs("vocal", "Vocal"));
+    out.push(...runs("instrumental", "Instrumental"));
+    // The sung phrases ClubCraft found in the vocal stem (vocals.rs) beat the rough vocal runs from the peaks.
+    const units = t.vocals?.units || [];
+    if (units.length) out.push(...units.map((u) => ({ start_ms: u.start_ms, end_ms: u.end_ms, bars: u.bars, start_bar: u.bar, kind: u.role, label: `${u.role} ${u.bars}`, quality: u.quality })));
+    else out.push(...runs("vocal", "Vocal"));
   }
   return out;
 }
@@ -1250,7 +1331,7 @@ function sectionChips(t) {
       h("button", { class: "chip-main", title: `Saved loop ${fmtMs(c.start_ms)}–${fmtMs(c.end_ms)}. Click to select it`, onclick: () => setSel(snapSel(c.start_ms, c.end_ms) || { start_ms: c.start_ms, end_ms: c.end_ms, bars: 0 }) },
         icon("repeat", "ic sm"), c.label || "Loop"),
       h("button", { class: "chip-x", "aria-label": `Delete loop ${c.label || ""}`, title: "Delete this loop", onclick: () => removeMemory(c).catch(fail) }, icon("x", "ic sm")))),
-    cands.map((c) => h("button", { class: "chip" + (isSel(c.start_ms, c.end_ms) ? " on" : ""), style: `--k:${phraseColor(c.kind)}`, title: `${c.kind}: ${c.bars} bars from ${fmtMs(c.start_ms)}. Click to select`,
+    cands.map((c) => h("button", { class: "chip" + (isSel(c.start_ms, c.end_ms) ? " on" : ""), style: `--k:${phraseColor(c.kind)}`, title: `${c.kind}: ${c.bars} bars from ${fmtMs(c.start_ms)}${c.quality != null ? ` · sung phrase, quality ${Math.round(c.quality * 100)} %` : ""}. Click to select`,
       onclick: () => setSel(c) }, h("i"), c.label)));
 }
 async function saveLoop() {

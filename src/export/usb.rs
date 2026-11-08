@@ -207,6 +207,13 @@ pub fn gain_db(lufs: Option<f64>) -> f64 {
     lufs.map(|l| ((target - l).clamp(-12.0, 6.0) * 10.0).round() / 10.0).unwrap_or(0.0)
 }
 
+/// A lossy file under 192 kbps: fine in headphones, thin on a club system. Lossless files never count.
+pub fn low_bitrate(t: &Row) -> Option<u64> {
+    let ext = library::ext(Path::new(t["path"].as_str().unwrap_or("")));
+    let lossy = matches!(ext.as_str(), "mp3" | "m4a" | "aac" | "ogg" | "opus");
+    t["bitrate"].as_u64().filter(|b| lossy && *b > 0 && *b < 192)
+}
+
 /// For each track what the export would do and what to know first: the dry run behind the plan.
 fn clock(ms: f64) -> String { let s = (ms / 1000.0).round() as i64; format!("{}:{:02}", s / 60, s % 60) }
 
@@ -240,6 +247,12 @@ fn details(tracks: &[Row], include_stems: bool) -> Vec<Value> {
         }
         if let Some(n) = t["key_shift"].as_i64().filter(|n| *n != 0) {
             notes.push(format!("Key shift {n:+} is written for the deck"));
+        }
+        if let Some(c) = t["clip_pct"].as_f64().filter(|c| *c >= 0.1) {
+            notes.push(format!("Clips: {c:.1} % of samples at full scale (the master, not the deck)"));
+        }
+        if let Some(b) = low_bitrate(t) {
+            notes.push(format!("Low bitrate ({b} kbps): a lossy file this small sounds thin on a club system"));
         }
         let gain = gain_db(t["lufs"].as_f64());
         if gain.abs() >= 0.1 {
@@ -532,6 +545,9 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
             // Names you gave cues in DKPRP (the rekordbox files have no field for them).
             "cue_labels": cue_rows.iter().filter(|q| q["label"].as_str().is_some_and(|l| !l.is_empty()))
                 .map(|q| json!({"slot": q["slot"], "start_ms": q["start_ms"], "end_ms": q["end_ms"], "label": q["label"]})).collect::<Vec<_>>(),
+            // Where the singing starts and the sung phrases (from the stems; null without them).
+            "first_vocal_ms": t["first_vocal_ms"],
+            "vocal_units": crate::vocals::load(tid).map(|v| v["units"].clone()),
             // Stems that cover only a section of the track (silence outside): [start_ms, end_ms].
             "stems_range": t["stems_range"].as_str().and_then(|s| serde_json::from_str::<Value>(s).ok()),
             // What the separation measured (quality.rs): the deck can warn before a poor vocal stem goes on the floor.

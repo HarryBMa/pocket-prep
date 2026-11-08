@@ -93,12 +93,21 @@ pub fn conn() -> MutexGuard<'static, Connection> {
                             // stems_range: JSON [start_ms, end_ms] when the stems file covers only that range (silence outside).
                             ("stems_range", "TEXT"),
                             // stem_quality: JSON from quality::assess (grade good|usable|poor, measures, notes) for the stems file.
-                            ("stem_quality", "TEXT")] {
+                            ("stem_quality", "TEXT"),
+                            // clip_pct: share of samples at full scale (%), from the analysis / levels pass.
+                            ("clip_pct", "REAL"),
+                            // first_vocal_ms: where the singing starts (vocal map, needs stems); NULL = unknown or none.
+                            ("first_vocal_ms", "REAL")] {
             let has: bool = c.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name=?").unwrap()
                 .exists([col]).unwrap();
             if !has {
                 c.execute_batch(&format!("ALTER TABLE tracks ADD COLUMN {col} {decl}")).unwrap();
             }
+        }
+        // Smart playlists: a rule (JSON, see library::smart_track_ids) fills the playlist from the library.
+        let has_rule: bool = c.prepare("SELECT 1 FROM pragma_table_info('playlists') WHERE name='rule'").unwrap().exists([]).unwrap();
+        if !has_rule {
+            c.execute_batch("ALTER TABLE playlists ADD COLUMN rule TEXT").unwrap();
         }
         // Stems from the Python app were separate MP3s; the new format is one 8-channel WAV.
         // MP3 encoder delay makes the old files drift from the track, so they must be remade.
