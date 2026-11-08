@@ -101,6 +101,17 @@ function ask(title, value = "", okLabel = "OK") {
   });
 }
 
+// A read-only modal: a title, some content, Close.
+function notice(title, content) {
+  const box = $("#modal .modal-box"), back = document.activeElement;
+  const close = () => { $("#modal").hidden = true; back?.focus?.(); };
+  const btn = h("button", { class: "primary", onclick: close }, "Close");
+  box.replaceChildren(h("h3", {}, title), content, h("div", { class: "buttons" }, btn));
+  btn.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } });
+  $("#modal").hidden = false;
+  btn.focus();
+}
+
 // ── Views (rail) and theme ───────────────────────────────────────────────────
 const tabs = () => $$("[data-view]");
 tabs().forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)));
@@ -1711,6 +1722,7 @@ function renderInlineJobs() {
       el.append(h("div", { class: "plan" }, h("b", {}, "Export complete"),
         h("div", {}, `Exported ${j.result.tracks} tracks (${j.result.copied} files copied), ${j.result.playlists} playlists, ${j.result.stems} with stems.` +
           (j.result.missing_files ? ` ${j.result.missing_files} files were missing and skipped.` : "")),
+        cardCheck(j.result.check),
         ...deckWarnings(j.result.warnings)));
     }
   }
@@ -1751,6 +1763,15 @@ function foreignLibrary(why) {
 }
 
 // Files are copied as they are; these are the ones the deck can't decode.
+// The read-back check after an export (usb::validate): every file on the card opened and compared with its
+// source. Problems are found here, not in the booth.
+function cardCheck(c) {
+  if (!c) return null;
+  if (!c.problems?.length) return h("div", { class: "ok-line" }, icon("check", "ic sm"), h("span", {}, `Checked: ${plural(c.files, "file")} on the card read back as written.`));
+  return h("div", { class: "warn-line" }, icon("alert", "ic sm"),
+    h("span", {}, `${plural(c.problems.length, "problem")} on the card: ${c.problems[0]}${c.problems.length > 1 ? ` (+${c.problems.length - 1} more)` : ""}. Export again, or try another drive.`,
+      c.problems.length > 1 ? h("button", { class: "ghost small", onclick: () => notice("Card check", h("ul", { class: "plain" }, ...c.problems.map((x) => h("li", {}, x)))) }, "All") : null));
+}
 function deckWarnings(list) {
   if (!list || !list.length) return [];
   return [h("div", { class: "warn-line" }, h("b", {}, `${plural(list.length, "track")} won't play on the DECK001`), " (they're still copied, CDJs play them):"),

@@ -294,6 +294,72 @@ fn copy_if_changed(src: &Path, dst: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// What the export wrote for one track, for the read-back check.
+struct Written {
+    title: String,
+    src: PathBuf,
+    dst: PathBuf,
+    anlz: PathBuf,
+    hints: PathBuf,
+    stems: Option<(PathBuf, PathBuf)>,
+}
+
+/// Read the card back after writing it: every audio file is there at its source size, every ANLZ file
+/// parses with rekordcrate (an independent parser), every hints file is JSON, every stems file matches, and
+/// export.pdb opens with the number of tracks we wrote. "Find it at home, not in the booth." Returns
+/// `{files, problems: [..]}`; an empty `problems` is a checked card.
+fn validate(root: &Path, written: &[Written], n_tracks: usize) -> Value {
+    use binrw::BinRead;
+    use fallible_iterator::FallibleIterator;
+    use rekordcrate::anlz::ANLZ;
+    use rekordcrate::pdb::io::Database as Reader;
+    use rekordcrate::pdb::{DatabaseType, Track};
+    let mut problems: Vec<String> = vec![];
+    let mut files = 0usize;
+    let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).ok();
+    let same_size = |a: &Path, b: &Path, what: &str, title: &str| -> Option<String> {
+        match (size(a), size(b)) {
+            (Some(x), Some(y)) if x == y => None,
+            (_, None) => Some(format!("{title}: the {what} is missing from the card")),
+            (Some(x), Some(y)) => Some(format!("{title}: the {what} on the card is {y} bytes, the source {x}")),
+            (None, _) => None,
+        }
+    };
+    for w in written {
+        files += 1;
+        problems.extend(same_size(&w.src, &w.dst, "audio file", &w.title));
+        if let Some((a, b)) = &w.stems { files += 1; problems.extend(same_size(a, b, "stems file", &w.title)); }
+        for name in ["ANLZ0000.DAT", "ANLZ0000.EXT"] {
+            files += 1;
+            match std::fs::read(w.anlz.join(name)) {
+                Ok(bytes) => if ANLZ::read(&mut std::io::Cursor::new(&bytes)).is_err() { problems.push(format!("{}: {name} doesn't parse", w.title)); },
+                Err(_) => problems.push(format!("{}: {name} is missing", w.title)),
+            }
+        }
+        files += 1;
+        if std::fs::read_to_string(&w.hints).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()).is_none() {
+            problems.push(format!("{}: the hints file isn't valid JSON", w.title));
+        }
+    }
+    files += 1;
+    match std::fs::read(root.join("PIONEER/rekordbox/export.pdb")) {
+        Ok(bytes) => match Reader::open_non_persistent(std::io::Cursor::new(bytes.as_slice()), DatabaseType::Plain) {
+            Ok(mut r) => match r.iter_rows::<Track>().and_then(|it| it.count()) {
+                Ok(n) if n == n_tracks => {}
+                Ok(n) => problems.push(format!("export.pdb lists {n} tracks, {n_tracks} were written")),
+                Err(e) => problems.push(format!("export.pdb: the track table doesn't read back ({e})")),
+            },
+            Err(e) => problems.push(format!("export.pdb doesn't open ({e})")),
+        },
+        Err(_) => problems.push("export.pdb is missing".into()),
+    }
+    files += 1;
+    if std::fs::read_to_string(root.join("POCKETDECK/stems.json")).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()).is_none() {
+        problems.push("POCKETDECK/stems.json isn't valid JSON".into());
+    }
+    json!({"files": files, "problems": problems})
+}
+
 pub fn export(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
               progress: &dyn Fn(f64, &str), cancel: &dyn Fn() -> bool) -> Result<Value> {
     if let Some(why) = target_problem(Path::new(root)) {
@@ -341,6 +407,7 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
     let mut artwork_rows = vec![];
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let mut exported = vec![];
+    let mut written: Vec<Written> = vec![];
 
     for (n, t) in tracks.iter().enumerate() {
         if cancel() {
@@ -423,6 +490,7 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
         };
         database.add(pdb::T_TRACKS, pdb::track_row(&row, n));
         exported.push(tid);
+        let mut w = Written { title: s("title").unwrap_or_default(), src: src.clone(), dst: dst.clone(), anlz: adir.clone(), hints: PathBuf::new(), stems: None };
 
         // 5. Pocket Deck extras: stems and phrase data
         let ext_id = format!("{tid:08X}");
@@ -430,6 +498,7 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
         if include_stems && sf.exists() {
             let rel = format!("POCKETDECK/STEMS/{ext_id}.flac");
             copy_if_changed(&sf, &root.join(&rel))?;
+            w.stems = Some((sf.clone(), root.join(&rel)));
             let _ = std::fs::remove_file(root.join(format!("POCKETDECK/STEMS/{ext_id}.wav")));   // format 2 leftover
             stem_manifest.insert(audio_path.clone(), json!({
                 "file": format!("/{rel}"), "format": "flac", "sample_rate": stems::RATE, "channels": stems::CHANNELS,
@@ -437,6 +506,8 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
         }
         let extra = root.join("POCKETDECK/analysis");
         std::fs::create_dir_all(&extra)?;
+        w.hints = extra.join(format!("{ext_id}.json"));
+        written.push(w);
         std::fs::write(extra.join(format!("{ext_id}.json")), json!({
             "file_path": audio_path, "bpm": a["bpm"], "key": a["key"], "camelot": a["camelot"],
             "energy": a["energy"], "phrases": a["phrases"],
@@ -501,7 +572,10 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
     let n_stems = stem_manifest.len();
     std::fs::write(pd.join("stems.json"), serde_json::to_string_pretty(&json!({"version": 3, "tracks": stem_manifest}))?)?;
     let warn = warnings(&tracks);
+    progress(0.98, "Reading the card back");
+    let check = validate(&root, &written, exported.len());
     let summary = json!({
+        "check": check,
         "app": "Pocket Prep", "version": env!("CARGO_PKG_VERSION"),
         "exported_at": chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
         "tracks": tracks.len() - skipped, "playlists": pls.len(), "copied": copied,
@@ -595,6 +669,9 @@ mod export_tests {
         let card = tmp.join("card");
         let summary = export_to(&card.to_string_lossy(), None, true, &|_, _| {}, &|| false).unwrap();
         assert_eq!((summary["tracks"].as_i64(), summary["stems"].as_i64()), (Some(1), Some(1)));
+        // The export read its own card back and found nothing wrong.
+        assert_eq!(summary["check"]["problems"], json!([]), "{}", summary["check"]);
+        assert!(summary["check"]["files"].as_u64().unwrap() >= 7, "{}", summary["check"]);
 
         // export.pdb: the track, its playlist, and the entry linking them.
         let pdb = std::fs::read(card.join("PIONEER/rekordbox/export.pdb")).unwrap();

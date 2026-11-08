@@ -43,7 +43,7 @@ Measured against the brief, so the gaps are honest. "✓" means built and tested
 | | Section-only separation, stem quality grade | ✓ | 0.6: range stems with context; `quality.rs` grades every run |
 | | Vocal-only separation | ✗ | |
 | Export | rekordbox PDB + ANLZ, POCKETDECK/analysis hints (grid, key shift, gain, audible start/end, cue names), dry-run check | ✓ | |
-| | Export validation after writing | ~ | tests read the card back with rekordcrate; the app doesn't |
+| | Export validation after writing | ✓ | 0.6: `usb::validate` reads the card back with rekordcrate after every export |
 | Deck | Status, OTA (signed), wired recovery (typed FLASH) | ✓ | |
 | Sets | setlists, energy curve, transition planning | ✗ | ClubCraft `planner.rs` and `mix.rs` exist, unused |
 
@@ -213,7 +213,7 @@ Nothing needs a network at any point; the models ship with the app or are fetche
 | P0 | Sections: select, preview, separate a range, save | **done (0.6)**: phrase-snapped selection, chips, loop, save as loop, range stems with context, no repeats |
 | P1 | Stem quality grade | **done (0.6)**: `quality.rs`, ring + open-track note, Redo |
 | P1 | Transition window + reasons, suggestions list | **done (0.6)**: `transitions.rs`, match pill with reasons |
-| P1 | Card validation after export | find it at home |
+| P1 | Card validation after export | **done (0.6)**: `check` in the export result, shown in the card column |
 | P1 | Sets with order, energy curve, `set.json` | the planning layer |
 | P1 | Performance simulation (the set-level dry run) | |
 | P2 | First vocal cue, vocal units as chips | needs stems; land after sections |

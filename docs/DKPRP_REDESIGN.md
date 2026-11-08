@@ -169,3 +169,7 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   (`transitions.rs`): tempo, key with the deck's shift, energy, level after gain, phrase lines, and vocal / bass
   clashes inside the planner's transition window. The Ready column becomes a match pill (0-100); its click lists
   the reasons, ✓ or !. Only tracks that work are shown, best first.
+- **Card check** (0.6): after writing, the export reads its own card back (`usb::validate`): every audio and
+  stems file at its source size, every ANLZ file parsed by rekordcrate (an independent parser, now a runtime
+  dependency), every hints file valid JSON, export.pdb opened with the right number of tracks. The card column
+  shows "Checked: N files" or the first problem with the rest behind *All*.
