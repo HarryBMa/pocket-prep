@@ -1,0 +1,68 @@
+# S2: the next training run (base 32, frames 64)
+
+Why this run: `SCALING.md` §5. It measures the width slope at two parameter doublings inside the proven family, with
+the data recipe that is known to help on MUSDB (real stems), before any wider or architecturally different model is
+paid for. Numbers below are the committed results in `README.md` / `results/`.
+
+## What has moved MUSDB test SDR so far
+
+| Lever | Effect (MUSDB avg, paired where available) |
+|---|---|
+| real stems, `--stems-share 0.6` | +0.37 dB [+0.10, +0.78], 38/50 songs; MoisesDB +0.46, house +1.9 |
+| frames 32 → 64 | +0.31 dB [+0.10, +0.62]; arena 1.5 → 3 MiB (SDRAM) |
+| base 12 → 16 | +0.25 dB |
+| teacher share 0.35–0.5 (luke) | **−0.2 to −0.4 dB on MUSDB** (b16_f32_kd 4.08, b16_f128_v3 4.11 at 50 k) — better in-domain only |
+| width alone on MUSDB-only data | saturates (Spleeter 39 M params: 4.43) |
+
+So: keep the teacher share small when MUSDB is the gate; combine data, context and width.
+
+## Command
+
+```powershell
+# tools\needle, GPU free (the 3080 Ti has 12 GB), logs and cache on F: (C: is nearly full)
+$stems = @('--stems','F:\needle\data\stems\moisesdb','--stems','F:\needle\data\stems\mshoxx',
+           '--stems','F:\needle\data\stems\ni','--stems','F:\needle\data\stems\packs','--stems','F:\needle\data\stems\wavgrind')
+$s2 = @('--base','32','--frames','64','--batch','32','--steps','300000',
+        '--stems-share','0.5',
+        '--teacher','E:\needle-teacher\luke_v2','--teacher-share','0.15','--teacher-seconds','120',
+        '--p-speed','0.3','--speed-change','0.06',
+        '--patience','40','--val-every','5000','--max-hours','11.5','--gpu-mem','0.8') + $stems
+& F:\needle\run_train.ps1 -Name b32_f64_s2 -TrainArgs $s2 *>&1 | Out-File -Append -Encoding utf8 F:\needle\logs\b32_f64_s2.log
+# stopped at --max-hours: run again with --resume
+```
+
+- `--batch 32`: b32 at frames 64 has about 4× the activations of b16/f32 (b16/f128 needed 16). If PyTorch spills into
+  system RAM (train.py warns; ~100× slower) use 16 and keep `--lr 1e-3`.
+- `--steps 300000`: b16 early-stopped at 165–190 k; a 4× model gets the longer schedule. Expect 10–14 h
+  [INFERENCE from 3 h for b16 and 4× the MACs], hence `--max-hours 11.5` + `--resume`.
+- `--teacher-share 0.15`: keeps part of the in-domain gain without the MUSDB loss of the 0.35 runs.
+- `--mr-weight` stays off: it is confounded in v3; S2 should be one change so `paired.py` gives a clean slope.
+- RAM: a stems + teacher run took 74 GB; if it does not fit, `--cache F:\needle\cache` memory-maps the decoded audio.
+- Validation SDR is noisy (README: it picked the wrong winner once). Decide on test sets with `paired.py`, not `val.csv`.
+
+## Evaluate and export (the gate's measurements)
+
+```powershell
+.venv\Scripts\python eval.py --checkpoint runs\b32_f64_s2\best.pt --musdb F:\needle\data\musdb18hq --workers 4
+.venv\Scripts\python eval.py --checkpoint runs\b32_f64_s2\best.pt --refs F:\needle\data\stems\moisesdb_test
+.venv\Scripts\python eval.py --checkpoint runs\b32_f64_s2\best.pt --refs E:\needle-teacher\luke_test_v2 --name b32_f64_s2_lukefair --skip-inaudible-db 40
+.venv\Scripts\python paired.py results\b16_f64_test.json results\b32_f64_s2_test.json
+.venv-export\Scripts\python export_vela.py --checkpoint runs\b32_f64_s2\best.pt --frames 64 --out build\b32_f64_s2 `
+    --audio F:\needle\data\musdb18hq\train --audio-glob "*/mixture.wav"
+.venv-export\Scripts\python eval_tflite.py --tflite build\b32_f64_s2\needle_b32_f64\needle_int8.tflite `
+    --musdb F:\needle\data\musdb18hq --float results\b32_f64_s2_test.json
+```
+
+Expected [extrapolation, SCALING.md §5]: MUSDB avg 4.9–5.4, vocals 5.9–6.5; Vela int8 RTF ≈ 0.05 at SRAM speed /
+0.09 from SDRAM (`build/random_b32_f64`), arena 5 MiB, weights 1.9 MB (XIP flash or SDRAM).
+
+Decision rule: `paired.py` ≥ +0.3 dB over b16_f64 → the width slope holds, build S3 (band-compressed base 48,
+complex I/O, TDF, MWF). Under +0.15 dB → skip width, go to the architecture levers directly (`SCALING.md` §4).
+
+## Beyond S2 (code changes in `needle.py`, all Vela-expressible)
+
+1. Complex spectrogram in/out: +0.6–0.7 dB vocals at equal parameters.
+2. Band-compressed front end (bins 0–255 full resolution, 256–1023 pooled ×4): half the arena and RTF.
+3. TDF blocks (TRANSPOSE + FULLY_CONNECTED): check 0 CPU operators with `export_vela.py` on random weights first.
+4. Vocals-first cascade: the only published route to ~9 dB vocals under 70 M parameters.
+5. Multichannel Wiener filter on the M85 (+0.45 dB, no training): testable now on `b16_f64` with `norbert`.
