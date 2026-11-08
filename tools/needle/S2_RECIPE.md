@@ -81,3 +81,14 @@ training. Paired results of b16_f128_v3 against b16_f32_stems: MUSDB +0.09 [-0.0
 MoisesDB -0.09 [-0.16, -0.02], house +1.06 [+0.26, +1.99] (6/6 songs), Luke Traxx held-out 6.24 vs
 4.83. The comparison `b16_f64` vs `b32_f64_s2` proposed above would confound width with data
 (b16_f64 was MUSDB-only); use `paired.py results\b16_f128_v3_test.json results\b32_f128_v3_test.json`.
+
+## New music (2026-11-08) and the queue
+
+`E:\needle-music\jamendo` (2072 Creative Commons tracks curated by genre: deephouse 325, house 700, progressive house
+397, techno 650; `manifest.csv` carries the licences — by-nc / by-nc-sa, so private training only), `H:\` (215
+house/Ibiza compilation FLACs, commercial, private training only) and the 184 Luke Traxx tracks already distilled
+(`E:\needle-teacher\luke_v2`). `queue_s2.example.ps1` distils H:\ and 120 tracks per Jamendo genre with htdemucs_ft
+(~4.5 h of GPU [estimate]), then trains two S2 runs with the same architecture: `b32_f64_s2` (teachers 0.15, the
+MUSDB gate) and `b32_f64_s2dj` (teachers 0.4, the DJ metric), then scores both on MUSDB, MoisesDB, NI and
+`luke_test_v2` with `paired.py` against `b16_f64`. `--cache F:\needle\cache` keeps the decoded audio memory-mapped on
+the SSD: the combined set no longer fits in RAM next to a running eval.
