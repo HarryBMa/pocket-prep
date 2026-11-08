@@ -29,7 +29,7 @@ Measured against the brief, so the gaps are honest. "✓" means built and tested
 | | Loudness (LUFS) + gain for the deck's target, near-silent start/end | ✓ | 0.5.0 |
 | | Mood (12 MB embedding + trained head, or the nine-number fallback) | ✓ | `src/mood.rs`, `src/embed.rs` |
 | | Vocal / instrumental detection | ~ | ClubCraft `vocals.rs` has a per-16th "singing" map; DKPRP only uses stem activity per section |
-| | Time signature | ✗ | 4/4 assumed everywhere (ClubCraft too) |
+| | Time signature | ✓ | 0.7: `meter.rs` hears 3/4 vs 4/4 from the beat accents; the DJ can set 2-12; the grid, bars, phrases, PQTZ beat numbers and hints follow |
 | | Genre | ~ | mood is a genre-plus-feel label; tag genre is editable |
 | Cues | A = start, B = first drop, C = breakdown, D = outro, phrase lines ≤ 1 per 16 bars | ✓ | `auto_cues` |
 | | Hot cues 1-8 and memory cues, beat-snapped, named, keys 1-8 / M | ✓ | |
@@ -222,7 +222,7 @@ Nothing needs a network at any point; the models ship with the app or are fetche
 | P1 | Performance simulation (the set-level dry run) | **done (0.6)**: the plan carries the set report (verdicts, readiness rings, load estimate) |
 | P2 | First vocal cue, vocal units as chips | **done (0.7)**: `vocals.rs`, chips with role and quality, hints |
 | P2 | Clipping, bitrate checks; smart playlists | **done (0.7)**: `clip_pct`, lossy < 192 kbps, rule editor in the playlists popover |
-| P2 | Time signature | not done: ClubCraft would need it first (4/4 assumed everywhere) |
+| P2 | Time signature | **done (0.7)**: `meter.rs` (3/4 or 4/4, conservative), `tracks.beats_per_bar`, 4/4 button in the grid pill |
 
 Not planned: automatic set construction as a product feature (the planner's order is a starting
 point, never the set), AI recommendations beyond the library, rendered mixes.

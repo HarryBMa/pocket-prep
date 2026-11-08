@@ -1067,6 +1067,9 @@ function renderDetail() {
       h("span", { id: "gridReadout", "aria-live": "polite" }, fmtNudge(gridNow(t))),
       h("button", { "aria-label": "Later by 1 ms (], Shift for 10 ms)", title: "Later by 1 ms (], Shift+] for 10 ms)", onclick: (e) => gridNudge(e.shiftKey ? 10 : 1) }, "›"),
       h("button", { class: "tb small", "aria-label": "Move the bar start one beat later", title: "Downbeat +1", onclick: () => gridNudge(0, 1) }, "+1"),
+      h("button", { class: "tb small sig" + (wasEdited(t, "beats_per_bar") ? " edited" : ""), "aria-label": `Time signature ${bpb(t.grid)}/4: click to change`,
+        title: `${bpb(t.grid)} beats per bar${wasEdited(t, "beats_per_bar") ? " (set by you)" : " (analysed)"}. Click: 4 → 3 → 6 → back to the analysis`,
+        onclick: () => { const cur = bpb(t.grid), next = cur === 4 ? 3 : cur === 3 ? 6 : null; saveField("beats_per_bar", next); } }, `${bpb(t.grid)}/4`),
       h("button", { class: "tb small grid-ok", "aria-pressed": String(!!t.grid_ok_at), "aria-label": t.grid_ok_at ? "Beat grid confirmed: click to unconfirm" : "Confirm the beat grid by ear",
         title: t.grid_ok_at ? "Beat grid confirmed by you. Click to take that back" : "I listened: the grid is right", onclick: () => saveField("grid_ok_at", t.grid_ok_at ? null : Date.now() / 1000) }, icon("check", "ic sm")),
       h("button", { class: "tb small", "aria-label": "Back to the analysis grid", title: "Back to the analysis grid", onclick: gridReset }, icon("refresh", "ic sm")))
@@ -1242,6 +1245,7 @@ async function saveField(key, value) {
     toast(key === "grid_ok_at" ? (value ? "Beat grid confirmed" : "Beat grid unconfirmed") : "Saved", r.undo);
     loadTracks();
     if (state.focus && key === "grid_ok_at") renderDetail();
+    if (key === "beats_per_bar") { state.gridPending = null; await openTrack(state.current.id); }   // the grid itself changed: new bars, new lines
   } catch (e) { fail(e); }
 }
 // All cue edits go through one PUT of the whole list. A user edit makes every remaining
@@ -1258,11 +1262,12 @@ async function putCues(cues, message) {
 // Drag on the full mix, or click a chip, to select one; then loop it (L), save it as a loop (a memory cue with an
 // end, which the card carries as a rekordbox loop) or make stems for just that range.
 const SECTION_BARS = [4, 8, 16, 32, 64];
-const barStartMs = (g, n) => g.first_beat_ms + (g.downbeat_index + 4 * n) * g.period_ms;
+const bpb = (g) => (g && g.beats_per_bar >= 2 ? g.beats_per_bar : 4);                 // beats per bar (time signature)
+const barStartMs = (g, n) => g.first_beat_ms + (g.downbeat_index + bpb(g) * n) * g.period_ms;
 function snapSel(aMs, bMs) {
   const t = state.current, g = effectiveGrid(t);
   if (!t || !g || !g.period_ms) return null;
-  const bar = 4 * g.period_ms, dur = (t.duration || 0) * 1000;
+  const bar = bpb(g) * g.period_ms, dur = (t.duration || 0) * 1000;
   const barOf = (ms) => (ms - barStartMs(g, 0)) / bar;
   const start = Math.max(0, Math.round(barOf(aMs) / 8) * 8);
   const want = Math.max(1, barOf(bMs) - start);
@@ -1294,7 +1299,7 @@ function candidates(t) {
   }
   const pk = state.stemPeaks;
   if (pk?.vocals && pk?.drums) {
-    const bar = 4 * g.period_ms, cols = 150, n = pk.vocals.length;
+    const bar = bpb(g) * g.period_ms, cols = 150, n = pk.vocals.length;
     const mean = (arr, a, b) => { let s = 0, k = 0; for (let i = Math.max(0, Math.floor(a)); i < Math.min(n, Math.floor(b)); i++) { s += arr[i]; k++; } return k ? s / k : 0; };
     const phrases = [];
     for (let p = 0; barStartMs(g, p * 8) < (t.duration || 0) * 1000 - bar; p++) {
@@ -1396,7 +1401,8 @@ function snapToBeat(ms) {
 function shiftGrid(g, dOff, dShift) {
   if (!g || !g.period_ms || (!dOff && !dShift)) return g;
   const moved = g.first_beat_ms + dOff, k = Math.floor(moved / g.period_ms);
-  return { ...g, first_beat_ms: moved - k * g.period_ms, downbeat_index: (((g.downbeat_index + k + dShift) % 4) + 4) % 4 };
+  const n = bpb(g);
+  return { ...g, first_beat_ms: moved - k * g.period_ms, downbeat_index: (((g.downbeat_index + k + dShift) % n) + n) % n };
 }
 function effectiveGrid(t) {
   const p = state.gridPending;
@@ -1410,7 +1416,8 @@ function gridNudge(dMs, dBeat = 0) {
   if (!t?.grid) return toast("Analyse the track first: there's no beat grid to nudge", null, true);
   const p = state.gridPending?.id === t.id ? state.gridPending : (state.gridPending = { id: t.id, ...gridNow(t) });
   p.off = Math.max(-1000, Math.min(1000, Math.round((p.off + dMs) * 10) / 10));
-  p.shift = (((p.shift + dBeat) % 4) + 4) % 4;
+  const n = bpb(t.grid);
+  p.shift = (((p.shift + dBeat) % n) + n) % n;
   syncMarkers();
   const r = $("#gridReadout"); if (r) r.textContent = fmtNudge(p);
   clearTimeout(state.gridT); state.gridT = setTimeout(() => saveGrid().catch(fail), 600);
@@ -1675,7 +1682,7 @@ function syncMarkers() {
     sr.clearRegions();
     if (g && g.period_ms > 0 && (g.duration_ms - g.first_beat_ms) / g.period_ms < 3000) {
       const beats = Math.floor((g.duration_ms - g.first_beat_ms) / g.period_ms) + 1;
-      for (let k = 0; k < beats; k++) if (((k - g.downbeat_index) % 4 + 4) % 4 === 0) mark(sr, { start: (g.first_beat_ms + k * g.period_ms) / 1000, color: "rgba(242,242,242,0.28)", drag: false, resize: false });
+      for (let k = 0; k < beats; k++) if (((k - g.downbeat_index) % bpb(g) + bpb(g)) % bpb(g) === 0) mark(sr, { start: (g.first_beat_ms + k * g.period_ms) / 1000, color: "rgba(242,242,242,0.28)", drag: false, resize: false });
     }
     for (const c of t.cues) mark(sr, { start: c.start_ms / 1000, color: c.slot ? CUE_COLORS[c.slot - 1] : "#f2f2f2", drag: false, resize: false });
     for (const [k] of MIX) if (t[k] != null) mark(sr, { start: t[k] / 1000, color: "rgba(242,242,242,0.6)", drag: false, resize: false });
@@ -1691,7 +1698,7 @@ function syncMarkers() {
     const everyBeat = beats < 3000;           // very long files (mixes): downbeats only
     let bar = 0;
     for (let k = 0; k < beats; k++) {
-      const isDown = ((k - g.downbeat_index) % 4 + 4) % 4 === 0;
+      const isDown = ((k - g.downbeat_index) % bpb(g) + bpb(g)) % bpb(g) === 0;
       if (isDown) bar++;
       if (!isDown && !everyBeat) continue;
       const label = isDown && bar % 8 === 1 ? h("span", { style: "font:600 10px var(--f-text);color:#b6b6bb;padding:0 3px" }, String(bar)) : undefined;

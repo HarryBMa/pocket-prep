@@ -18,6 +18,7 @@ mod embed;
 mod export;
 mod jobs;
 mod library;
+mod meter;
 mod models;
 mod mood;
 mod quality;

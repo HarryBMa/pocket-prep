@@ -47,3 +47,9 @@ One file per exported playlist (`sets.rs::card_json`): `name`, `duration_s`, `tr
 card, title, artist, bpm, camelot after the key shift, energy) in play order, and `transitions[i]` between
 `tracks[i]` and `tracks[i+1]`: `beats`, `out_ms`, `in_ms`, `verdict` (good | ok | no), `score` (0-100) and the
 `reasons` as text, or null when a side isn't analysed.
+
+## Time signature
+
+`POCKETDECK/analysis/<id>.json` carries `beats_per_bar` (3 or 4 from the analysis, or what the DJ set, 2-12). The
+ANLZ beat grid (PQTZ) numbers its beats 1..`beats_per_bar` from the downbeat, as rekordbox numbers 1-4; a CDJ's
+phase meter shows those numbers as they are.

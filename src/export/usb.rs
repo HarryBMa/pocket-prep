@@ -531,6 +531,8 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
         written.push(w);
         std::fs::write(extra.join(format!("{ext_id}.json")), json!({
             "file_path": audio_path, "bpm": a["bpm"], "key": a["key"], "camelot": a["camelot"],
+            // Beats per bar (3 or 4 from the analysis, or the DJ's choice): the PQTZ beat numbers run 1..this.
+            "beats_per_bar": analysis::user_grid(&a, &t)["beats_per_bar"],
             "energy": a["energy"], "phrases": a["phrases"],
             // Semitones the deck shifts the key by while playing this file (see docs/DECK_KEY_SHIFT.md).
             "key_shift": t["key_shift"].as_i64().unwrap_or(0),

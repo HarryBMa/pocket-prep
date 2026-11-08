@@ -52,7 +52,7 @@ pub fn side(t: &db::Row) -> Option<Side> {
         (Some(bpm), Some(p), Some(f)) if bpm > 0.0 => {
             let nudge = t.get("grid_offset_ms").and_then(Value::as_f64).unwrap_or(0.0) + t.get("downbeat_shift").and_then(Value::as_f64).unwrap_or(0.0) * p;
             let anchor = a["phrases"]["first_downbeat_ms"].as_f64().map(|d| d + nudge).unwrap_or(f + a["downbeat_index"].as_f64().unwrap_or(0.0) * p);
-            Some(BeatGrid::new(bpm, anchor / 1000.0))
+            Some(BeatGrid { bpm, downbeat: anchor / 1000.0, beats_per_bar: a["beats_per_bar"].as_u64().unwrap_or(4) as u32 })
         }
         _ => None,
     };
