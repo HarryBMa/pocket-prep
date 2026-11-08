@@ -408,8 +408,8 @@ td.lufs { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 12
 .phrase span { display: none; }
 .phrase:hover i { filter: brightness(1.2); }
 /* The tool row: play time · cues · grid · key · listen · zoom · more */
-.tp-tools { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
-.wave-time { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; min-width: 96px; }
+.tp-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.wave-time { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; min-width: 88px; }
 .pads { display: flex; gap: 6px; }
 .pad-w { display: flex; flex-direction: column; align-items: center; gap: 3px; position: relative; width: 40px; }
 .pad { width: 40px; height: 40px; border-radius: 8px; border: 1px dashed var(--line-strong); background: transparent; color: var(--ink-3); font-weight: 600; font-size: 14px; justify-content: center; padding: 0; }
@@ -418,7 +418,7 @@ td.lufs { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 12
 .pad-t { font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pad-x { position: absolute; top: -6px; right: -4px; width: 18px; height: 18px; border-radius: 50%; padding: 0; justify-content: center; font-size: 11px; background: var(--panel); }
 .pad-n { position: absolute; top: -6px; left: -4px; width: 18px; height: 18px; padding: 0; border: 0; background: rgba(0,0,0,.45); color: #fff; border-radius: 50%; display: grid; place-items: center; }
-.pill-ctl { display: inline-flex; align-items: center; gap: 2px; height: 40px; padding: 0 6px; border: 1px solid var(--line); background: var(--surface); border-radius: 20px; }
+.pill-ctl { display: inline-flex; align-items: center; gap: 1px; height: 40px; padding: 0 4px; border: 1px solid var(--line); background: var(--surface); border-radius: 20px; }
 .pill-ctl > .ic { color: var(--ink-3); margin: 0 2px; }
 .pill-ctl button { border: 0; background: none; width: 30px; height: 30px; padding: 0; justify-content: center; font-size: 16px; border-radius: 50%; }
 .pill-ctl button:hover { background: var(--surface-2); }
