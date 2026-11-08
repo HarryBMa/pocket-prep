@@ -101,6 +101,17 @@ function ask(title, value = "", okLabel = "OK") {
   });
 }
 
+// A read-only modal: a title, some content, Close.
+function notice(title, content) {
+  const box = $("#modal .modal-box"), back = document.activeElement;
+  const close = () => { $("#modal").hidden = true; back?.focus?.(); };
+  const btn = h("button", { class: "primary", onclick: close }, "Close");
+  box.replaceChildren(h("h3", {}, title), content, h("div", { class: "buttons" }, btn));
+  btn.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } });
+  $("#modal").hidden = false;
+  btn.focus();
+}
+
 // ── Views (rail) and theme ───────────────────────────────────────────────────
 const tabs = () => $$("[data-view]");
 tabs().forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)));
@@ -230,18 +241,29 @@ const FILTERS = {
   attention: (t) => issues(t).length > 0,
   mixes: (t) => mixesWith(t),
 };
-// Mixing partners of the track picked when "Mixes with selected" was chosen: the same key, one step either way on the
-// Camelot wheel, or the other mode of the same number (relative major/minor), and a tempo within 6 %.
+// What follows the track picked for "Mixes with": the server scores every analysed track as the next one (tempo,
+// key with the deck's shift, energy, level after gain, phrase lines, vocal / bass clashes in the transition window)
+// and the list keeps the ones that work, best first, with the reasons on the match pill.
 function mixesWith(t) {
+  const m = state.trans?.from === state.mixBase ? state.trans.map.get(t.id) : null;
+  return !!m && m.verdict !== "no";
+}
+async function loadTransitions(from) {
+  if (state.trans?.from === from && Date.now() - state.trans.at < 30000) return;
+  try {
+    const r = await api("/api/transitions", { body: { from } });
+    state.trans = { from, at: Date.now(), map: new Map(r.results.map((x) => [x.id, x])) };
+    if (state.filter === "mixes") renderTracks();
+  } catch (e) { fail(e); }
+}
+function matchCell(t) {
+  const m = state.trans?.map.get(t.id);
+  if (!m) return "";
   const base = state.tracks.find((x) => x.id === state.mixBase);
-  if (!base || base.id === t.id) return false;
-  const code = (x) => /^(\d+)([AB])$/.exec(x.shifted_camelot || x.camelot || "");
-  const [a, b] = [code(base), code(t)];
-  if (!a || !b) return false;
-  const d = Math.abs(+a[1] - +b[1]), step = Math.min(d, 12 - d);
-  const keyOk = a[2] === b[2] ? step <= 1 : step === 0;
-  const tempo = (x) => (x.bpm || 0) * 1;
-  return keyOk && tempo(base) > 0 && tempo(t) > 0 && Math.abs(tempo(t) / tempo(base) - 1) <= 0.06;
+  const show = (at) => openMenu(at, [{ head: `After ${base?.title || "the track"} · ${m.beats / 4}-bar window` },
+    ...m.reasons.map((r) => ({ icon: r.ok ? "check" : "alert", label: r.text, run: () => {} }))]);
+  return h("button", { class: `match ${m.verdict}`, title: m.reasons.map((r) => (r.ok ? "✓ " : "! ") + r.text).join("\n"),
+    "aria-label": `Match ${m.score} of 100: ${m.reasons.map((r) => r.text).join(". ")}`, onclick: (e) => { e.stopPropagation(); show(e.currentTarget); } }, String(m.score));
 }
 // Tracks that look like the same song twice (same artist and title, ignoring case, spaces and "(Original Mix)").
 function findDuplicates() {
@@ -267,6 +289,7 @@ function issues(t) {
 }
 function visibleTracks() {
   const list = state.tracks.map((t, i) => ({ t, i })).filter(({ t }) => FILTERS[state.filter](t));
+  if (state.filter === "mixes" && !state.sort && state.trans) list.sort((a, b) => (state.trans.map.get(b.t.id)?.score || 0) - (state.trans.map.get(a.t.id)?.score || 0));
   if (state.sort) {
     const { key, dir } = state.sort;
     const val = (x) => key === "index" ? x.i : key === "mood" ? moodRank(x.t.mood) : x.t[key];
@@ -292,6 +315,11 @@ function energyBars(n) {
 }
 // Readiness: one ring per track, a segment per check, judged against the track's intent. Diagnostic, not a
 // score: a Mix track without stems is ready; a Remix track without them isn't. Hover lists what's missing.
+// Stem quality as the separation measured it (quality.rs): { grade, notes[] } or null.
+function stemQuality(t) {
+  if (!t.stem_quality) return null;
+  try { return typeof t.stem_quality === "string" ? JSON.parse(t.stem_quality) : t.stem_quality; } catch { return null; }
+}
 function readiness(t) {
   const aj = jobFor(t.id, "analyse"), sj = jobFor(t.id, "stems"), d = exp.root && exp.plan?.details?.find((x) => x.id === t.id);
   const seg = (key, state, text) => ({ key, state, text });
@@ -302,7 +330,9 @@ function readiness(t) {
   const gridChecked = t.grid_ok_at || t.grid_offset_ms || t.downbeat_shift;
   out.push(!t.analysed_at ? seg("grid", "na", "Beat grid: after analysis") : gridChecked ? seg("grid", "ok", "Beat grid confirmed") : seg("grid", "todo", "Beat grid not confirmed by ear (open the track: ✓ or nudge)"));
   out.push(t.hot_cues ? seg("cues", "ok", `${plural(t.hot_cues, "hot cue")}`) : t.analysed_at ? seg("cues", "todo", "No hot cues") : seg("cues", "na", "Cues: after analysis"));
-  if (wantsStems(t)) out.push(t.stems === "done" ? seg("stems", "ok", "Stems ready") : sj?.status === "running" ? seg("stems", "busy", `Making stems ${Math.round(sj.progress * 100)}%`)
+  const q = stemQuality(t);
+  const stemsDone = q?.grade === "poor" ? seg("stems", "bad", `Stems are poor: ${q.notes[0] || "don't rely on them live"}`) : q?.grade === "usable" ? seg("stems", "ok", `Stems usable (${q.notes[0] || "see the track"})`) : seg("stems", "ok", "Stems ready");
+  if (wantsStems(t)) out.push(t.stems === "done" ? stemsDone : sj?.status === "running" ? seg("stems", "busy", `Making stems ${Math.round(sj.progress * 100)}%`)
     : t.stems === "queued" || sj?.status === "queued" ? seg("stems", "busy", "Stems queued") : t.stems === "failed" ? seg("stems", "bad", "Stems failed") : seg("stems", "todo", `No stems yet (${intentOf(t)[1]} needs them)`));
   else out.push(seg("stems", "na", t.stems === "done" ? "Stems ready (not needed for this intent)" : "Stems not needed for this intent"));
   out.push(t.lufs != null ? seg("loud", "ok", `${t.lufs.toFixed(1)} LUFS`) : t.analysed_at ? seg("loud", "todo", "Loudness not measured yet") : seg("loud", "na", "Loudness: after analysis"));
@@ -388,7 +418,7 @@ function renderTracks() {
       h("td", { class: "c-energy" + (wasEdited(t, "energy") ? " edited" : ""), "data-edit": "energy" }, energyBars(t.energy)),
       h("td", { class: "num lufs c-lufs", title: t.lufs != null ? `${t.lufs.toFixed(1)} LUFS. The export writes ${fmtGain(t)} for the deck (target ${state.settings?.target_lufs ?? -9} LUFS).` : null },
         t.lufs != null ? t.lufs.toFixed(1) : ""),
-      h("td", { class: "c-an" }, readinessCell(t)),
+      h("td", { class: "c-an" }, state.filter === "mixes" ? matchCell(t) : readinessCell(t)),
       h("td", { class: "c-menu" }, h("button", { class: "row-menu", "aria-label": `Actions for ${t.title || "track"}`, title: "Actions",
         onclick: (e) => { e.stopPropagation(); rowMenu(e.currentTarget, t); } }, icon("more", "ic sm"))));
     tr.addEventListener("click", (e) => {
@@ -441,7 +471,8 @@ function renderLibStatus() {
   const n = state.tracks.length, secs = state.tracks.reduce((a, t) => a + (t.duration || 0), 0);
   const pl = state.playlists.find((p) => p.id === state.playlist);
   $("#statusLib").textContent = !state.loaded ? "Loading library…"
-    : `${pl ? pl.name + " · " : ""}${plural(n, "track")} · ${fmtDur(secs)}` + (state.view.length !== n ? ` · ${state.view.length} shown` : "");
+    : `${pl ? pl.name + " · " : ""}${plural(n, "track")} · ${fmtDur(secs)}` + (state.view.length !== n ? ` · ${state.view.length} shown` : "")
+      + (state.filter === "mixes" && state.mixBase != null ? ` · what follows ${state.tracks.find((t) => t.id === state.mixBase)?.title || "the track"}` : "");
   const attn = state.tracks.filter((t) => issues(t).length).length;
   $("#attnCount").textContent = attn ? String(attn) : "";
 }
@@ -523,7 +554,7 @@ function trackMenuItems(t, ids = [t.id]) {
   const inList = state.playlist ? lists.find((p) => p.id === state.playlist) : null;
   return [
     !many ? { icon: "play", label: state.current?.id === t.id && state.focus ? "Playing" : "Open", hint: "↵", run: () => openFocus(t.id) } : null,
-    !many && t.analysed_at ? { icon: "shuffle", label: "Mixes with this", title: "Show the tracks in a compatible key within 6 % of its tempo", run: () => { state.mixBase = t.id; $('#filters [data-filter="mixes"]').click(); } } : null,
+    !many && t.analysed_at ? { icon: "shuffle", label: "Mixes with this", title: "Rank the library as the next track after this one, with the reasons", run: () => { state.mixBase = t.id; state.selected.clear(); $('#filters [data-filter="mixes"]').click(); } } : null,
     { head: many ? `Prepare ${ids.length} as` : "Prepare as" },
     ...INTENTS.map(([id, label, about]) => ({ label, title: about, checked: intents.size === 1 && intents.has(id), run: () => setIntent(ids, id) })),
     "-",
@@ -689,8 +720,10 @@ $$("#filters button").forEach((b) => b.addEventListener("click", () => {
     const one = state.selected.size === 1 ? state.tracks.find((t) => state.selected.has(t.id)) : null;
     if (!one && state.mixBase == null) return toast("Select one track first, then show what mixes with it");
     if (one) state.mixBase = one.id;
+    loadTransitions(state.mixBase);
     const base = state.tracks.find((t) => t.id === state.mixBase);
-    b.textContent = base ? `Mixes with ${(base.title || "track").slice(0, 22)}` : "Mixes with selected";
+    const label = base ? `What follows ${base.title || "this track"}` : "Mixes with the selected track";
+    b.title = label; b.setAttribute("aria-label", label);
   }
   state.filter = b.dataset.filter;
   $$("#filters button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
@@ -980,6 +1013,9 @@ function renderDetail() {
   const lines = [splitSuggestion(t),
     why.length ? h("div", { class: "warn-line" }, icon("alert", "ic sm"), h("span", {}, why.join(" · "), t.deck_problem ? ". The original is still exported (CDJs play it)." : ""),
       t.deck_problem ? h("button", { class: "small", onclick: () => convertForDeck([t.id]), title: "Makes a 16-bit FLAC copy for the deck. The original stays as it is." }, "Convert for the deck") : null) : null,
+    stemQuality(t) && stemQuality(t).grade !== "good" && t.stems === "done" ? h("div", { class: stemQuality(t).grade === "poor" ? "warn-line" : "ok-line" }, icon(stemQuality(t).grade === "poor" ? "alert" : "info", "ic sm"),
+      h("span", {}, `${stemQuality(t).grade === "poor" ? "Poor stems" : "Usable stems"}: ${stemQuality(t).notes.join(" · ")}.`),
+      h("button", { class: "ghost small", title: "Separate again (a new run can come out differently)", onclick: () => api("/api/stems", { body: { ids: [t.id], force: true } }).then(() => { toast("Making stems again"); pollJobs(); }).catch(fail) }, "Redo")) : null,
     t.stems_range ? h("div", { class: "ok-line" }, icon("deck", "ic sm"),
       h("span", {}, `The stems cover ${fmtMs(JSON.parse(t.stems_range)[0])}–${fmtMs(JSON.parse(t.stems_range)[1])} only (silence elsewhere).`),
       h("button", { class: "ghost small", onclick: () => api("/api/stems", { body: { ids: [t.id] } }).then(() => { toast("Making stems for the whole track"); pollJobs(); }).catch(fail) }, "Whole track")) : null,
@@ -1686,6 +1722,7 @@ function renderInlineJobs() {
       el.append(h("div", { class: "plan" }, h("b", {}, "Export complete"),
         h("div", {}, `Exported ${j.result.tracks} tracks (${j.result.copied} files copied), ${j.result.playlists} playlists, ${j.result.stems} with stems.` +
           (j.result.missing_files ? ` ${j.result.missing_files} files were missing and skipped.` : "")),
+        cardCheck(j.result.check),
         ...deckWarnings(j.result.warnings)));
     }
   }
@@ -1726,6 +1763,15 @@ function foreignLibrary(why) {
 }
 
 // Files are copied as they are; these are the ones the deck can't decode.
+// The read-back check after an export (usb::validate): every file on the card opened and compared with its
+// source. Problems are found here, not in the booth.
+function cardCheck(c) {
+  if (!c) return null;
+  if (!c.problems?.length) return h("div", { class: "ok-line" }, icon("check", "ic sm"), h("span", {}, `Checked: ${plural(c.files, "file")} on the card read back as written.`));
+  return h("div", { class: "warn-line" }, icon("alert", "ic sm"),
+    h("span", {}, `${plural(c.problems.length, "problem")} on the card: ${c.problems[0]}${c.problems.length > 1 ? ` (+${c.problems.length - 1} more)` : ""}. Export again, or try another drive.`,
+      c.problems.length > 1 ? h("button", { class: "ghost small", onclick: () => notice("Card check", h("ul", { class: "plain" }, ...c.problems.map((x) => h("li", {}, x)))) }, "All") : null));
+}
 function deckWarnings(list) {
   if (!list || !list.length) return [];
   return [h("div", { class: "warn-line" }, h("b", {}, `${plural(list.length, "track")} won't play on the DECK001`), " (they're still copied, CDJs play them):"),
@@ -1778,6 +1824,41 @@ function renderTarget(p) {
       p ? h("i", { class: p.fits ? "need" : "over", style: `left:${used * 100}%;width:${(p.fits ? need : 1 - used) * 100}%` }) : null),
     p ? h("span", { class: "muted tnum" }, p.fits ? `Uses up to ${fmtBytes(p.bytes)}, leaving about ${fmtBytes(Math.max(0, p.free - p.bytes))}` : `Needs ${fmtBytes(p.bytes)}, only ${fmtBytes(p.free)} free`) : null);
 }
+// The set strip: one playlist as the scope is a set, and the card column shows it the way it will play: the
+// energy curve, the order with the transition verdict between each pair (click for the reasons), running
+// time, the deck's load estimate, and "Order by" (ClubCraft's planner; undoable).
+function setStrip(s) {
+  const ts = s.tracks, n = ts.length;
+  if (!n) return null;
+  const W = 300, H = 36;
+  const pts = s.energy.map((e, i) => `${(n > 1 ? i / (n - 1) : 0.5) * W},${H - 2 - ((e || 1) - 1) / 9 * (H - 6)}`);
+  const curve = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [k, v] of Object.entries({ class: "set-curve", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img", "aria-label": `Energy: ${s.energy.map((e) => e ?? "?").join(", ")}` })) curve.setAttribute(k, v);
+  curve.innerHTML = `<polyline points="${pts.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/>` +
+    pts.map((p) => `<circle cx="${p.split(",")[0]}" cy="${p.split(",")[1]}" r="2.5" fill="var(--accent)"/>`).join("");
+  const v = s.verdicts, verdictText = v.no ? `${plural(v.no, "transition")} won't work` : v.ok ? `${v.ok} to check` : v.unknown === n - 1 ? "analyse the tracks to check the transitions" : "every transition works";
+  const orderBy = (e) => openMenu(e.currentTarget, [{ head: "Order the set" },
+    ...[["auto", "Balanced", "shuffle"], ["key", "By key", "key"], ["tempo", "By tempo", "clock"], ["energy", "Rising energy", "arrow-right"]].map(([by, label, ic]) => ({ icon: ic, label,
+      run: async () => { try { const r = await api(`/api/sets/${s.playlist.id}/order`, { body: { by } }); toast(`${s.playlist.name} ordered ${label.toLowerCase()}`, r.undo); loadTracks(); updatePlan(); } catch (e) { fail(e); } } }))]);
+  const rowsEl = [];
+  ts.forEach((t, i) => {
+    if (i > 0) {
+      const tr = s.transitions[i - 1];
+      rowsEl.push(h("button", { class: `set-tr ${tr ? tr.verdict : "unknown"}`, title: tr ? tr.reasons.map((r) => (r.ok ? "✓ " : "! ") + r.text).join("\n") : "Analyse both tracks to check this transition",
+        "aria-label": tr ? `Transition ${tr.score} of 100` : "Transition unknown",
+        onclick: (e) => tr && openMenu(e.currentTarget, [{ head: `${ts[i - 1].title || "?"} → ${t.title || "?"} · ${tr.beats / 4} bars · ${tr.score}` }, ...tr.reasons.map((r) => ({ icon: r.ok ? "check" : "alert", label: r.text, run: () => {} }))]) },
+        h("i")));
+    }
+    rowsEl.push(h("div", { class: "set-row", onclick: () => openFocus(t.id) }, h("span", { class: "set-n" }, String(i + 1)), h("span", { class: "set-title" }, t.title || "Untitled"),
+      h("span", { class: "set-meta" }, t.bpm ? fmtBpm(t.bpm) : "", " ", t.shifted_camelot || t.camelot || ""), readinessCell(t)));
+  });
+  return h("details", { class: "set-strip", open: true },
+    h("summary", {}, h("b", {}, "Set · "), `${plural(n, "track")} · ${fmtDur(s.duration_s)} · ${verdictText}`),
+    curve,
+    h("div", { class: "set-tools" }, h("span", { class: "muted" }, `Loads in about ${Math.max(1, Math.round(s.load_s))} s on the deck`),
+      h("button", { class: "ghost small", onclick: orderBy, title: "Reorder this playlist with the planner (undoable)" }, icon("shuffle", "ic sm"), " Order by…")),
+    h("div", { class: "set-list" }, rowsEl));
+}
 let planSeq = 0;
 // The dry run: what each track needs before you export. Nothing is written until you press Export.
 function dryRun(p) {
@@ -1810,6 +1891,7 @@ async function updatePlan() {
         h("dt", {}, "With stems"), h("dd", {}, body.include_stems ? String(p.with_stems) : "Stems off"),
         h("dt", {}, "Size"), h("dd", {}, `up to ${fmtBytes(p.bytes)} (${fmtBytes(p.free)} free)`)),
       p.unanalysed ? h("div", { class: "muted" }, `${p.unanalysed} tracks aren't analysed yet; they'll be analysed during the export (slower).`) : null,
+      p.set ? setStrip(p.set) : null,
       dryRun(p),
       ...deckWarnings(p.warnings),
       p.fits ? null : h("div", { class: "alert-text" }, h("b", {}, "Doesn't fit. "), "Choose fewer playlists or turn off stems."),

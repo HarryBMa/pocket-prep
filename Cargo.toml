@@ -38,11 +38,13 @@ clubcraft-audio = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd
 clubcraft-analysis = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
 clubcraft-stems = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
 
-[dev-dependencies]
-# Independent rekordbox parser (MPL-2.0), used in tests to check our export.pdb and ANLZ files.
+# Independent rekordbox parser (MPL-2.0): reads the card back after an export (usb::validate) and checks
+# our export.pdb and ANLZ files in tests.
 rekordcrate = { git = "https://github.com/Holzhaus/rekordcrate", rev = "68cd702e9c78bde4b9eab477e0a7547a0cb69768" }
 fallible-iterator = "0.3"
 binrw = "0.15"
+
+[dev-dependencies]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

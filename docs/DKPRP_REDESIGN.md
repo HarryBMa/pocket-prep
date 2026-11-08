@@ -162,3 +162,19 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   that range only: `POST /api/stems {ids, range_ms}` separates the range with 10 s of context each side and writes
   a whole-length stems file with silence outside (`tracks.stems_range`, `stems_range` in the hints). Stems that
   exist for the same range or the whole track are never made twice. Esc clears the selection before it closes the track.
+- **Stem quality** (0.6): every separation is graded from its own output (`quality.rs`: clipping per stem, the
+  reconstruction residual, vocal bleed from ClubCraft's vocal map). Poor stems turn the ring's stems segment red;
+  the open track shows the notes with *Redo*. The card's hints carry the grade.
+- **What follows** (0.6): "Mixes with this" ranks the library as the next track after the chosen one
+  (`transitions.rs`): tempo, key with the deck's shift, energy, level after gain, phrase lines, and vocal / bass
+  clashes inside the planner's transition window. The Ready column becomes a match pill (0-100); its click lists
+  the reasons, ✓ or !. Only tracks that work are shown, best first.
+- **Card check** (0.6): after writing, the export reads its own card back (`usb::validate`): every audio and
+  stems file at its source size, every ANLZ file parsed by rekordcrate (an independent parser, now a runtime
+  dependency), every hints file valid JSON, export.pdb opened with the right number of tracks. The card column
+  shows "Checked: N files" or the first problem with the rest behind *All*.
+- **Sets** (0.6): a playlist is a set. With one playlist as the card's scope, the card column shows the set strip:
+  the energy curve, the tracks in order with their readiness rings, a bar between each pair coloured by the
+  transition verdict (click: the reasons and the window), running time and the deck's load estimate. *Order by…*
+  hands the tracks to ClubCraft's planner (balanced, by key, by tempo, rising energy; undoable). The export writes
+  `POCKETDECK/sets/<playlist id>.json` for every playlist on the card: order, card paths, windows and verdicts.

@@ -38,13 +38,14 @@ Measured against the brief, so the gaps are honest. "✓" means built and tested
 | | Clipping detection, bitrate validation | ✗ | cheap to add in the loudness pass |
 | | Playlists, folders, tags (artist, album, genre, year, comment, colour, rating) | ✓ | |
 | | Smart playlists | ✗ | |
-| | Mixes-with filter (key ±1 on the wheel or relative, tempo ±6 %) | ✓ | |
+| | What follows: transitions scored with reasons (tempo, key, energy, level, phrase lines, clashes) | ✓ | 0.6: `transitions.rs`, `POST /api/transitions` |
 | Stems | 4-stem htdemucs, 8-channel FLAC, DirectML / CoreML / CPU, per-track | ✓ | |
-| | Section-only separation, vocal-only, stem quality score | ✗ | |
+| | Section-only separation, stem quality grade | ✓ | 0.6: range stems with context; `quality.rs` grades every run |
+| | Vocal-only separation | ✗ | |
 | Export | rekordbox PDB + ANLZ, POCKETDECK/analysis hints (grid, key shift, gain, audible start/end, cue names), dry-run check | ✓ | |
-| | Export validation after writing | ~ | tests read the card back with rekordcrate; the app doesn't |
+| | Export validation after writing | ✓ | 0.6: `usb::validate` reads the card back with rekordcrate after every export |
 | Deck | Status, OTA (signed), wired recovery (typed FLASH) | ✓ | |
-| Sets | setlists, energy curve, transition planning | ✗ | ClubCraft `planner.rs` and `mix.rs` exist, unused |
+| Sets | a playlist as a set: order, energy curve, transitions, load estimate, planner ordering, `POCKETDECK/sets/<id>.json` | ✓ | 0.6: `sets.rs`; the card column shows it when one playlist is the scope |
 
 ## 2. The features, by the question they answer
 
@@ -81,8 +82,14 @@ The output is **a transition window** ("mix out of A at bar 97, into B at bar 17
 shift 0"), not a number. The verdict lines explain it. ClubCraft `planner::choose_transition_beats`
 and `mashup::score` cover the first six rows; drums/vocals/frequency need stems on both tracks.
 
-**Suggestions (P1).** "Mixes with" grows from a filter into a ranked list with the window and the
-reasons. Same code, shown in the card column when one track is selected.
+**Suggestions (done, 0.6).** `transitions.rs` scores every analysed track as the next one after the
+chosen track: tempo (ratio, half / double time allowed; sync covers 6 %), key (Camelot rules with the
+deck's key shift), energy step, level after the export's gain, whether both mix points sit on 8-bar
+phrase lines, and clashes inside the transition window (vocals over vocals, bass over bass) from the
+sections' stem activity (analysis version 6). The window comes from `planner::choose_transition_beats`.
+`POST /api/transitions {from}` returns them best first with the reasons; "Mixes with this" in the row
+menu (or the filter glyph with one track selected) shows the ones that work, ranked, with a match
+pill (0-100) in place of the readiness ring whose click lists the reasons.
 
 ### Q2: What can I do creatively with it?
 
@@ -113,10 +120,13 @@ waveform as chips; clicking one makes the selection.
 readiness score (a Mix track without stems is ready). Set from the row menu, the focus view and
 "Edit selected…".
 
-**Stem quality (P1).** After separation: residual vocal energy in the instrumental, bleed of drums
-into bass, and the vocal stem's "singing vs leakage" ratio from the vocal map. Three numbers, shown
-as one glyph (good / usable / poor) with the numbers on hover. Poor stems get the intent downgraded
-to Vocal layer or Mix with a note.
+**Stem quality (done, 0.6).** After every separation `quality.rs` measures, with no reference needed:
+clipping per stem (share of samples at full scale), the reconstruction residual (mix minus the sum
+of the stems, dB) and vocal bleed (the vocal stem's energy where ClubCraft's vocal map says nothing is
+sung; a near-silent vocal stem is "no vocals", not bleed). Grade good / usable / poor in
+`tracks.stem_quality` (JSON with the numbers and notes). Poor stems turn the readiness ring's stems
+segment red with the first note; the open track shows the notes with a *Redo* button (a new run
+can come out differently). The card's hints carry the grade for the deck.
 
 **Key shift (done).** Stays as is: the deck shifts, the file doesn't change.
 
@@ -201,11 +211,11 @@ Nothing needs a network at any point; the models ship with the app or are fetche
 | P0 | Intent per track + queue priority | **done (0.6)**: `tracks.intent`, stems queued sections-first, `/api/prepare` |
 | P0 | Readiness ring (with grid OK, on the card) | **done (0.6)**: one ring per row, `grid_ok_at` |
 | P0 | Sections: select, preview, separate a range, save | **done (0.6)**: phrase-snapped selection, chips, loop, save as loop, range stems with context, no repeats |
-| P1 | Stem quality grade | stops bad stems reaching the stage |
-| P1 | Transition window + reasons, suggestions list | "mixes with" done properly |
-| P1 | Card validation after export | find it at home |
-| P1 | Sets with order, energy curve, `set.json` | the planning layer |
-| P1 | Performance simulation (the set-level dry run) | |
+| P1 | Stem quality grade | **done (0.6)**: `quality.rs`, ring + open-track note, Redo |
+| P1 | Transition window + reasons, suggestions list | **done (0.6)**: `transitions.rs`, match pill with reasons |
+| P1 | Card validation after export | **done (0.6)**: `check` in the export result, shown in the card column |
+| P1 | Sets with order, energy curve, `set.json` | **done (0.6)**: `sets.rs`, set strip, Order by…, `POCKETDECK/sets/` |
+| P1 | Performance simulation (the set-level dry run) | **done (0.6)**: the plan carries the set report (verdicts, readiness rings, load estimate) |
 | P2 | First vocal cue, vocal units as chips | needs stems; land after sections |
 | P2 | Clipping, bitrate checks; smart playlists | |
 | P2 | Time signature | ClubCraft would need it first |

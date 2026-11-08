@@ -20,8 +20,11 @@ mod jobs;
 mod library;
 mod models;
 mod mood;
+mod quality;
 mod server;
+mod sets;
 mod stems;
+mod transitions;
 #[cfg(test)]
 mod testaudio;
 

@@ -119,3 +119,11 @@ A stems file may cover only a section of the track: DKPRP separates the requeste
 on each side, cut away afterwards) and writes the whole-length file with digital silence outside the range, so a
 reader needs nothing new. `POCKETDECK/analysis/<id>.json` carries `stems_range: [start_ms, end_ms]` when that is
 the case (absent or null = the whole track).
+
+## Quality grade
+
+After each separation `src/quality.rs` grades the stems file from the audio alone (clipping per stem,
+reconstruction residual, vocal bleed via ClubCraft's vocal map). The grade (`good` / `usable` /
+`poor`) and the numbers live in `tracks.stem_quality`; the card's `POCKETDECK/analysis/<id>.json`
+carries `stem_quality: "<grade>"` so the deck can warn before a poor stem goes on the floor. A
+"Redo" (POST `/api/stems` with `force: true`) separates again even though stems exist.

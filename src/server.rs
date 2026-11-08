@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 use crate::db::{self, Row};
 use crate::export::usb;
-use crate::{analysis, config, convert, deck, jobs, library, models, mood, stems};
+use crate::{analysis, config, convert, deck, jobs, library, models, mood, sets, stems, transitions};
 
 pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -28,10 +28,10 @@ pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 #[folder = "ui/"]
 struct Ui;
 
-const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
+pub const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
     rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
     mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s, mix_in_ms, mix_out_ms, intent, grid_ok_at, \
-    stems_range, (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
+    stems_range, stem_quality, (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -120,10 +120,11 @@ fn intent_rank(tid: i64) -> usize {
     INTENT_ORDER.iter().position(|i| *i == intent).unwrap_or(3)
 }
 fn queue_stems(track_ids: &[i64]) -> anyhow::Result<Vec<i64>> {
-    queue_stems_range(track_ids, None)
+    queue_stems_range(track_ids, None, false)
 }
 /// `range_ms`: separate only that part of each track (a section), with context; the file stays whole.
-fn queue_stems_range(track_ids: &[i64], range_ms: Option<(f64, f64)>) -> anyhow::Result<Vec<i64>> {
+/// `force` separates again even when stems exist (a poor grade; a new run can come out differently).
+fn queue_stems_range(track_ids: &[i64], range_ms: Option<(f64, f64)>, force: bool) -> anyhow::Result<Vec<i64>> {
     if !models::stems_ready() {
         anyhow::bail!("The stems model isn't downloaded yet (Settings → System)");
     }
@@ -141,7 +142,7 @@ fn queue_stems_range(track_ids: &[i64], range_ms: Option<(f64, f64)>) -> anyhow:
                 .filter(|v| v.len() == 2).map(|v| (v[0], v[1]));
             let done = t.get("stems").and_then(Value::as_str) == Some("done") && stems::has_stems(tid);
             let same = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1.0 && (a.1 - b.1).abs() < 1.0;
-            if done && (have_range.is_none() || range_ms.is_some_and(|r| same(r, have_range.unwrap()))) {
+            if !force && done && (have_range.is_none() || range_ms.is_some_and(|r| same(r, have_range.unwrap()))) {
                 continue;
             }
         }
@@ -343,8 +344,33 @@ async fn analyse_tracks(Json(b): Json<Value>) -> R {
 async fn make_stems(Json(b): Json<Value>) -> R {
     blocking(move || {
         let range = b["range_ms"].as_array().and_then(|r| Some((r.first()?.as_f64()?, r.get(1)?.as_f64()?)));
-        Ok(json!({"jobs": queue_stems_range(&ids(&b, "ids"), range)?}))
+        Ok(json!({"jobs": queue_stems_range(&ids(&b, "ids"), range, b.get("force").and_then(Value::as_bool).unwrap_or(false))?}))
     }).await
+}
+
+/// What follows `from` well: every analysed track (or `to`) scored as the next track, best first,
+/// with the reasons (transitions.rs). Keyed by track id for the list's "mixes with" filter.
+async fn transitions_from(Json(b): Json<Value>) -> R {
+    blocking(move || {
+        let from_id = b["from"].as_i64().ok_or_else(|| anyhow::anyhow!("from is required"))?;
+        let only = ids(&b, "to");
+        let rows = db::query(&format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE deleted=0"), &[])?;
+        let from = rows.iter().find(|r| r["id"] == json!(from_id)).and_then(transitions::side).ok_or_else(|| anyhow::anyhow!("That track isn't analysed yet"))?;
+        let mut results: Vec<Value> = rows.iter().filter(|r| r["id"] != json!(from_id) && (only.is_empty() || r["id"].as_i64().is_some_and(|i| only.contains(&i))))
+            .filter_map(transitions::side).map(|to| transitions::score(&from, &to)).collect();
+        results.sort_by(|a, b| b["score"].as_f64().unwrap_or(0.0).total_cmp(&a["score"].as_f64().unwrap_or(0.0)));
+        Ok(json!({"from": from_id, "results": results}))
+    }).await
+}
+
+/// A playlist as a set: the order, the transition between each pair, energy curve, time and load (sets.rs).
+async fn set_report(P(pid): P<i64>) -> R {
+    blocking(move || Ok(sets::report(pid)?)).await
+}
+
+/// Reorder a playlist with the planner: `by` = auto | key | tempo | energy. Undoable.
+async fn set_order(P(pid): P<i64>, Json(b): Json<Value>) -> R {
+    blocking(move || Ok(json!({"undo": sets::order(pid, b["by"].as_str().unwrap_or("auto"))?}))).await
 }
 
 /// Prepare everything the intents ask for, for the given tracks (or the whole library): analysis where
@@ -578,6 +604,9 @@ pub fn router() -> Router {
         .route("/api/convert", post(convert_tracks))
         .route("/api/stems", post(make_stems))
         .route("/api/prepare", post(prepare))
+        .route("/api/transitions", post(transitions_from))
+        .route("/api/sets/{pid}", get(set_report))
+        .route("/api/sets/{pid}/order", post(set_order))
         .route("/api/playlists", get(get_playlists).post(new_playlist))
         .route("/api/playlists/{pid}", axum::routing::patch(rename_playlist).delete(remove_playlist))
         .route("/api/playlists/{pid}/tracks", put(order_playlist))
