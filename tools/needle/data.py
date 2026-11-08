@@ -16,9 +16,11 @@ Why it is kept like this
   the GPU.
 """
 import ctypes
+import os
 import queue
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -69,18 +71,42 @@ def musdb_split(root):
             "test": names(subsets="test")}
 
 
+# ── Disk-backed arrays ───────────────────────────────────────────────────────
+# Decoded int16 stems are written once to .npy files on an SSD and memory-mapped. Windows then
+# keeps them in its file cache (free RAM) without reserving them for the process: when another
+# program needs memory, cached pages are dropped and re-read, instead of an allocation failing.
+# With ~80 GB of data on a 128 GB PC that is the difference between a run finishing or not.
+
+MMAP_DIR = None          # set by train.py --cache; None keeps everything in process memory
+
+
+def cached(folder, tag, make):
+    """make() -> array, saved under MMAP_DIR (keyed by the folder and `tag`) and memory-mapped."""
+    if MMAP_DIR is None:
+        return make()
+    folder = Path(folder)
+    path = Path(MMAP_DIR) / f"{folder.parent.name}__{folder.name}{tag}.npy"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.stem + ".tmp.npy")
+        np.save(tmp, make())
+        os.replace(tmp, path)
+    return np.load(path, mmap_mode="r")
+
+
 def load_musdb(root, subset, names, threads=8):
     """Load the stems of the named tracks from <root>/<subset>/ -> list of (name, int16 (4, 2, N))."""
     folders = [Path(root) / subset / n for n in names]
     with ThreadPoolExecutor(threads) as ex:
-        return list(zip(names, ex.map(lambda f: read_stems(f, "wav"), folders)))
+        return list(zip(names, ex.map(lambda f: cached(f, "", lambda: read_stems(f, "wav")), folders)))
 
 
 def load_teacher(cache, threads=8):
     """Load every finished track of a distill.py cache -> list of (id, int16 (4, 2, N))."""
     folders = sorted(p.parent for p in Path(cache).glob("*/done"))
     with ThreadPoolExecutor(threads) as ex:
-        return list(zip((f.name for f in folders), ex.map(lambda f: read_stems(f, "flac"), folders)))
+        return list(zip((f.name for f in folders),
+                        ex.map(lambda f: cached(f, "", lambda: read_stems(f, "flac")), folders)))
 
 
 def busiest_excerpt(stems, seconds):
@@ -103,7 +129,8 @@ def load_excerpts(cache, seconds, threads=8):
     folders = sorted(p.parent for p in Path(cache).glob("*/done"))
     with ThreadPoolExecutor(threads) as ex:
         return list(zip((f.name for f in folders),
-                        ex.map(lambda f: busiest_excerpt(read_stems(f, "flac"), seconds), folders)))
+                        ex.map(lambda f: cached(f, f"_busiest{seconds}",
+                                                lambda: busiest_excerpt(read_stems(f, "flac"), seconds)), folders)))
 
 
 def hours(tracks):
@@ -165,11 +192,28 @@ class Prefetcher:
 
     def _run(self, bank, batch, remix, seed):
         rng = np.random.default_rng(seed)
+        failures = 0
         while True:
-            self.q.put(torch.from_numpy(bank.batch(batch, remix, rng)).pin_memory())
+            try:
+                self.q.put(torch.from_numpy(bank.batch(batch, remix, rng)).pin_memory())
+                failures = 0
+            except MemoryError as e:                 # brief memory pressure: wait and retry
+                failures += 1
+                if failures > 20:
+                    self.q.put(e)
+                    return
+                time.sleep(15)
+            except Exception as e:                   # anything else: hand it to the training loop
+                self.q.put(e)
+                return
 
     def next(self):
-        return self.q.get()
+        """The next batch. A worker that failed passes its exception on, so training stops with
+        the error instead of waiting forever (which is what happened before)."""
+        b = self.q.get()
+        if isinstance(b, BaseException):
+            raise RuntimeError("a data thread failed") from b
+        return b
 
 
 # ── Augmentation (on the GPU) ────────────────────────────────────────────────

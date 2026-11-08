@@ -31,6 +31,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
@@ -143,7 +144,7 @@ def validate(model, tracks, cfg: NeedleConfig, overlap, device):
     predict = torch_predictor(model)
     scores = []
     for _, stems in tracks:
-        ref = torch.from_numpy(stems).float() / 32768             # reference stays on the CPU
+        ref = torch.from_numpy(np.array(stems)).float() / 32768             # reference stays on the CPU
         est = separate_chunked(predict, ref.sum(0).to(device), cfg, overlap)
         scores.append(nsdr(ref, est))
     model.train()
@@ -167,6 +168,7 @@ def main():
     ap.add_argument("--teacher-share", type=float, default=0.5, help="fraction of stems drawn from teacher tracks")
     ap.add_argument("--teacher-seconds", type=int, default=0,
                     help="keep only the busiest N seconds of each teacher track (0 = whole tracks); saves RAM on long DJ tracks")
+    ap.add_argument("--cache", help="SSD folder for memory-mapped decoded audio (keeps RAM free; see data.cached)")
     ap.add_argument("--stems", action="append", default=[], help="import_stems.py folder of real stems (repeatable)")
     ap.add_argument("--stems-share", type=float, default=0.25, help="fraction of stems drawn from --stems tracks")
     ap.add_argument("--name", required=True)
@@ -252,6 +254,9 @@ def main():
     # Data
     t = time.time()
     split = musdb_split(a.musdb)
+    if a.cache:
+        import data
+        data.MMAP_DIR = a.cache
     train = load_musdb(a.musdb, "train", split["train"])
     valid = load_musdb(a.musdb, "train", split["valid"])
     teacher = [tr for d in a.teacher for tr in (load_excerpts(d, a.teacher_seconds) if a.teacher_seconds else load_teacher(d))]       # teacher stems (distill.py)
