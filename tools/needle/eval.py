@@ -77,6 +77,31 @@ def score_track(refs, ests, inaudible_db=None):
             for k, v in (("SDR", sdr), ("SIR", sir), ("SAR", sar))}
 
 
+def wiener_post(mix, est, iterations=1, n_fft=2048, hop=512, segment_s=60.0):
+    """Multichannel Wiener filter (norbert, as Open-Unmix and Spleeter use at inference): refines
+    the four stems by treating each as a Gaussian source with a per-bin spatial covariance and
+    re-splitting the mixture accordingly. iterations=0 is the plain soft mask |S_j| / sum |S_k|
+    on the mixture. Runs per 60-s segment (the deck would do the same per section) to keep
+    memory small. mix (C, N), est (S, C, N) float32 -> (S, C, N)."""
+    import norbert
+    import numpy as np
+    s, c, n = est.shape
+    out = np.zeros_like(est)
+    win = torch.hann_window(n_fft)
+    seg = int(segment_s * SAMPLE_RATE)
+    for a in range(0, n, seg):
+        b = min(n, a + seg)
+        x = torch.stft(torch.from_numpy(np.ascontiguousarray(mix[:, a:b])), n_fft, hop, window=win, return_complex=True)
+        v = torch.stft(torch.from_numpy(np.ascontiguousarray(est[:, :, a:b]).reshape(s * c, -1)), n_fft, hop,
+                       window=win, return_complex=True).abs().reshape(s, c, *x.shape[1:])
+        X = x.permute(2, 1, 0).numpy().astype(np.complex64)                      # (frames, bins, channels)
+        V = v.permute(3, 2, 1, 0).numpy().astype(np.float32)                     # (frames, bins, channels, sources)
+        Y = norbert.wiener(V, X, iterations=iterations, use_softmask=True)       # (frames, bins, channels, sources)
+        y = torch.from_numpy(np.ascontiguousarray(Y.transpose(3, 2, 1, 0))).reshape(s * c, *x.shape[1:])
+        out[:, :, a:b] = torch.istft(y, n_fft, hop, window=win, length=b - a).reshape(s, c, -1).numpy()
+    return out
+
+
 def summarize(per_track):
     """Median over tracks per source, and the average of the four sources (the headline number)."""
     out = {}
@@ -117,6 +142,8 @@ def main():
                     help="leave out 1-s windows where a reference stem is this many dB below the mix "
                          "(for teacher-made references, which are never exactly silent; e.g. 40)")
     ap.add_argument("--shifts", type=int, default=1, help="average this many shifted passes (chunked.separate_chunked)")
+    ap.add_argument("--wiener", type=int, help="multichannel Wiener filter post-processing with this many EM "
+                    "iterations (0 = soft mask only); needs the norbert package")
     ap.add_argument("--name", help="results name (default: the run folder's name)")
     ap.add_argument("--workers", type=int, default=4, help="museval processes (each needs up to ~6-10 GB for a long song)")
     ap.add_argument("--gpu-mem", type=float, default=0.25, help="cap on this process's share of GPU memory (only the network runs there)")
@@ -141,7 +168,7 @@ def main():
         torch.cuda.set_per_process_memory_fraction(a.gpu_mem)
         predict = torch_predictor(model)
         name = a.name or Path(a.checkpoint).parent.name
-        extra = {"checkpoint": str(a.checkpoint), "config": ck["config"], "frames": cfg.frames, "overlap": a.overlap, "shifts": a.shifts,
+        extra = {"checkpoint": str(a.checkpoint), "config": ck["config"], "frames": cfg.frames, "overlap": a.overlap, "shifts": a.shifts, "wiener": a.wiener,
                  "step": ck.get("step")}
 
         torch.set_num_threads(4)               # the STFT side runs on the CPU, next to the museval workers
@@ -149,7 +176,8 @@ def main():
         def estimate(n, mix):
             # only the network runs on the GPU (a few hundred MB); the whole-song STFT, masks and
             # iSTFT stay in system RAM, so a long song can't fill the GPU next to a training run
-            return separate_chunked(predict, torch.from_numpy(mix), cfg, a.overlap, shifts=a.shifts).numpy()
+            est = separate_chunked(predict, torch.from_numpy(mix), cfg, a.overlap, shifts=a.shifts).numpy()
+            return wiener_post(mix, est, a.wiener) if a.wiener is not None else est
     else:
         name = a.name or Path(a.estimates).name
         extra = {"estimates": str(a.estimates)}
