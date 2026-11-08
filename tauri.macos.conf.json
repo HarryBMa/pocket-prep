@@ -1,7 +1,6 @@
 {
   "bundle": {
     "resources": {
-      "models/htdemucs.onnx": null,
       "models/htdemucs.mlmodelc": "models/htdemucs.mlmodelc"
     },
     "macOS": {

@@ -197,10 +197,10 @@ Nothing needs a network at any point; the models ship with the app or are fetche
 
 | P | Feature | Why now |
 |---|---|---|
-| P0 | Mix-in / mix-out cues | one function call in ClubCraft, big win on the deck |
-| P0 | Intent per track + queue priority | the cheapest way to cut waiting and disk |
-| P0 | Readiness ring (with grid OK, on the card) | replaces four columns with one answer |
-| P0 | Sections: select, preview, separate a range, save | the creative core for a stems deck |
+| P0 | Mix-in / mix-out cues | **done (0.6)**: analysed points, I / O keys, flags, card hints |
+| P0 | Intent per track + queue priority | **done (0.6)**: `tracks.intent`, stems queued sections-first, `/api/prepare` |
+| P0 | Readiness ring (with grid OK, on the card) | **done (0.6)**: one ring per row, `grid_ok_at` |
+| P0 | Sections: select, preview, separate a range, save | **done (0.6)**: phrase-snapped selection, chips, loop, save as loop, range stems with context, no repeats |
 | P1 | Stem quality grade | stops bad stems reaching the stage |
 | P1 | Transition window + reasons, suggestions list | "mixes with" done properly |
 | P1 | Card validation after export | find it at home |
@@ -234,8 +234,14 @@ the installer), the UI under 1 MB. Proposed, in order of effect:
 5. **Don't bundle** `tools/`, `docs/`, test audio, the vendored ClubCraft sources (resources are
    explicit in `tauri.conf.json`; check the NSIS target includes nothing else).
 
-Target: a ~75 MB Windows installer, ~70 MB DMG, with the full offline variant at ~300 MB.
-Items 3-5 are safe to do now; 1 and 2 change what "offline" means on first run and need a yes.
+Target: a ~75 MB Windows installer, ~70 MB DMG.
+
+Status (0.6): 1, 2, 3 and 5 are done. WebView2 comes from its bootstrapper; the stems model is a
+release asset the app fetches from Settings → System and checks against the SHA-256 pinned in
+`models/manifest.json` at build time (`src/models.rs`); the release profile uses fat LTO, one
+codegen unit, stripped symbols and `panic = "abort"`. 4 was already the case: ONNX Runtime ships
+one library per platform; DirectML is an extra DLL on Windows only. macOS still bundles the
+CoreML model (a folder, not a file; fetching it is a later step).
 
 ## 7. Open questions for the DJ
 

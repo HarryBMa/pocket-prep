@@ -27,8 +27,8 @@ use crate::{config, db, mood, stems};
 
 const COLS_PER_S: f64 = 150.0;
 /// Bump when results change; older analyses are redone at startup (3 = ClubCraft + phrase cues,
-/// 4 = mood features).
-pub const VERSION: i64 = 4;
+/// 4 = mood features, 5 = mix-in / mix-out points).
+pub const VERSION: i64 = 5;
 
 pub fn load_analysis(track_id: i64) -> Option<Value> {
     let text = std::fs::read_to_string(config::analysis_dir().join(format!("{track_id}.json"))).ok()?;
@@ -377,6 +377,10 @@ pub fn analyse_audio(audio: &AudioBuffer, stems: Option<&StemsRef>, bpm_range: (
         "energy": r.energy, "loudness_lufs": r.loudness_lufs, "gain_db": r.gain_db,
         "phrases": {"first_downbeat_ms": ms(g.downbeat), "intro_end_ms": intro_end,
                     "outro_start_ms": start_of(SectionKind::Outro), "drops": drops},
+        // Where to mix in (the first full-groove phrase) and out (before the energy falls for good): ClubCraft's
+        // planner, from the sections and the grid. The DJ can move them per track (tracks.mix_in_ms / mix_out_ms).
+        "mix_in_ms": ms(clubcraft_core::planner::default_mix_in(&r)),
+        "mix_out_ms": ms(clubcraft_core::planner::default_mix_out(&r)),
         "sections": r.sections.iter().map(|s| json!({
             "kind": s.kind.label(), "start_ms": ms(s.start), "end_ms": ms(s.end), "bars": s.bars, "energy": s.energy})).collect::<Vec<_>>(),
         // Auto cues: slot 1-4 = hot cue A-D.
@@ -442,7 +446,7 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
 
     db::tx(|c| {
         if grid_moved {
-            let n = c.execute("UPDATE tracks SET grid_offset_ms=0, downbeat_shift=0 WHERE id=? AND (grid_offset_ms<>0 OR downbeat_shift<>0)",
+            let n = c.execute("UPDATE tracks SET grid_offset_ms=0, downbeat_shift=0, grid_ok_at=NULL WHERE id=? AND (grid_offset_ms<>0 OR downbeat_shift<>0 OR grid_ok_at IS NOT NULL)",
                               [track_id])?;
             if n > 0 {
                 db::log(c, "grid_nudge_reset", json!({"track_id": track_id, "why": "re-analysis moved the beat grid"}), None)?;

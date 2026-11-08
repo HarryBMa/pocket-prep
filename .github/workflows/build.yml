@@ -1,7 +1,9 @@
-# Builds the installers: Windows x64 (NSIS, with DirectML, the VC++ runtime and offline
-# WebView2), macOS Apple Silicon and Intel (.app + DMG, CoreML model), Linux x64
-# (AppImage + .deb). The Demucs models aren't in git (174 MB / 205 MB): they are exported
-# from PyTorch here. Builds are unsigned (Windows SmartScreen and macOS Gatekeeper warn).
+# Builds the installers: Windows x64 (NSIS, with DirectML and the VC++ runtime; WebView2 via
+# its 2 MB bootstrapper), macOS Apple Silicon and Intel (.app + DMG, CoreML model), Linux x64
+# (AppImage + .deb). The Demucs model (174 MB) isn't in git and isn't in the Windows/Linux
+# installers: the `model` job exports it once, pins its SHA-256 in models/manifest.json (built
+# into every app) and publishes it as a release asset the app fetches on request (src/models.rs).
+# Builds are unsigned (Windows SmartScreen and macOS Gatekeeper warn).
 name: build
 on:
   push:
@@ -9,7 +11,48 @@ on:
   workflow_dispatch:
 
 jobs:
+  model:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Export the Demucs model (ONNX) and the mood embedding model
+        run: |
+          uv run --python 3.12 --with demucs==4.0.1 --with torch==2.7.1 --with torchaudio==2.7.1 \
+            --with onnx --with onnxruntime --with "numpy<2.3" tools/export_demucs_onnx.py models
+          uv run --python 3.12 --with demucs==4.0.1 --with torch==2.7.1 --with torchaudio==2.7.1 \
+            --with onnx --with onnxruntime --with "numpy<2.3" tools/export_demucs_onnx.py models --embedding
+      - name: Pin the stems model (models/manifest.json)
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          name = "htdemucs.onnx"
+          h = hashlib.sha256(open(f"models/{name}", "rb").read()).hexdigest()
+          json.dump({name: {"sha256": h, "bytes": os.path.getsize(f"models/{name}"),
+                            "url": f"https://github.com/{os.environ['REPO']}/releases/download/{os.environ['TAG']}/{name}"}},
+                    open("models/manifest.json", "w"), indent=1)
+          print(open("models/manifest.json").read())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: models
+          path: |
+            models/htdemucs.onnx
+            models/htdemucs.json
+            models/htdemucs_mood.onnx
+            models/manifest.json
+      - name: Publish the stems model with the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: models/htdemucs.onnx
+          draft: true
+
   build:
+    needs: model
     strategy:
       fail-fast: false
       matrix:
@@ -31,15 +74,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libudev-dev cmake
-      - name: Export the Demucs model (ONNX)
-        shell: bash
-        run: |
-          uv run --python 3.12 --with demucs==4.0.1 --with torch==2.7.1 --with torchaudio==2.7.1 \
-            --with onnx --with onnxruntime --with "numpy<2.3" tools/export_demucs_onnx.py models
-      - name: Export the mood embedding model (ONNX, 12 MB, every platform)
-        shell: bash
-        run: |
-          uv run --python 3.12 --with demucs==4.0.1 --with torch==2.7.1 --with torchaudio==2.7.1             --with onnx --with onnxruntime --with "numpy<2.3" tools/export_demucs_onnx.py models --embedding
+      - uses: actions/download-artifact@v4
+        with:
+          name: models
+          path: models
       - name: Export the Demucs model (CoreML)
         if: runner.os == 'macOS'
         run: |
@@ -53,6 +91,9 @@ jobs:
         run: cargo test --release
       - name: Build installer
         run: npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }}
+      - name: Installer size
+        shell: bash
+        run: du -sh target/${{ matrix.target }}/release/bundle/*/* 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
           name: pocket-prep-${{ matrix.target }}

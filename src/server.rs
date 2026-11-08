@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 use crate::db::{self, Row};
 use crate::export::usb;
-use crate::{analysis, config, convert, deck, jobs, library, mood, stems};
+use crate::{analysis, config, convert, deck, jobs, library, models, mood, stems};
 
 pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -30,7 +30,8 @@ struct Ui;
 
 const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
     rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
-    mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s";
+    mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s, mix_in_ms, mix_out_ms, intent, grid_ok_at, \
+    stems_range, (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -111,20 +112,50 @@ fn queue_outdated_analysis() {
     queue_analysis(&ids);
 }
 
+// Stems in the order the intent asks for: a section first (small), then vocal layers, remixes, and
+// plain mixes last; a backup track only when asked for by hand (it is in the list, so it goes last).
+const INTENT_ORDER: &[&str] = &["section", "vocal", "remix", "mix", "backup"];
+fn intent_rank(tid: i64) -> usize {
+    let intent = db::track(tid).ok().flatten().and_then(|t| t.get("intent").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or("mix".into());
+    INTENT_ORDER.iter().position(|i| *i == intent).unwrap_or(3)
+}
 fn queue_stems(track_ids: &[i64]) -> anyhow::Result<Vec<i64>> {
+    queue_stems_range(track_ids, None)
+}
+/// `range_ms`: separate only that part of each track (a section), with context; the file stays whole.
+fn queue_stems_range(track_ids: &[i64], range_ms: Option<(f64, f64)>) -> anyhow::Result<Vec<i64>> {
+    if !models::stems_ready() {
+        anyhow::bail!("The stems model isn't downloaded yet (Settings → System)");
+    }
+    if let Some((a, b)) = range_ms { if !(b > a && a >= 0.0) { anyhow::bail!("The range is empty"); } }
+    let mut ordered: Vec<i64> = track_ids.to_vec();
+    ordered.sort_by_key(|&t| intent_rank(t));
     let mut out = vec![];
-    for &tid in track_ids {
+    for &tid in &ordered {
         if jobs::pending_for(tid, "stems") {
             continue;
         }
+        // Already made: the whole track, or exactly this range. Nothing is separated twice.
+        if let Some(t) = db::track(tid)? {
+            let have_range: Option<(f64, f64)> = t.get("stems_range").and_then(Value::as_str).and_then(|s| serde_json::from_str::<Vec<f64>>(s).ok())
+                .filter(|v| v.len() == 2).map(|v| (v[0], v[1]));
+            let done = t.get("stems").and_then(Value::as_str) == Some("done") && stems::has_stems(tid);
+            let same = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1.0 && (a.1 - b.1).abs() < 1.0;
+            if done && (have_range.is_none() || range_ms.is_some_and(|r| same(r, have_range.unwrap()))) {
+                continue;
+            }
+        }
         db::tx(|c| Ok(c.execute("UPDATE tracks SET stems='queued' WHERE id=?", [tid])?))?;
-        out.push(jobs::submit("stems", &format!("Stems: {}", title_of(tid)), "gpu", Some(tid), move |h| {
-            stems::separate(tid, &|f, m| h.progress(f, m), &|| h.cancelled())?;
+        let label = match range_ms { Some((a, b)) => format!("Stems {}–{}: {}", clock_ms(a), clock_ms(b), title_of(tid)), None => format!("Stems: {}", title_of(tid)) };
+        // A section goes to the front of the gpu lane in effect: it is small, and the intent order already puts it first.
+        out.push(jobs::submit("stems", &label, "gpu", Some(tid), move |h| {
+            stems::separate(tid, range_ms, &|f, m| h.progress(f, m), &|| h.cancelled())?;
             Ok(None)
         }));
     }
     Ok(out)
 }
+fn clock_ms(ms: f64) -> String { let s = (ms / 1000.0).round() as i64; format!("{}:{:02}", s / 60, s % 60) }
 
 // ── Tracks ───────────────────────────────────────────────────────────────────
 
@@ -171,6 +202,14 @@ async fn get_track(P(tid): P<i64>) -> R {
         t.insert("cues".into(), json!(library::cues(tid)?));
         t.insert("mood_why".into(), db::tx(|c| mood::explain(c, tid))?);
         t.insert("phrases".into(), a.as_ref().map(|a| a["phrases"].clone()).unwrap_or(Value::Null));
+        // Mix points: the DJ's where set, else the analysed ones (mix_auto says which).
+        for k in ["mix_in_ms", "mix_out_ms"] {
+            let own = t.get(k).and_then(Value::as_f64);
+            let auto = a.as_ref().and_then(|a| a[k].as_f64());
+            t.insert(k.into(), json!(own.or(auto)));
+            t.insert(format!("{k}_auto"), json!(own.is_none()));
+            t.insert(format!("{k}_analysed"), json!(auto));
+        }
         // Phrase sections (intro, build, drop...) for the phrase strip under the waveform.
         t.insert("sections".into(), a.as_ref().map(|a| a["sections"].clone()).unwrap_or(json!([])));
         // The grid as the deck will get it: the analysis grid plus the user's nudge.
@@ -302,7 +341,35 @@ async fn analyse_tracks(Json(b): Json<Value>) -> R {
 }
 
 async fn make_stems(Json(b): Json<Value>) -> R {
-    blocking(move || Ok(json!({"jobs": queue_stems(&ids(&b, "ids"))?}))).await
+    blocking(move || {
+        let range = b["range_ms"].as_array().and_then(|r| Some((r.first()?.as_f64()?, r.get(1)?.as_f64()?)));
+        Ok(json!({"jobs": queue_stems_range(&ids(&b, "ids"), range)?}))
+    }).await
+}
+
+/// Prepare everything the intents ask for, for the given tracks (or the whole library): analysis where
+/// missing, stems where the intent wants them, a deck copy where the file won't play. Nothing is redone.
+async fn prepare(Json(b): Json<Value>) -> R {
+    blocking(move || {
+        let wanted = ids(&b, "ids");
+        let rows = db::query(&format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE deleted=0"), &[])?;
+        let rows: Vec<&Row> = rows.iter().filter(|r| wanted.is_empty() || r["id"].as_i64().is_some_and(|i| wanted.contains(&i))).collect();
+        let id = |r: &Row| r["id"].as_i64().unwrap_or(0);
+        let analyse: Vec<i64> = rows.iter().filter(|r| r["analysed_at"].is_null()).map(|r| id(r)).collect();
+        let stems: Vec<i64> = rows.iter().filter(|r| matches!(r["intent"].as_str(), Some("vocal" | "remix" | "section")) && !matches!(r["stems"].as_str(), Some("done" | "queued" | "running")))
+            .map(|r| id(r)).collect();
+        let convert: Vec<i64> = rows.iter().filter(|r| r["intent"] != "backup" && r["path"].as_str()
+            .is_some_and(|p| crate::convert::state(id(r), std::path::Path::new(p))["deck_problem"].is_string())).map(|r| id(r)).collect();
+        let a = queue_analysis(&analyse);
+        let s = if stems.is_empty() { vec![] } else { queue_stems(&stems)? };
+        let c: Vec<i64> = convert.iter().filter(|t| !jobs::pending_for(**t, "convert")).map(|&tid| {
+            jobs::submit("convert", &format!("Convert for the deck: {}", title_of(tid)), "cpu", Some(tid), move |h| {
+                let out = crate::convert::convert(tid, &|f, m| h.progress(f, m), &|| h.cancelled())?;
+                Ok(Some(json!({"bytes": std::fs::metadata(out)?.len()})))
+            })
+        }).collect();
+        Ok(json!({"analyse": a.len(), "stems": s.len(), "convert": c.len()}))
+    }).await
 }
 
 async fn delete_stems(P(tid): P<i64>) -> R {
@@ -510,6 +577,7 @@ pub fn router() -> Router {
         .route("/api/analyse", post(analyse_tracks))
         .route("/api/convert", post(convert_tracks))
         .route("/api/stems", post(make_stems))
+        .route("/api/prepare", post(prepare))
         .route("/api/playlists", get(get_playlists).post(new_playlist))
         .route("/api/playlists/{pid}", axum::routing::patch(rename_playlist).delete(remove_playlist))
         .route("/api/playlists/{pid}/tracks", put(order_playlist))
@@ -525,6 +593,7 @@ pub fn router() -> Router {
         .route("/api/deck/flash", post(deck_flash))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/system", get(system))
+        .route("/api/models", get(|| async { Json(models::status()) }).post(|| async { blocking(|| Ok(json!({"job": models::fetch()?}))).await }))
         .route("/api/pick", post(pick))
         .fallback(static_file)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))     // firmware bundles
