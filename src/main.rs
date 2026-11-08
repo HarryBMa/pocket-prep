@@ -20,6 +20,7 @@ mod jobs;
 mod library;
 mod models;
 mod mood;
+mod quality;
 mod server;
 mod stems;
 #[cfg(test)]

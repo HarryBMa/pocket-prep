@@ -40,7 +40,8 @@ Measured against the brief, so the gaps are honest. "✓" means built and tested
 | | Smart playlists | ✗ | |
 | | Mixes-with filter (key ±1 on the wheel or relative, tempo ±6 %) | ✓ | |
 | Stems | 4-stem htdemucs, 8-channel FLAC, DirectML / CoreML / CPU, per-track | ✓ | |
-| | Section-only separation, vocal-only, stem quality score | ✗ | |
+| | Section-only separation, stem quality grade | ✓ | 0.6: range stems with context; `quality.rs` grades every run |
+| | Vocal-only separation | ✗ | |
 | Export | rekordbox PDB + ANLZ, POCKETDECK/analysis hints (grid, key shift, gain, audible start/end, cue names), dry-run check | ✓ | |
 | | Export validation after writing | ~ | tests read the card back with rekordcrate; the app doesn't |
 | Deck | Status, OTA (signed), wired recovery (typed FLASH) | ✓ | |
@@ -113,10 +114,13 @@ waveform as chips; clicking one makes the selection.
 readiness score (a Mix track without stems is ready). Set from the row menu, the focus view and
 "Edit selected…".
 
-**Stem quality (P1).** After separation: residual vocal energy in the instrumental, bleed of drums
-into bass, and the vocal stem's "singing vs leakage" ratio from the vocal map. Three numbers, shown
-as one glyph (good / usable / poor) with the numbers on hover. Poor stems get the intent downgraded
-to Vocal layer or Mix with a note.
+**Stem quality (done, 0.6).** After every separation `quality.rs` measures, with no reference needed:
+clipping per stem (share of samples at full scale), the reconstruction residual (mix minus the sum
+of the stems, dB) and vocal bleed (the vocal stem's energy where ClubCraft's vocal map says nothing is
+sung; a near-silent vocal stem is "no vocals", not bleed). Grade good / usable / poor in
+`tracks.stem_quality` (JSON with the numbers and notes). Poor stems turn the readiness ring's stems
+segment red with the first note; the open track shows the notes with a *Redo* button (a new run
+can come out differently). The card's hints carry the grade for the deck.
 
 **Key shift (done).** Stays as is: the deck shifts, the file doesn't change.
 
@@ -201,7 +205,7 @@ Nothing needs a network at any point; the models ship with the app or are fetche
 | P0 | Intent per track + queue priority | **done (0.6)**: `tracks.intent`, stems queued sections-first, `/api/prepare` |
 | P0 | Readiness ring (with grid OK, on the card) | **done (0.6)**: one ring per row, `grid_ok_at` |
 | P0 | Sections: select, preview, separate a range, save | **done (0.6)**: phrase-snapped selection, chips, loop, save as loop, range stems with context, no repeats |
-| P1 | Stem quality grade | stops bad stems reaching the stage |
+| P1 | Stem quality grade | **done (0.6)**: `quality.rs`, ring + open-track note, Redo |
 | P1 | Transition window + reasons, suggestions list | "mixes with" done properly |
 | P1 | Card validation after export | find it at home |
 | P1 | Sets with order, energy curve, `set.json` | the planning layer |

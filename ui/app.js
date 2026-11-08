@@ -292,6 +292,11 @@ function energyBars(n) {
 }
 // Readiness: one ring per track, a segment per check, judged against the track's intent. Diagnostic, not a
 // score: a Mix track without stems is ready; a Remix track without them isn't. Hover lists what's missing.
+// Stem quality as the separation measured it (quality.rs): { grade, notes[] } or null.
+function stemQuality(t) {
+  if (!t.stem_quality) return null;
+  try { return typeof t.stem_quality === "string" ? JSON.parse(t.stem_quality) : t.stem_quality; } catch { return null; }
+}
 function readiness(t) {
   const aj = jobFor(t.id, "analyse"), sj = jobFor(t.id, "stems"), d = exp.root && exp.plan?.details?.find((x) => x.id === t.id);
   const seg = (key, state, text) => ({ key, state, text });
@@ -302,7 +307,9 @@ function readiness(t) {
   const gridChecked = t.grid_ok_at || t.grid_offset_ms || t.downbeat_shift;
   out.push(!t.analysed_at ? seg("grid", "na", "Beat grid: after analysis") : gridChecked ? seg("grid", "ok", "Beat grid confirmed") : seg("grid", "todo", "Beat grid not confirmed by ear (open the track: ✓ or nudge)"));
   out.push(t.hot_cues ? seg("cues", "ok", `${plural(t.hot_cues, "hot cue")}`) : t.analysed_at ? seg("cues", "todo", "No hot cues") : seg("cues", "na", "Cues: after analysis"));
-  if (wantsStems(t)) out.push(t.stems === "done" ? seg("stems", "ok", "Stems ready") : sj?.status === "running" ? seg("stems", "busy", `Making stems ${Math.round(sj.progress * 100)}%`)
+  const q = stemQuality(t);
+  const stemsDone = q?.grade === "poor" ? seg("stems", "bad", `Stems are poor: ${q.notes[0] || "don't rely on them live"}`) : q?.grade === "usable" ? seg("stems", "ok", `Stems usable (${q.notes[0] || "see the track"})`) : seg("stems", "ok", "Stems ready");
+  if (wantsStems(t)) out.push(t.stems === "done" ? stemsDone : sj?.status === "running" ? seg("stems", "busy", `Making stems ${Math.round(sj.progress * 100)}%`)
     : t.stems === "queued" || sj?.status === "queued" ? seg("stems", "busy", "Stems queued") : t.stems === "failed" ? seg("stems", "bad", "Stems failed") : seg("stems", "todo", `No stems yet (${intentOf(t)[1]} needs them)`));
   else out.push(seg("stems", "na", t.stems === "done" ? "Stems ready (not needed for this intent)" : "Stems not needed for this intent"));
   out.push(t.lufs != null ? seg("loud", "ok", `${t.lufs.toFixed(1)} LUFS`) : t.analysed_at ? seg("loud", "todo", "Loudness not measured yet") : seg("loud", "na", "Loudness: after analysis"));
@@ -980,6 +987,9 @@ function renderDetail() {
   const lines = [splitSuggestion(t),
     why.length ? h("div", { class: "warn-line" }, icon("alert", "ic sm"), h("span", {}, why.join(" · "), t.deck_problem ? ". The original is still exported (CDJs play it)." : ""),
       t.deck_problem ? h("button", { class: "small", onclick: () => convertForDeck([t.id]), title: "Makes a 16-bit FLAC copy for the deck. The original stays as it is." }, "Convert for the deck") : null) : null,
+    stemQuality(t) && stemQuality(t).grade !== "good" && t.stems === "done" ? h("div", { class: stemQuality(t).grade === "poor" ? "warn-line" : "ok-line" }, icon(stemQuality(t).grade === "poor" ? "alert" : "info", "ic sm"),
+      h("span", {}, `${stemQuality(t).grade === "poor" ? "Poor stems" : "Usable stems"}: ${stemQuality(t).notes.join(" · ")}.`),
+      h("button", { class: "ghost small", title: "Separate again (a new run can come out differently)", onclick: () => api("/api/stems", { body: { ids: [t.id], force: true } }).then(() => { toast("Making stems again"); pollJobs(); }).catch(fail) }, "Redo")) : null,
     t.stems_range ? h("div", { class: "ok-line" }, icon("deck", "ic sm"),
       h("span", {}, `The stems cover ${fmtMs(JSON.parse(t.stems_range)[0])}–${fmtMs(JSON.parse(t.stems_range)[1])} only (silence elsewhere).`),
       h("button", { class: "ghost small", onclick: () => api("/api/stems", { body: { ids: [t.id] } }).then(() => { toast("Making stems for the whole track"); pollJobs(); }).catch(fail) }, "Whole track")) : null,

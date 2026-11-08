@@ -91,7 +91,9 @@ pub fn conn() -> MutexGuard<'static, Connection> {
                             // is prepared for it; grid_ok_at: when the DJ confirmed the beat grid by ear.
                             ("intent", "TEXT DEFAULT 'mix'"), ("grid_ok_at", "REAL"),
                             // stems_range: JSON [start_ms, end_ms] when the stems file covers only that range (silence outside).
-                            ("stems_range", "TEXT")] {
+                            ("stems_range", "TEXT"),
+                            // stem_quality: JSON from quality::assess (grade good|usable|poor, measures, notes) for the stems file.
+                            ("stem_quality", "TEXT")] {
             let has: bool = c.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name=?").unwrap()
                 .exists([col]).unwrap();
             if !has {
