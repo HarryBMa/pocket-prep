@@ -25,6 +25,7 @@ mod server;
 mod sets;
 mod stems;
 mod transitions;
+mod vocals;
 #[cfg(test)]
 mod testaudio;
 

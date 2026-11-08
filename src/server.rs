@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 use crate::db::{self, Row};
 use crate::export::usb;
-use crate::{analysis, config, convert, deck, jobs, library, models, mood, sets, stems, transitions};
+use crate::{analysis, config, convert, deck, jobs, library, models, mood, sets, stems, transitions, vocals};
 
 pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -213,6 +213,8 @@ async fn get_track(P(tid): P<i64>) -> R {
         }
         // Phrase sections (intro, build, drop...) for the phrase strip under the waveform.
         t.insert("sections".into(), a.as_ref().map(|a| a["sections"].clone()).unwrap_or(json!([])));
+        // What the stems said about the singing (vocals.rs): first vocal and the sung phrases, or null.
+        t.insert("vocals".into(), vocals::load(tid).unwrap_or(Value::Null));
         // The grid as the deck will get it: the analysis grid plus the user's nudge.
         let a = a.map(|a| analysis::user_grid(&a, &t));
         t.insert("grid".into(), a.as_ref().map(|a| json!({

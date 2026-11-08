@@ -1240,7 +1240,11 @@ function candidates(t) {
       }
       return found.sort((x, y) => y.bars - x.bars).slice(0, 3);
     };
-    out.push(...runs("instrumental", "Instrumental"), ...runs("vocal", "Vocal"));
+    out.push(...runs("instrumental", "Instrumental"));
+    // The sung phrases ClubCraft found in the vocal stem (vocals.rs) beat the rough vocal runs from the peaks.
+    const units = t.vocals?.units || [];
+    if (units.length) out.push(...units.map((u) => ({ start_ms: u.start_ms, end_ms: u.end_ms, bars: u.bars, start_bar: u.bar, kind: u.role, label: `${u.role} ${u.bars}`, quality: u.quality })));
+    else out.push(...runs("vocal", "Vocal"));
   }
   return out;
 }
@@ -1254,7 +1258,7 @@ function sectionChips(t) {
       h("button", { class: "chip-main", title: `Saved loop ${fmtMs(c.start_ms)}–${fmtMs(c.end_ms)}. Click to select it`, onclick: () => setSel(snapSel(c.start_ms, c.end_ms) || { start_ms: c.start_ms, end_ms: c.end_ms, bars: 0 }) },
         icon("repeat", "ic sm"), c.label || "Loop"),
       h("button", { class: "chip-x", "aria-label": `Delete loop ${c.label || ""}`, title: "Delete this loop", onclick: () => removeMemory(c).catch(fail) }, icon("x", "ic sm")))),
-    cands.map((c) => h("button", { class: "chip" + (isSel(c.start_ms, c.end_ms) ? " on" : ""), style: `--k:${phraseColor(c.kind)}`, title: `${c.kind}: ${c.bars} bars from ${fmtMs(c.start_ms)}. Click to select`,
+    cands.map((c) => h("button", { class: "chip" + (isSel(c.start_ms, c.end_ms) ? " on" : ""), style: `--k:${phraseColor(c.kind)}`, title: `${c.kind}: ${c.bars} bars from ${fmtMs(c.start_ms)}${c.quality != null ? ` · sung phrase, quality ${Math.round(c.quality * 100)} %` : ""}. Click to select`,
       onclick: () => setSel(c) }, h("i"), c.label)));
 }
 async function saveLoop() {

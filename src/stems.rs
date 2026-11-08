@@ -317,6 +317,10 @@ pub fn separate(track_id: i64, range_ms: Option<(f64, f64)>, progress: &dyn Fn(f
         progress(0.98, "Checking the stems");
         let q = crate::quality::assess(&audio, &out, crate::quality::grid_for(track_id));
         db::tx(|c| Ok(c.execute("UPDATE tracks SET stem_quality=? WHERE id=?", rusqlite::params![q.to_string(), track_id])?))?;
+        if range_ms.is_none() {
+            progress(0.99, "Finding the vocals");
+            if let Err(e) = crate::vocals::after_separation(track_id, &out) { eprintln!("vocals for track {track_id}: {e:#}"); }
+        }
         Ok(())
     })();
     let state = if res.is_ok() { "done" } else { "failed" };
@@ -332,7 +336,8 @@ pub fn remove(track_id: i64) -> Result<()> {
     for name in STEM_NAMES {
         let _ = std::fs::remove_file(preview_file(track_id, name));
     }
-    db::tx(|c| Ok(c.execute("UPDATE tracks SET stems='none', stems_range=NULL, stem_quality=NULL WHERE id=?", [track_id])?))?;
+    db::tx(|c| Ok(c.execute("UPDATE tracks SET stems='none', stems_range=NULL, stem_quality=NULL, first_vocal_ms=NULL WHERE id=?", [track_id])?))?;
+    crate::vocals::remove(track_id);
     Ok(())
 }
 

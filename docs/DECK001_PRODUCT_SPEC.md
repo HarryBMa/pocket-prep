@@ -33,9 +33,9 @@ Measured against the brief, so the gaps are honest. "✓" means built and tested
 | | Genre | ~ | mood is a genre-plus-feel label; tag genre is editable |
 | Cues | A = start, B = first drop, C = breakdown, D = outro, phrase lines ≤ 1 per 16 bars | ✓ | `auto_cues` |
 | | Hot cues 1-8 and memory cues, beat-snapped, named, keys 1-8 / M | ✓ | |
-| | First vocal, last usable mix-out | ✗ | ClubCraft has `default_mix_in/out` (planner.rs) and the vocal map: not wired |
+| | First vocal, vocal units | ✓ | 0.7: `vocals.rs` after separation (needs stems) |
 | Library | Duplicates, missing files, unplayable formats (M4A, AIFF, 24-bit WAV) + convert for the deck | ✓ | 0.5.0 |
-| | Clipping detection, bitrate validation | ✗ | cheap to add in the loudness pass |
+| | Clipping detection, bitrate validation | ✓ | 0.7: `tracks.clip_pct` in the loudness pass; lossy < 192 kbps flagged |
 | | Playlists, folders, tags (artist, album, genre, year, comment, colour, rating) | ✓ | |
 | | Smart playlists | ✗ | |
 | | What follows: transitions scored with reasons (tempo, key, energy, level, phrase lines, clashes) | ✓ | 0.6: `transitions.rs`, `POST /api/transitions` |
@@ -57,8 +57,12 @@ before the energy falls for good (`default_mix_out`). Shown as `IN` / `OUT` flag
 written to the card as memory cues and to POCKETDECK/analysis as `mix_in_ms` / `mix_out_ms`. The
 deck's autopilot uses them instead of `audible_start_ms` when they exist.
 
-**First vocal (P1).** From ClubCraft's vocal map (needs stems): the first 16th where a sung line
-starts. A memory cue `V` and a hint. Without stems, nothing: never guess from the mix.
+**First vocal (done, 0.7).** From ClubCraft's vocal map (needs stems): the first beat that is surely
+sung (`vocals.rs`, after every whole-track separation). A memory cue "Vocal" (placed once, kept if
+moved), `tracks.first_vocal_ms`, and `first_vocal_ms` in the hints. ClubCraft's mashup features also
+give the **vocal units** (whole sung phrases of 16 or 8 bars with a quality): chips in the open
+track, `vocal_units` in the hints, `<id>.vocals.json` beside the analysis. Without stems, nothing:
+never guessed from the mix.
 
 **Phrase-aligned everything (P0, mostly done).** Every automatic cue already sits on a phrase
 start. Add: the phrase strip in the focus view is clickable per 8 bars, and selections snap to
@@ -216,7 +220,7 @@ Nothing needs a network at any point; the models ship with the app or are fetche
 | P1 | Card validation after export | **done (0.6)**: `check` in the export result, shown in the card column |
 | P1 | Sets with order, energy curve, `set.json` | **done (0.6)**: `sets.rs`, set strip, Order by…, `POCKETDECK/sets/` |
 | P1 | Performance simulation (the set-level dry run) | **done (0.6)**: the plan carries the set report (verdicts, readiness rings, load estimate) |
-| P2 | First vocal cue, vocal units as chips | needs stems; land after sections |
+| P2 | First vocal cue, vocal units as chips | **done (0.7)**: `vocals.rs`, chips with role and quality, hints |
 | P2 | Clipping, bitrate checks; smart playlists | |
 | P2 | Time signature | ClubCraft would need it first |
 

@@ -545,6 +545,9 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
             // Names you gave cues in DKPRP (the rekordbox files have no field for them).
             "cue_labels": cue_rows.iter().filter(|q| q["label"].as_str().is_some_and(|l| !l.is_empty()))
                 .map(|q| json!({"slot": q["slot"], "start_ms": q["start_ms"], "end_ms": q["end_ms"], "label": q["label"]})).collect::<Vec<_>>(),
+            // Where the singing starts and the sung phrases (from the stems; null without them).
+            "first_vocal_ms": t["first_vocal_ms"],
+            "vocal_units": crate::vocals::load(tid).map(|v| v["units"].clone()),
             // Stems that cover only a section of the track (silence outside): [start_ms, end_ms].
             "stems_range": t["stems_range"].as_str().and_then(|s| serde_json::from_str::<Value>(s).ok()),
             // What the separation measured (quality.rs): the deck can warn before a poor vocal stem goes on the floor.
