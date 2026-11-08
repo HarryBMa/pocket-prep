@@ -442,6 +442,8 @@ td.lufs { color: var(--ink-3); font-variant-numeric: tabular-nums; font-size: 12
 .pill-ctl > .ic { color: var(--ink-3); margin: 0 2px; }
 .pill-ctl button { border: 0; background: none; width: 30px; height: 30px; padding: 0; justify-content: center; font-size: 16px; border-radius: 50%; }
 .pill-ctl button:hover { background: var(--surface-2); }
+.pill-ctl .sig { font-variant-numeric: tabular-nums; font-size: 11px; font-weight: 600; padding: 0 6px; }
+.pill-ctl .sig.edited { color: var(--accent-text); }
 .pill-ctl span { font-size: 12.5px; color: var(--ink-2); padding: 0 2px; font-variant-numeric: tabular-nums; min-width: 56px; text-align: center; }
 .pill-ctl.key span { min-width: 92px; }
 .solos { display: inline-flex; align-items: center; gap: 4px; height: 40px; padding: 0 8px; border: 1px solid var(--line); background: var(--surface); border-radius: 20px; }

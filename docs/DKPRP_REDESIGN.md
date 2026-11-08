@@ -190,3 +190,11 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   keys after the key shift, moods, intents, with stems). The playlist (funnel glyph) fills itself from the rule
   wherever a playlist is read: the list, the card's scope, sets, export. Right-click → *Edit rule…* or *Make
   ordinary*. Tracks can't be dropped on or removed from it; the rule decides.
+- **Time signature**: `meter.rs` reads the accents on the beat grid (the onset strength at every beat) and tries 3
+  and 4 beats to the bar the way madmom's bar tracker does: the downbeat contrast of the best phase, and the
+  periodicity at one, two and four bars. 3/4 has to win every reading and by a margin; everything else is 4/4.
+  Measured with the loudness (so older analyses get it at start-up without a re-analysis) into
+  `tracks.beats_per_bar`; the grid pill shows `4/4` and a click cycles 4 → 3 → 6 → back to the analysis (kept
+  through re-analysis like an edited tempo). Bars, phrase snapping, downbeat lines, the nudge's +1, the planner's
+  windows, the card's PQTZ beat numbers (1..N) and the hints' `beats_per_bar` all follow. ClubCraft's own sections
+  and cues still assume 4/4, so on a 3/4 track they are approximate.

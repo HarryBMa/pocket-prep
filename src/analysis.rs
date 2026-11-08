@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 
 use crate::{config, db, mood, stems};
 
-const COLS_PER_S: f64 = 150.0;
+pub const COLS_PER_S: f64 = 150.0;
 /// Bump when results change; older analyses are redone at startup (3 = ClubCraft + phrase cues,
 /// 4 = mood features, 5 = mix-in / mix-out points, 6 = stem activity per section for the transition check).
 pub const VERSION: i64 = 6;
@@ -72,7 +72,7 @@ pub fn clip_pct(audio: &clubcraft_audio::decode::AudioBuffer) -> f64 {
 /// Loudness, the near-silent start and end, and clipping for tracks analysed before they were measured (reads the
 /// files again).
 pub fn backfill_levels(h: &crate::jobs::Handle) -> Result<Value> {
-    let ids: Vec<i64> = db::query("SELECT id FROM tracks WHERE deleted=0 AND analysed_at IS NOT NULL AND (lead_s IS NULL OR clip_pct IS NULL) ORDER BY id", &[])?
+    let ids: Vec<i64> = db::query("SELECT id FROM tracks WHERE deleted=0 AND analysed_at IS NOT NULL AND (lead_s IS NULL OR clip_pct IS NULL OR beats_per_bar IS NULL) ORDER BY id", &[])?
         .iter().filter_map(|r| r["id"].as_i64()).collect();
     let (mut done, mut failed) = (0, 0);
     for (i, id) in ids.iter().enumerate() {
@@ -86,7 +86,25 @@ pub fn backfill_levels(h: &crate::jobs::Handle) -> Result<Value> {
             let (lead, tail) = quiet_edges(&audio);
             let lufs = load_analysis(*id).and_then(|a| a["loudness_lufs"].as_f64());
             let clip = clip_pct(&audio);
-            db::tx(|c| Ok(c.execute("UPDATE tracks SET lufs=?, lead_s=?, tail_s=?, clip_pct=? WHERE id=?", params![lufs, lead, tail, clip, id])?))?;
+            // Beats per bar for analyses made before the meter check: measured now, written into the analysis too.
+            let mut bpb: Option<i64> = t.get("beats_per_bar").and_then(Value::as_i64);
+            if bpb.is_none() {
+                if let Some(mut a) = load_analysis(*id) {
+                    if a["beats_per_bar"].is_null() {
+                        let mono: Vec<f32> = audio.left.iter().zip(&audio.right).map(|(l, r)| (l + r) / 2.0).collect();
+                        let [_, lo, mid, hi] = band_envelopes(&mono, audio.sample_rate);
+                        let m = crate::meter::detect(&lo, &mid, &hi, a["first_beat_ms"].as_f64().unwrap_or(0.0) / 1000.0, a["period_ms"].as_f64().unwrap_or(0.0) / 1000.0);
+                        a["beats_per_bar"] = json!(m.beats_per_bar);
+                        if m.beats_per_bar != 4 {
+                            a["downbeat_index"] = json!(m.downbeat_index);
+                            a["phrases"]["first_downbeat_ms"] = json!(a["first_beat_ms"].as_f64().unwrap_or(0.0) + m.downbeat_index as f64 * a["period_ms"].as_f64().unwrap_or(0.0));
+                        }
+                        std::fs::write(config::analysis_dir().join(format!("{id}.json")), a.to_string())?;
+                    }
+                    bpb = a["beats_per_bar"].as_i64();
+                }
+            }
+            db::tx(|c| Ok(c.execute("UPDATE tracks SET lufs=?, lead_s=?, tail_s=?, clip_pct=?, beats_per_bar=COALESCE(beats_per_bar, ?) WHERE id=?", params![lufs, lead, tail, clip, bpb, id])?))?;
             Ok(())
         })();
         match res { Ok(()) => done += 1, Err(e) => { failed += 1; eprintln!("levels for track {id}: {e:#}"); } }
@@ -98,7 +116,7 @@ pub fn backfill_levels(h: &crate::jobs::Handle) -> Result<Value> {
 /// code ("8A") and its name follows from it; energy is 1 to 10; tempo is above 0. A value of null puts the analysed
 /// value back. Every number you set is remembered in `edited`, so a re-analysis keeps it. Other fields are not touched.
 pub fn apply_user_edits(track_id: i64, fields: &mut db::Row) -> Result<()> {
-    let touched = ["bpm", "camelot", "energy"].iter().any(|k| fields.contains_key(*k));
+    let touched = ["bpm", "camelot", "energy", "beats_per_bar"].iter().any(|k| fields.contains_key(*k));
     if !touched {
         return Ok(());
     }
@@ -116,6 +134,13 @@ pub fn apply_user_edits(track_id: i64, fields: &mut db::Row) -> Result<()> {
             Some(n) if (1..=10).contains(&n) => { fields.insert("energy".into(), json!(n)); mark("energy", true); }
             _ if v.is_null() => { fields.insert("energy".into(), analysed.as_ref().map(|a| a["energy"].clone()).unwrap_or(Value::Null)); mark("energy", false); }
             _ => return Err(anyhow!("Energy is a whole number from 1 to 10")),
+        }
+    }
+    if let Some(v) = fields.get("beats_per_bar").cloned() {
+        match v.as_i64() {
+            Some(n) if (2..=12).contains(&n) => { mark("beats_per_bar", true); }
+            _ if v.is_null() => { fields.insert("beats_per_bar".into(), analysed.as_ref().map(|a| a["beats_per_bar"].clone()).unwrap_or(json!(4))); mark("beats_per_bar", false); }
+            _ => return Err(anyhow!("Beats per bar is a whole number from 2 to 12")),
         }
     }
     if let Some(v) = fields.get("bpm").cloned() {
@@ -204,6 +229,8 @@ fn col_start(i: usize, sr: u32) -> usize {
 }
 
 /// Peak level and low/mid/high RMS for every 1/150 s column.
+#[cfg(test)]
+pub fn band_envelopes_pub(y: &[f32], sr: u32) -> [Vec<f64>; 4] { band_envelopes(y, sr) }
 fn band_envelopes(y: &[f32], sr: u32) -> [Vec<f64>; 4] {
     let lo = butter4(y, false, 200.0, sr as f64);
     let hi = butter4(y, true, 2500.0, sr as f64);
@@ -303,14 +330,18 @@ pub fn user_grid(a: &Value, track: &db::Row) -> Value {
     let off = track.get("grid_offset_ms").and_then(Value::as_f64).unwrap_or(0.0);
     let shift = track.get("downbeat_shift").and_then(Value::as_i64).unwrap_or(0);
     let period = a["period_ms"].as_f64().unwrap_or(0.0);
+    // Beats per bar: the track row has the DJ's choice (or the analysed one, copied there); the analysis has its own.
+    let bpb = track.get("beats_per_bar").and_then(Value::as_i64).or(a["beats_per_bar"].as_i64()).filter(|b| (2..=12).contains(b)).unwrap_or(4);
+    let mut out = a.clone();
+    out["beats_per_bar"] = json!(bpb);
     if (off == 0.0 && shift == 0) || period <= 0.0 {
-        return a.clone();
+        out["downbeat_index"] = json!(a["downbeat_index"].as_i64().unwrap_or(0).rem_euclid(bpb));
+        return out;
     }
     let moved = a["first_beat_ms"].as_f64().unwrap_or(0.0) + off;
     let k = (moved / period).floor();                  // whole beats the first beat moved past 0
-    let mut out = a.clone();
     out["first_beat_ms"] = json!(moved - k * period);
-    out["downbeat_index"] = json!((a["downbeat_index"].as_i64().unwrap_or(0) + k as i64 + shift).rem_euclid(4));
+    out["downbeat_index"] = json!((a["downbeat_index"].as_i64().unwrap_or(0) + k as i64 + shift).rem_euclid(bpb));
     out
 }
 
@@ -318,10 +349,11 @@ pub fn user_grid(a: &Value, track: &db::Row) -> Value {
 pub fn beats_from_grid(a: &Value) -> Vec<(u16, u32, f64)> {
     let (mut t, period, dur) = (a["first_beat_ms"].as_f64().unwrap_or(0.0), a["period_ms"].as_f64().unwrap_or(500.0), a["duration_ms"].as_f64().unwrap_or(0.0));
     let (down, bpm) = (a["downbeat_index"].as_i64().unwrap_or(0), a["bpm"].as_f64().unwrap_or(0.0));
+    let bpb = a["beats_per_bar"].as_i64().filter(|b| *b >= 2).unwrap_or(4);
     let mut out = vec![];
     let mut i = 0i64;
     while t < dur && period > 0.0 {
-        out.push(((i - down).rem_euclid(4) as u16 + 1, rnd(t) as u32, bpm));
+        out.push(((i - down).rem_euclid(bpb) as u16 + 1, rnd(t) as u32, bpm));
         t += period;
         i += 1;
     }
@@ -380,13 +412,17 @@ pub fn analyse_audio(audio: &AudioBuffer, stems: Option<&StemsRef>, bpm_range: (
     // Intro end = where the first non-intro section starts (only when the track has an intro).
     let intro_end = r.sections.first().filter(|s| s.kind == SectionKind::Intro).map(|s| ms(s.end));
     let drops: Vec<f64> = r.sections.iter().filter(|s| s.kind == SectionKind::Drop).map(|s| ms(s.start)).collect();
+    // Beats per bar from the accents (meter.rs): ClubCraft's grid assumes 4; a clear 3/4 gets its own downbeat phase.
+    let m = crate::meter::detect(&lo, &mid, &hi, first, beat);
+    let (bpb, downbeat_index) = if m.beats_per_bar == 4 { (4, (n as i64).rem_euclid(4)) } else { (m.beats_per_bar as i64, m.downbeat_index as i64) };
+    let first_downbeat = if bpb == 4 { ms(g.downbeat) } else { ms(first + downbeat_index as f64 * beat) };
     json!({
         "version": VERSION,
         "bpm": g.bpm, "period_ms": beat * 1000.0, "first_beat_ms": first * 1000.0,
-        "downbeat_index": (n as i64).rem_euclid(4), "duration_ms": duration_ms,
+        "downbeat_index": downbeat_index, "beats_per_bar": bpb, "duration_ms": duration_ms,
         "key": r.key.map(|k| k.name()), "camelot": r.key.map(|k| k.camelot()),
         "energy": r.energy, "loudness_lufs": r.loudness_lufs, "gain_db": r.gain_db,
-        "phrases": {"first_downbeat_ms": ms(g.downbeat), "intro_end_ms": intro_end,
+        "phrases": {"first_downbeat_ms": first_downbeat, "intro_end_ms": intro_end,
                     "outro_start_ms": start_of(SectionKind::Outro), "drops": drops},
         // Where to mix in (the first full-groove phrase) and out (before the energy falls for good): ClubCraft's
         // planner, from the sections and the grid. The DJ can move them per track (tracks.mix_in_ms / mix_out_ms).
@@ -470,9 +506,10 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
         let keep = |name: &str| format!("instr(COALESCE(edited,''), '\"{name}\"') > 0");
         c.execute(&format!("UPDATE tracks SET bpm=CASE WHEN {bpm} THEN bpm ELSE ? END, musical_key=CASE WHEN {key} THEN musical_key ELSE ? END, \
                             camelot=CASE WHEN {key} THEN camelot ELSE ? END, energy=CASE WHEN {energy} THEN energy ELSE ? END, \
+                            beats_per_bar=CASE WHEN {bpb} THEN beats_per_bar ELSE ? END, \
                             duration=?, analysed_at=?, mood_features=?, mood_emb=COALESCE(?, mood_emb) WHERE id=?",
-                           bpm = keep("bpm"), key = keep("key"), energy = keep("energy")),
-                  params![a["bpm"].as_f64(), a["key"].as_str(), a["camelot"].as_str(), a["energy"].as_i64(),
+                           bpm = keep("bpm"), key = keep("key"), energy = keep("energy"), bpb = keep("beats_per_bar")),
+                  params![a["bpm"].as_f64(), a["key"].as_str(), a["camelot"].as_str(), a["energy"].as_i64(), a["beats_per_bar"].as_i64(),
                           a["duration_ms"].as_f64().map(|d| d / 1000.0), a["analysed_at"].as_f64(),
                           a["mood_features"].to_string(), emb, track_id])?;
         c.execute("UPDATE tracks SET lufs=?, lead_s=?, tail_s=?, clip_pct=? WHERE id=?", params![a["loudness_lufs"].as_f64(), lead_s, tail_s, clip, track_id])?;
@@ -534,7 +571,8 @@ mod tests {
         let row = |off: f64, shift: i64| -> db::Row {
             json!({"grid_offset_ms": off, "downbeat_shift": shift}).as_object().unwrap().clone()
         };
-        assert_eq!(user_grid(&a, &row(0.0, 0)), a);
+        let mut a4 = a.clone(); a4["beats_per_bar"] = json!(4);
+        assert_eq!(user_grid(&a, &row(0.0, 0)), a4);
         // +12 ms: same beats, 12 ms later; downbeats unchanged.
         let b = beats_from_grid(&user_grid(&a, &row(12.0, 0)));
         let base = beats_from_grid(&a);
@@ -659,6 +697,18 @@ mod tests {
     fn section(kind: SectionKind, start_bar: i32, bars: u32, g: &clubcraft_core::BeatGrid) -> clubcraft_core::Section {
         clubcraft_core::Section { kind, start: g.time_of_bar(start_bar as f64), end: g.time_of_bar((start_bar + bars as i32) as f64),
                                   start_bar, bars, energy: 0.5, stems: [0.0; 4] }
+    }
+
+    /// A 3/4 grid numbers its beats 1 2 3 1 2 3 for the card, from the downbeat, and the DJ's choice on the
+    /// track row wins over the analysed value.
+    #[test]
+    fn beats_per_bar_in_the_grid() {
+        let a = json!({"first_beat_ms": 0.0, "period_ms": 500.0, "downbeat_index": 1, "beats_per_bar": 3, "duration_ms": 3000.0, "bpm": 120.0});
+        let nums: Vec<u16> = beats_from_grid(&user_grid(&a, &db::Row::new())).iter().map(|b| b.0).collect();
+        assert_eq!(nums, [3, 1, 2, 3, 1, 2]);
+        let mine = json!({"beats_per_bar": 4}).as_object().unwrap().clone();
+        let g = user_grid(&a, &mine);
+        assert_eq!((g["beats_per_bar"].as_i64(), g["downbeat_index"].as_i64()), (Some(4), Some(1)));
     }
 
     /// Clipping is the share of samples at full scale: a clean tone has none, a tone pushed 6 dB over has most.

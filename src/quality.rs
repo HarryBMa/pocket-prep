@@ -36,7 +36,7 @@ pub fn grid_for(track_id: i64) -> Option<BeatGrid> {
     let a = crate::analysis::user_grid(&crate::analysis::load_analysis(track_id)?, &t);
     let (bpm, period, first, down) = (a["bpm"].as_f64()?, a["period_ms"].as_f64()?, a["first_beat_ms"].as_f64()?, a["downbeat_index"].as_f64().unwrap_or(0.0));
     if bpm <= 0.0 || period <= 0.0 { return None; }
-    Some(BeatGrid::new(bpm, (first + down * period) / 1000.0))
+    Some(BeatGrid { bpm, downbeat: (first + down * period) / 1000.0, beats_per_bar: a["beats_per_bar"].as_u64().unwrap_or(4) as u32 })
 }
 
 /// Assess `stems` of `mix` (both 44.1 kHz, same length). `grid` enables the vocal-bleed measure.
