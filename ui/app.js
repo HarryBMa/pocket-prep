@@ -882,6 +882,17 @@ function renderDetail() {
     h("span", { id: "shiftReadout", "aria-live": "polite", title: "Key shift on the deck (semitones)" }, keyShiftText(t)),
     h("button", { "aria-label": "Key up one semitone", title: "One semitone up", onclick: () => keyShiftBy(1) }, "›"),
     keyShiftNow(t) ? h("button", { class: "tb small", "aria-label": "No key shift", title: "No key shift", onclick: () => keyShiftBy(-keyShiftNow(t)) }, icon("x", "ic sm")) : null);
+  // Mix in / out: where this track enters and leaves a mix. Analysed by default (hollow), yours once you set them
+  // (I / O at the playhead, or a click on the readout to jump there). The card gets them for the deck's autopilot.
+  const mixBtn = (k, name, key) => {
+    const own = !t[`${k}_auto`], v = t[k];
+    return h("button", { class: "mix-pt" + (own ? " own" : ""), title: v == null ? `No ${name.toLowerCase()} point yet. Press ${key} to set it at the playhead` : `Mix ${name.toLowerCase()} at ${fmtMs(v)} (${own ? "yours" : "analysed"}). Click to jump; ${key} sets it at the playhead`,
+      "aria-label": `Mix ${name.toLowerCase()} ${v == null ? "not set" : "at " + fmtMs(v)}${own ? ", set by you" : ""}`, onclick: () => { if (v != null) player.currentTime = v / 1000; } },
+      h("b", {}, name), v == null ? "–" : fmtMs(v));
+  };
+  const mixPill = h("div", { class: "pill-ctl mix", role: "group", "aria-label": "Mix in and mix out points" }, icon("arrow-right", "ic sm"),
+    mixBtn("mix_in_ms", "IN", "I"), mixBtn("mix_out_ms", "OUT", "O"),
+    (!t.mix_in_ms_auto || !t.mix_out_ms_auto) ? h("button", { class: "tb small", "aria-label": "Back to the analysed mix points", title: "Back to the analysed mix points", onclick: () => setMixPoints({ mix_in_ms: null, mix_out_ms: null }) }, icon("refresh", "ic sm")) : null);
   const lines = [splitSuggestion(t),
     why.length ? h("div", { class: "warn-line" }, icon("alert", "ic sm"), h("span", {}, why.join(" · "), t.deck_problem ? ". The original is still exported (CDJs play it)." : ""),
       t.deck_problem ? h("button", { class: "small", onclick: () => convertForDeck([t.id]), title: "Makes a 16-bit FLAC copy for the deck. The original stays as it is." }, "Convert for the deck") : null) : null,
@@ -911,7 +922,7 @@ function renderDetail() {
       pads,
       h("button", { class: "tb", "aria-pressed": String(!!state.cueEdit), "aria-label": "Edit cues: clear or name them, memory cues", title: "Edit cues",
         onclick: () => { state.cueEdit = !state.cueEdit; renderDetail(); } }, icon("pencil")),
-      gridPill, keyPill, stemsCtl,
+      mixPill, gridPill, keyPill, stemsCtl,
       h("span", { class: "spacer" }),
       h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
         h("button", { "aria-label": "Zoom out", title: "Zoom out", onclick: () => zoomWave(0.5) }, "−"),
@@ -1025,6 +1036,18 @@ async function putCues(cues, message) {
   state.current.cues = r.cues;
   toast(message, r.undo);
   renderDetail();
+}
+// Mix points: saved per track (NULL = the analysed point), beat-snapped like a cue, one undo.
+const MIX = [["mix_in_ms", "IN"], ["mix_out_ms", "OUT"]];
+async function setMixPoints(fields) {
+  const t = state.current;
+  if (!t) return;
+  try {
+    const r = await api(`/api/tracks/${t.id}`, { method: "PATCH", body: fields });
+    const what = Object.entries(fields).map(([k, v]) => `${k === "mix_in_ms" ? "Mix in" : "Mix out"} ${v == null ? "analysed" : "at " + fmtMs(v)}`).join(", ");
+    toast(what, r.undo);
+    await openTrack(t.id);
+  } catch (e) { fail(e); }
 }
 // Cue names live in DKPRP (the pads, the waveform) and go to the deck as hints in POCKETDECK/analysis; the rekordbox files
 // have no field for them.
@@ -1182,7 +1205,7 @@ const STEM_COLORS = { drums: CUE_COLORS[1], bass: CUE_COLORS[2], other: CUE_COLO
 
 function cssVar(n) { return cssCache[n] ??= getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 const waveStack = h("div", { class: "wstack", tabindex: "0", role: "group",
-  "aria-label": "Waveforms. Up and Down choose the full mix or a stem to listen to, Left and Right move the playhead (Shift: 10 s, Alt: a beat, Ctrl: a bar), Page Up and Page Down jump between cues, double-click sets the next hot cue." });
+  "aria-label": "Waveforms. Up and Down choose the full mix or a stem to listen to, Left and Right move the playhead (Shift: 10 s, Alt: a beat, Ctrl: a bar), Page Up and Page Down jump between cues, I and O set the mix in and out points, double-click sets the next hot cue." });
 const fmtClock = (s) => { s = Math.max(0, s || 0); return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`; };
 function waveTimeText() { const t = state.current; return t ? `${fmtClock(player.currentTime)} / ${fmtClock(t.duration)}` : ""; }
 const waveBox = h("div", { class: "waves", id: "waves" });
@@ -1336,6 +1359,7 @@ function syncMarkers() {
       for (let k = 0; k < beats; k++) if (((k - g.downbeat_index) % 4 + 4) % 4 === 0) sr.addRegion({ start: (g.first_beat_ms + k * g.period_ms) / 1000, color: "rgba(242,242,242,0.28)", drag: false, resize: false });
     }
     for (const c of t.cues) sr.addRegion({ start: c.start_ms / 1000, color: c.slot ? CUE_COLORS[c.slot - 1] : "#f2f2f2", drag: false, resize: false });
+    for (const [k] of MIX) if (t[k] != null) sr.addRegion({ start: t[k] / 1000, color: "rgba(242,242,242,0.6)", drag: false, resize: false });
   }
   if (g && g.period_ms > 0) {
     const down = "rgba(242,242,242,0.55)", beat = "rgba(242,242,242,0.16)";
@@ -1356,6 +1380,13 @@ function syncMarkers() {
     const label = h("span", { style: `display:inline-block;font:600 11px var(--f-text);padding:0 4px;border-radius:0 2px 2px 0;background:${col};color:#111112` },
       c.slot ? PAD[c.slot - 1] : "M");
     reg.addRegion({ start: c.start_ms / 1000, color: col, content: label, drag: false, resize: false });
+  }
+  // Mix in / out: white flags, solid when they are yours, hollow when analysed.
+  for (const [k, name] of MIX) {
+    if (t[k] == null) continue;
+    const own = !t[`${k}_auto`];
+    const label = h("span", { style: `display:inline-block;font:600 10px var(--f-text);letter-spacing:.04em;padding:0 4px;border-radius:0 2px 2px 0;${own ? "background:#f2f2f2;color:#111112" : "border:1px solid #f2f2f2;color:#f2f2f2;background:rgba(0,0,0,.5)"}` }, name);
+    reg.addRegion({ start: t[k] / 1000, color: own ? "#f2f2f2" : "rgba(242,242,242,0.6)", content: label, drag: false, resize: false });
   }
 }
 
@@ -1715,6 +1746,8 @@ addEventListener("keydown", (e) => {
     cue ? (player.currentTime = cue.start_ms / 1000) : setCue(slot, player.currentTime * 1000).catch(fail);
   }
   if (state.current && (e.key === "m" || e.key === "M")) addMemory(player.currentTime * 1000).catch(fail);
+  if (state.current && (e.key === "i" || e.key === "I")) setMixPoints({ mix_in_ms: Math.round(snapToBeat(player.currentTime * 1000)) });
+  if (state.current && (e.key === "o" || e.key === "O")) setMixPoints({ mix_out_ms: Math.round(snapToBeat(player.currentTime * 1000)) });
   if (state.current && (e.code === "BracketLeft" || e.code === "BracketRight")) {
     e.preventDefault();
     gridNudge((e.code === "BracketLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1));

@@ -138,3 +138,8 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   listen-to dots, zoom, details (ⓘ). Esc or the chevron in the preview bar goes back.
 - Toasts show under the top bar. Deck and Settings have a back arrow.
 - Product direction and the lean-installer plan: `docs/DECK001_PRODUCT_SPEC.md`.
+- **Mix in / out points** (0.6): the analysis places them (ClubCraft's planner: the first full-groove phrase, the
+  bar before the energy falls for good). White flags on every lane, hollow while analysed, solid once yours; the
+  `IN 0:16 · OUT 5:12` pill in the tool row jumps there, `I` / `O` set them at the playhead (beat-snapped), the
+  refresh glyph goes back to the analysed ones. Saved per track, undoable, written to POCKETDECK/analysis as
+  `mix_in_ms` / `mix_out_ms` and named in the dry run.

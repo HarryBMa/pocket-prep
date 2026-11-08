@@ -208,6 +208,8 @@ pub fn gain_db(lufs: Option<f64>) -> f64 {
 }
 
 /// For each track what the export would do and what to know first: the dry run behind the plan.
+fn clock(ms: f64) -> String { let s = (ms / 1000.0).round() as i64; format!("{}:{:02}", s / 60, s % 60) }
+
 fn details(tracks: &[Row], include_stems: bool) -> Vec<Value> {
     tracks.iter().map(|t| {
         let tid = t["id"].as_i64().unwrap_or(0);
@@ -242,6 +244,9 @@ fn details(tracks: &[Row], include_stems: bool) -> Vec<Value> {
         let gain = gain_db(t["lufs"].as_f64());
         if gain.abs() >= 0.1 {
             notes.push(format!("Loudness gain {gain:+.1} dB is written for the deck"));
+        }
+        if let (Some(i), Some(o)) = (t["mix_in_ms"].as_f64(), t["mix_out_ms"].as_f64()) {
+            notes.push(format!("Mix in at {}, out at {} (your points)", clock(i), clock(o)));
         }
         json!({"id": tid, "title": t["title"], "artist": t["artist"], "skipped": skipped,
                "bytes": std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0), "notes": notes})
@@ -442,6 +447,9 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
             // Where the sound starts and ends, so an autopilot mix doesn't wait for dead air at the end.
             "audible_start_ms": (t["lead_s"].as_f64().unwrap_or(0.0) * 1000.0).round(),
             "audible_end_ms": (a["duration_ms"].as_f64().unwrap_or(0.0) - t["tail_s"].as_f64().unwrap_or(0.0) * 1000.0).max(0.0).round(),
+            // Where to mix in and out: the DJ's points, else the analysed ones (the autopilot prefers these to audible_*).
+            "mix_in_ms": t["mix_in_ms"].as_f64().or(a["mix_in_ms"].as_f64()),
+            "mix_out_ms": t["mix_out_ms"].as_f64().or(a["mix_out_ms"].as_f64()),
             // Names you gave cues in DKPRP (the rekordbox files have no field for them).
             "cue_labels": cue_rows.iter().filter(|q| q["label"].as_str().is_some_and(|l| !l.is_empty()))
                 .map(|q| json!({"slot": q["slot"], "start_ms": q["start_ms"], "label": q["label"]})).collect::<Vec<_>>()}).to_string())?;
@@ -657,6 +665,15 @@ mod export_tests {
         let f = std::fs::read_dir(card.join("POCKETDECK/analysis")).unwrap().flatten().next().unwrap().path();
         let hints: Value = serde_json::from_slice(&std::fs::read(f).unwrap()).unwrap();
         assert!(hints["gain_db"].is_number() && hints["audible_end_ms"].as_f64().unwrap() > 0.0 && hints["cue_labels"].is_array(), "{hints}");
+        // Mix points: the analysed ones by default, the DJ's once set, and the dry run says so.
+        assert!(hints["mix_in_ms"].is_number() && hints["mix_out_ms"].as_f64().unwrap() > hints["mix_in_ms"].as_f64().unwrap(), "{hints}");
+        db::update_track(tid, &json!({"mix_in_ms": 16000.0, "mix_out_ms": 40000.0}).as_object().unwrap().clone()).unwrap();
+        export_to(&card.to_string_lossy(), None, true, &|_, _| {}, &|| false).unwrap();
+        let f = std::fs::read_dir(card.join("POCKETDECK/analysis")).unwrap().flatten().next().unwrap().path();
+        let hints: Value = serde_json::from_slice(&std::fs::read(f).unwrap()).unwrap();
+        assert_eq!((hints["mix_in_ms"].as_f64().unwrap(), hints["mix_out_ms"].as_f64().unwrap()), (16000.0, 40000.0));
+        let p = plan(&card.to_string_lossy(), None, true).unwrap();
+        assert!(p["details"][0]["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("Mix in at 0:16, out at 0:40")), "{p}");
         let p = plan(&card.to_string_lossy(), None, true).unwrap();
         let d = p["details"].as_array().unwrap();
         assert_eq!(d.len(), 1);

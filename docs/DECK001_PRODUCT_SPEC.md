@@ -197,7 +197,7 @@ Nothing needs a network at any point; the models ship with the app or are fetche
 
 | P | Feature | Why now |
 |---|---|---|
-| P0 | Mix-in / mix-out cues | one function call in ClubCraft, big win on the deck |
+| P0 | Mix-in / mix-out cues | **done (0.6)**: analysed points, I / O keys, flags, card hints |
 | P0 | Intent per track + queue priority | the cheapest way to cut waiting and disk |
 | P0 | Readiness ring (with grid OK, on the card) | replaces four columns with one answer |
 | P0 | Sections: select, preview, separate a range, save | the creative core for a stems deck |

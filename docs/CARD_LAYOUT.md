@@ -13,7 +13,7 @@ POCKETDECK/export.json                            what wrote the drive, when, wa
                                                   and the hash of the export.pdb it wrote
 POCKETDECK/stems.json                             stem file per track (docs/STEMS_FORMAT.md)
 POCKETDECK/STEMS/xxxxxxxx.flac                    8-channel stems
-POCKETDECK/analysis/xxxxxxxx.json                 sections, phrases, energy, loudness_lufs, gain_db, key, key_shift,
+POCKETDECK/analysis/xxxxxxxx.json                 sections, phrases, energy, loudness_lufs, gain_db, key, key_shift, mix_in_ms, mix_out_ms,
                                                   audible_start_ms, audible_end_ms, cue_labels
 ```
 

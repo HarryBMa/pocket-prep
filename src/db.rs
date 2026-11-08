@@ -84,7 +84,9 @@ pub fn conn() -> MutexGuard<'static, Connection> {
         for (col, decl) in [("grid_offset_ms", "REAL DEFAULT 0"), ("downbeat_shift", "INTEGER DEFAULT 0"), ("key_shift", "INTEGER DEFAULT 0"),
                             ("mood", "TEXT"), ("mood_manual", "INTEGER DEFAULT 0"), ("mood_conf", "REAL"), ("mood_features", "TEXT"),
                             ("mood_emb", "BLOB"),
-                            ("edited", "TEXT"), ("lufs", "REAL"), ("lead_s", "REAL"), ("tail_s", "REAL")] {
+                            ("edited", "TEXT"), ("lufs", "REAL"), ("lead_s", "REAL"), ("tail_s", "REAL"),
+                            // mix_in_ms / mix_out_ms: where the DJ mixes this track in and out; NULL = the analysed points.
+                            ("mix_in_ms", "REAL"), ("mix_out_ms", "REAL")] {
             let has: bool = c.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name=?").unwrap()
                 .exists([col]).unwrap();
             if !has {
@@ -179,7 +181,8 @@ pub fn marks(n: usize) -> String {
 }
 
 const TRACK_EDITABLE: &[&str] = &["title", "artist", "album", "genre", "comment", "year", "rating", "color", "bpm", "musical_key",
-                                    "grid_offset_ms", "downbeat_shift", "key_shift", "mood", "mood_manual", "camelot", "energy", "edited"];
+                                    "grid_offset_ms", "downbeat_shift", "key_shift", "mood", "mood_manual", "camelot", "energy", "edited",
+                                    "mix_in_ms", "mix_out_ms"];
 
 /// The deck's key shift range, semitones either way (deck-stretch DS_MAX_SHIFT).
 pub const MAX_KEY_SHIFT: i64 = 12;

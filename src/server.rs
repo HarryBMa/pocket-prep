@@ -30,7 +30,7 @@ struct Ui;
 
 const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
     rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
-    mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s";
+    mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s, mix_in_ms, mix_out_ms";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -174,6 +174,14 @@ async fn get_track(P(tid): P<i64>) -> R {
         t.insert("cues".into(), json!(library::cues(tid)?));
         t.insert("mood_why".into(), db::tx(|c| mood::explain(c, tid))?);
         t.insert("phrases".into(), a.as_ref().map(|a| a["phrases"].clone()).unwrap_or(Value::Null));
+        // Mix points: the DJ's where set, else the analysed ones (mix_auto says which).
+        for k in ["mix_in_ms", "mix_out_ms"] {
+            let own = t.get(k).and_then(Value::as_f64);
+            let auto = a.as_ref().and_then(|a| a[k].as_f64());
+            t.insert(k.into(), json!(own.or(auto)));
+            t.insert(format!("{k}_auto"), json!(own.is_none()));
+            t.insert(format!("{k}_analysed"), json!(auto));
+        }
         // Phrase sections (intro, build, drop...) for the phrase strip under the waveform.
         t.insert("sections".into(), a.as_ref().map(|a| a["sections"].clone()).unwrap_or(json!([])));
         // The grid as the deck will get it: the analysis grid plus the user's nudge.
