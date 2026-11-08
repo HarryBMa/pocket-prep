@@ -31,6 +31,7 @@ import soundfile as sf
 SR = 44100
 VOCAL_MODEL = "vocals_mel_band_roformer.ckpt"
 DEMUCS_MODEL = "htdemucs_ft.yaml"
+AUDIO = {".mp3", ".flac", ".wav", ".m4a", ".aiff", ".aif", ".ogg", ".opus"}
 
 
 def decode(path):
@@ -65,7 +66,10 @@ def read_stem(path, n):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--like", required=True, help="existing distill.py cache whose tracks to redo")
+    ap.add_argument("--like", help="existing distill.py cache whose tracks to redo")
+    ap.add_argument("--input", help="instead of --like: a music folder")
+    ap.add_argument("--glob", default="**/*", help="with --input: which files (e.g. '**/*.flac')")
+    ap.add_argument("--every", type=int, default=1, help="with --input: take every Nth file (sorted), e.g. 5 for a test subset")
     ap.add_argument("--out", required=True)
     ap.add_argument("--models", default=r"F:\needle\sep-models")
     ap.add_argument("--limit", type=int)
@@ -74,10 +78,15 @@ def main():
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     jobs = []
-    for d in sorted(Path(a.like).glob("*/done")):
-        d = d.parent
-        if not (out / d.name / "done").exists():
+    if a.input:
+        from distill import track_id
+        files = sorted(p for p in Path(a.input).glob(a.glob) if p.suffix.lower() in AUDIO)[::a.every]
+        jobs = [(track_id(str(p.relative_to(a.input))), p) for p in files]
+    else:
+        for d in sorted(Path(a.like).glob("*/done")):
+            d = d.parent
             jobs.append((d.name, Path((d / "source.txt").read_text(encoding="utf-8").splitlines()[0])))
+    jobs = [(n, p) for n, p in jobs if not (out / n / "done").exists()]
     jobs = jobs[:a.limit] if a.limit else jobs
     print(f"{len(jobs)} tracks to do -> {out}", flush=True)
     tmp = Path(tempfile.mkdtemp(prefix="teacher2_"))
