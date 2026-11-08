@@ -18,9 +18,13 @@ mod embed;
 mod export;
 mod jobs;
 mod library;
+mod models;
 mod mood;
+mod quality;
 mod server;
+mod sets;
 mod stems;
+mod transitions;
 #[cfg(test)]
 mod testaudio;
 
@@ -46,24 +50,18 @@ fn start_server() -> String {
 }
 
 /// Point ClubCraft at our folders: its scratch files (e.g. the DirectML self-check
-/// result) go under our data dir, and models come from the app bundle or, in
-/// development, models/ in this repo. Set before any thread starts.
+/// result) go under our data dir, and models live in <data>/models (filled from the app
+/// bundle, or fetched: see models.rs). Set before any thread starts.
 fn clubcraft_paths() {
     std::env::set_var("CLUBCRAFT_HOME", config::data_dir().join("clubcraft"));
     if std::env::var_os("CLUBCRAFT_MODELS").is_none() {
-        let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())).unwrap_or_default();
-        let found = [exe_dir.join("models"), exe_dir.join("../Resources/models"),
-                     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models")]
-            .into_iter().find(|d| d.join("htdemucs.json").exists());
-        if let Some(d) = found {
-            std::env::set_var("CLUBCRAFT_MODELS", d);
-        }
+        if let Err(e) = models::prepare() { eprintln!("models: {e:#}"); }
     }
 }
 
 fn main() {
-    clubcraft_paths();
     config::ensure_dirs().expect("can't create the data folder");
+    clubcraft_paths();
     drop(db::conn());                                       // create or upgrade the library now
     let url = start_server();
     server::startup_jobs();

@@ -15,6 +15,9 @@ and explain choices.
 
 One-time: the Demucs model isn't in git (174 MB). Make it with uv (see the script's docstring):
 `uv run --with ... tools/export_demucs_onnx.py models` -> models/htdemucs.onnx + htdemucs.json.
+Installed apps don't carry it on Windows/Linux: CI's `model` job exports it, pins its SHA-256 in
+models/manifest.json (built into the app) and publishes it as a release asset; Settings > System
+fetches it once into <data>/models (src/models.rs). Publish the draft release or the fetch 404s.
 Building needs cmake (ClubCraft's decoder builds libopus). The repo is in git: commit after every change.
 Data lives in %APPDATA%\PocketPrep or ~/Library/Application Support/PocketPrep (override with
 POCKET_PREP_DATA). The database and analysis JSON are the same format as the Python version, so an
@@ -64,7 +67,9 @@ existing library carries over. Old MP3 stems are marked "not made" and need rema
 
 Stems speed: Windows DirectML ~10 s per 4:38 track (vendored ClubCraft fix, see
 vendor/clubcraft/README-VENDORED.md), Mac CoreML ~29 s, CPU fallback ~41 s (PC) / ~100 s (M-series).
-Windows installer ~301 MB (215 MB of it is the offline WebView2 runtime).
+Windows installer: was ~301 MB (215 MB offline WebView2 runtime + 174 MB model); 0.6 ships the 2 MB
+WebView2 bootstrapper and fetches the model on request, with fat LTO and stripped symbols (see
+docs/DECK001_PRODUCT_SPEC.md §6 for the plan and what each step saved).
 
 ## Format notes worth keeping
 - PDB: little-endian, 4096-byte pages, 0x28-byte page header. Row slots grow backwards from the page

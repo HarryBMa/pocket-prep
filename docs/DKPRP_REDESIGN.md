@@ -138,3 +138,43 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   listen-to dots, zoom, details (ⓘ). Esc or the chevron in the preview bar goes back.
 - Toasts show under the top bar. Deck and Settings have a back arrow.
 - Product direction and the lean-installer plan: `docs/DECK001_PRODUCT_SPEC.md`.
+- **Mix in / out points** (0.6): the analysis places them (ClubCraft's planner: the first full-groove phrase, the
+  bar before the energy falls for good). White flags on every lane, hollow while analysed, solid once yours; the
+  `IN 0:16 · OUT 5:12` pill in the tool row jumps there, `I` / `O` set them at the playhead (beat-snapped), the
+  refresh glyph goes back to the analysed ones. Saved per track, undoable, written to POCKETDECK/analysis as
+  `mix_in_ms` / `mix_out_ms` and named in the dry run.
+- **Intent and readiness** (0.6): each track has an intent (Mix · Vocal layer · Remix · Section · Backup: the select
+  in the open track, "Prepare as" in the row menu, "Prepare…" on a selection) that decides what gets made and what
+  "ready" means. `POST /api/prepare` queues analysis, the stems the intents ask for (sections first) and deck
+  copies; "Prepare everything" sits in the jobs drawer. The Ready column is one ring per track: plays on the deck ·
+  analysed · grid confirmed (✓ in the grid pill, or a nudge) · hot cues · stems (only for intents that want them)
+  · loudness · on the card (from the plan). Green = done, grey = to do, red = blocked, coral = running; the
+  tooltip lists what's missing. The stems and card glyph columns are gone: the ring carries them.
+- **Right-click menu** (0.6): on a row (a selected row acts for the whole selection), via the row's ⋮, Shift+F10
+  or the menu key, and in the open track's ⋮: Open, Mixes with this, Prepare as (the intent, ticked), Re-analyse,
+  Make stems, Convert for the deck, Confirm the beat grid, Add to playlist (counts), New playlist with these, Remove
+  from the playlist, Remove from library. Playlists get their own: Open, Add the selected, Export only this
+  playlist, New playlist in this folder, Rename, Delete. Grouped, with glyphs and key hints, in the app's style.
+- **Sections** (0.6): drag on the full mix selects a run of bars snapped to the phrase grid (4 · 8 · 16 · 32 · 64,
+  from the first downbeat, where ClubCraft's sections start); chips under the waveform offer the analysed sections
+  and, with stems, instrumental and vocal runs. The selection pill loops it (`L`), saves it as a loop (a memory cue
+  with an end, which the card carries as a rekordbox loop and the hints list in `cue_labels`), or makes stems for
+  that range only: `POST /api/stems {ids, range_ms}` separates the range with 10 s of context each side and writes
+  a whole-length stems file with silence outside (`tracks.stems_range`, `stems_range` in the hints). Stems that
+  exist for the same range or the whole track are never made twice. Esc clears the selection before it closes the track.
+- **Stem quality** (0.6): every separation is graded from its own output (`quality.rs`: clipping per stem, the
+  reconstruction residual, vocal bleed from ClubCraft's vocal map). Poor stems turn the ring's stems segment red;
+  the open track shows the notes with *Redo*. The card's hints carry the grade.
+- **What follows** (0.6): "Mixes with this" ranks the library as the next track after the chosen one
+  (`transitions.rs`): tempo, key with the deck's shift, energy, level after gain, phrase lines, and vocal / bass
+  clashes inside the planner's transition window. The Ready column becomes a match pill (0-100); its click lists
+  the reasons, ✓ or !. Only tracks that work are shown, best first.
+- **Card check** (0.6): after writing, the export reads its own card back (`usb::validate`): every audio and
+  stems file at its source size, every ANLZ file parsed by rekordcrate (an independent parser, now a runtime
+  dependency), every hints file valid JSON, export.pdb opened with the right number of tracks. The card column
+  shows "Checked: N files" or the first problem with the rest behind *All*.
+- **Sets** (0.6): a playlist is a set. With one playlist as the card's scope, the card column shows the set strip:
+  the energy curve, the tracks in order with their readiness rings, a bar between each pair coloured by the
+  transition verdict (click: the reasons and the window), running time and the deck's load estimate. *Order by…*
+  hands the tracks to ClubCraft's planner (balanced, by key, by tempo, rising energy; undoable). The export writes
+  `POCKETDECK/sets/<playlist id>.json` for every playlist on the card: order, card paths, windows and verdicts.

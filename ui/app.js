@@ -58,6 +58,12 @@ const MOOD_COLOR = { deep: CUE_COLORS[5], melodic: CUE_COLORS[6], tech_house: CU
 const moodOf = (id) => MOODS.find((m) => m.id === id);
 const moodRank = (id) => { const i = MOODS.findIndex((m) => m.id === id); return i < 0 ? null : i; };
 const PLAYHEAD = "#e9b954"; // DECK001 playhead (settings.h kPlayhead)
+// How the DJ will use a track (tracks.intent): decides what gets prepared and what "ready" means.
+const INTENTS = [["mix", "Mix", "Beat grid, key, cues. No stems."], ["vocal", "Vocal layer", "Stems: the vocal to lay over another track."],
+                 ["remix", "Remix", "All four stems for live remixing."], ["section", "Section", "A chosen passage; stems for it first in the queue."],
+                 ["backup", "Backup", "Analysed and on the card; nothing more is made."]];
+const intentOf = (t) => INTENTS.find((i) => i[0] === (t.intent || "mix")) || INTENTS[0];
+const wantsStems = (t) => ["vocal", "remix", "section"].includes(t.intent);
 
 const state = { tracks: [], view: [], selected: new Set(), anchor: null, playlist: 0, playlists: [], open: new Set(),
                 current: null, wave: null, jobs: [], lastUndo: null, settings: {}, system: {},
@@ -95,6 +101,17 @@ function ask(title, value = "", okLabel = "OK") {
   });
 }
 
+// A read-only modal: a title, some content, Close.
+function notice(title, content) {
+  const box = $("#modal .modal-box"), back = document.activeElement;
+  const close = () => { $("#modal").hidden = true; back?.focus?.(); };
+  const btn = h("button", { class: "primary", onclick: close }, "Close");
+  box.replaceChildren(h("h3", {}, title), content, h("div", { class: "buttons" }, btn));
+  btn.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } });
+  $("#modal").hidden = false;
+  btn.focus();
+}
+
 // ── Views (rail) and theme ───────────────────────────────────────────────────
 const tabs = () => $$("[data-view]");
 tabs().forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)));
@@ -112,6 +129,9 @@ function setPlaylistsOpen(open) {
   if (open) ($("#playlistsBox .nav-item.active") || $("#playlistsBox .nav-item"))?.focus();
 }
 $("#playlistsToggle").addEventListener("click", () => setPlaylistsOpen($("#playlistsBox").hidden));
+// Dragging tracks over the Playlists button opens the popover, so they can be dropped on a playlist.
+$("#playlistsToggle").addEventListener("dragover", (e) => { if (e.dataTransfer.types.includes("application/x-tracks")) { e.preventDefault(); if ($("#playlistsBox").hidden) setPlaylistsOpen(true); } });
+$("#playlistsBox").addEventListener("dragleave", (e) => { if (!e.relatedTarget || !e.relatedTarget.closest?.(".pl-wrap")) setPlaylistsOpen(false); });
 addEventListener("mousedown", (e) => { if (!$("#playlistsBox").hidden && !e.target.closest(".pl-wrap, #modal")) setPlaylistsOpen(false); });
 function showView(v) {
   if (v === "export") { showView("library"); setCardOpen(true); $("#doExport").focus({ preventScroll: true }); return; }   // the card column is part of the library
@@ -153,8 +173,8 @@ async function loadPlaylists() {
       if (p.is_folder) { if (open) { state.open.delete(p.id); state.openFolderTarget = null; } else { state.open.add(p.id); state.openFolderTarget = p.id; } loadPlaylists(); }
       else selectPlaylist(p.id);
     });
-    btn.addEventListener("contextmenu", (e) => { e.preventDefault(); playlistMenu(p); });
-    btn.addEventListener("keydown", (e) => { if (e.key === "F2" || (e.shiftKey && e.key === "F10")) { e.preventDefault(); playlistMenu(p); } });
+    btn.addEventListener("contextmenu", (e) => { e.preventDefault(); playlistMenu(p, e); });
+    btn.addEventListener("keydown", (e) => { if (e.key === "F2" || (e.shiftKey && e.key === "F10")) { e.preventDefault(); playlistMenu(p, btn); } });
     if (!p.is_folder) dropTarget(btn, (ids) => addToPlaylist(p.id, ids));
     if (!p.is_folder) return btn;
     return h("div", { class: "folder" + (open ? " open" : "") }, btn, h("div", { class: "children" }, build(p.id)));
@@ -164,14 +184,22 @@ async function loadPlaylists() {
   $("#allTracks").classList.toggle("active", state.playlist === 0);
   $("#plCurrent").textContent = state.playlists.find((p) => p.id === state.playlist)?.name || "";   // the button names the open playlist
 }
-async function playlistMenu(p) {
-  const name = await ask(`Rename "${p.name}" (leave empty to delete)`, p.name, "Save");
-  if (name === null) return;
-  if (name === "") {
-    await api(`/api/playlists/${p.id}`, { method: "DELETE" });
-    toast(`Deleted ${p.is_folder ? "folder" : "playlist"} "${p.name}"`);
-    if (state.playlist === p.id) selectPlaylist(0); else loadPlaylists();
-  } else { await api(`/api/playlists/${p.id}`, { method: "PATCH", body: { name } }); loadPlaylists(); }
+function playlistMenu(p, at) {
+  const kind = p.is_folder ? "folder" : "playlist";
+  openMenu(at, [
+    !p.is_folder ? { icon: "library", label: "Open", run: () => selectPlaylist(p.id) } : null,
+    !p.is_folder && state.selected.size ? { icon: "plus", label: `Add the ${plural(state.selected.size, "selected track")}`, run: () => addToPlaylist(p.id, [...state.selected]).catch(fail) } : null,
+    !p.is_folder ? { icon: "card", label: "Export only this playlist", title: "Sets the card's scope to this playlist", run: () => {
+      setCardOpen(true); $('input[name=scope][value="playlists"]').checked = true; $("#exportPlaylists").hidden = false;
+      $$("#exportPlaylists input").forEach((i) => { i.checked = +i.value === p.id; }); updatePlan(); } } : null,
+    p.is_folder ? { icon: "plus", label: "New playlist in this folder", run: () => { state.openFolderTarget = p.id; state.open.add(p.id); newPlaylist(false).catch(fail); } } : null,
+    "-",
+    { icon: "pencil", label: "Rename…", hint: "F2", run: async () => { const name = await ask(`Rename "${p.name}"`, p.name, "Save"); if (name) { await api(`/api/playlists/${p.id}`, { method: "PATCH", body: { name } }); loadPlaylists(); } } },
+    { icon: "x", label: `Delete ${kind}`, danger: true, title: "Tracks stay in the library", run: async () => {
+      await api(`/api/playlists/${p.id}`, { method: "DELETE" });
+      toast(`Deleted ${kind} “${p.name}”`);
+      if (state.playlist === p.id) selectPlaylist(0); else loadPlaylists(); } },
+  ]);
 }
 async function newPlaylist(isFolder) {
   const inFolder = state.playlists.find((p) => p.id === state.openFolderTarget);
@@ -213,18 +241,29 @@ const FILTERS = {
   attention: (t) => issues(t).length > 0,
   mixes: (t) => mixesWith(t),
 };
-// Mixing partners of the track picked when "Mixes with selected" was chosen: the same key, one step either way on the
-// Camelot wheel, or the other mode of the same number (relative major/minor), and a tempo within 6 %.
+// What follows the track picked for "Mixes with": the server scores every analysed track as the next one (tempo,
+// key with the deck's shift, energy, level after gain, phrase lines, vocal / bass clashes in the transition window)
+// and the list keeps the ones that work, best first, with the reasons on the match pill.
 function mixesWith(t) {
+  const m = state.trans?.from === state.mixBase ? state.trans.map.get(t.id) : null;
+  return !!m && m.verdict !== "no";
+}
+async function loadTransitions(from) {
+  if (state.trans?.from === from && Date.now() - state.trans.at < 30000) return;
+  try {
+    const r = await api("/api/transitions", { body: { from } });
+    state.trans = { from, at: Date.now(), map: new Map(r.results.map((x) => [x.id, x])) };
+    if (state.filter === "mixes") renderTracks();
+  } catch (e) { fail(e); }
+}
+function matchCell(t) {
+  const m = state.trans?.map.get(t.id);
+  if (!m) return "";
   const base = state.tracks.find((x) => x.id === state.mixBase);
-  if (!base || base.id === t.id) return false;
-  const code = (x) => /^(\d+)([AB])$/.exec(x.shifted_camelot || x.camelot || "");
-  const [a, b] = [code(base), code(t)];
-  if (!a || !b) return false;
-  const d = Math.abs(+a[1] - +b[1]), step = Math.min(d, 12 - d);
-  const keyOk = a[2] === b[2] ? step <= 1 : step === 0;
-  const tempo = (x) => (x.bpm || 0) * 1;
-  return keyOk && tempo(base) > 0 && tempo(t) > 0 && Math.abs(tempo(t) / tempo(base) - 1) <= 0.06;
+  const show = (at) => openMenu(at, [{ head: `After ${base?.title || "the track"} · ${m.beats / 4}-bar window` },
+    ...m.reasons.map((r) => ({ icon: r.ok ? "check" : "alert", label: r.text, run: () => {} }))]);
+  return h("button", { class: `match ${m.verdict}`, title: m.reasons.map((r) => (r.ok ? "✓ " : "! ") + r.text).join("\n"),
+    "aria-label": `Match ${m.score} of 100: ${m.reasons.map((r) => r.text).join(". ")}`, onclick: (e) => { e.stopPropagation(); show(e.currentTarget); } }, String(m.score));
 }
 // Tracks that look like the same song twice (same artist and title, ignoring case, spaces and "(Original Mix)").
 function findDuplicates() {
@@ -250,6 +289,7 @@ function issues(t) {
 }
 function visibleTracks() {
   const list = state.tracks.map((t, i) => ({ t, i })).filter(({ t }) => FILTERS[state.filter](t));
+  if (state.filter === "mixes" && !state.sort && state.trans) list.sort((a, b) => (state.trans.map.get(b.t.id)?.score || 0) - (state.trans.map.get(a.t.id)?.score || 0));
   if (state.sort) {
     const { key, dir } = state.sort;
     const val = (x) => key === "index" ? x.i : key === "mood" ? moodRank(x.t.mood) : x.t[key];
@@ -266,16 +306,6 @@ const canReorder = () => state.playlist && !state.sort && state.filter === "all"
 
 // Latest job of a kind for a track (the jobs list is newest first).
 const jobFor = (id, kind) => state.jobs.find((j) => j.track_id === id && j.kind === kind);
-// A state as one glyph; the words are in its tooltip and label.
-const glyph = (name, cls, label) => h("span", { class: `st ${cls}`, role: "img", "aria-label": label, title: label }, icon(name, "ic sm"));
-function analysisCell(t) {
-  const j = jobFor(t.id, "analyse"), why = issues(t);
-  if (j?.status === "running") return glyph("refresh", "busy", `Analysing ${Math.round(j.progress * 100)}%`);
-  if (j?.status === "queued") return glyph("clock", "queued", "Queued for analysis");
-  if (why.length) return glyph("alert", "bad", `Needs attention: ${why.join(" · ")}`);
-  if (t.analysed_at) return glyph("check", "ok", "Analysed");
-  return glyph("dashed", "none", "Not analysed");
-}
 // Energy 1-10 as five bars; the number is in the tooltip.
 function energyBars(n) {
   if (n == null) return "";
@@ -283,23 +313,57 @@ function energyBars(n) {
   return h("span", { class: "ebars", role: "img", "aria-label": `Energy ${n} of 10`, title: `Energy ${n} of 10` },
     Array.from({ length: 5 }, (_, i) => h("i", { class: i < k ? "" : "off", style: `height:${5 + i * 2}px` })));
 }
-// On the card: what the export plan says about this track (nothing until a drive is chosen).
-function cardCell(t) {
-  const d = exp.plan?.details?.find((x) => x.id === t.id);
-  const label = !exp.root || !exp.plan ? "Choose a drive to see what goes to the card" : !d ? "Not in this export"
-    : d.skipped ? `Skipped: ${d.notes.join(" · ")}` : `Goes with the next export${d.notes.length ? ": " + d.notes.join(" · ") : ""}`;
-  return h("span", { class: "st", role: "img", "aria-label": label, title: label }, icon("card", "ic sm card-ic" + (d ? (d.skipped ? " skip" : " on") : "")));
+// Readiness: one ring per track, a segment per check, judged against the track's intent. Diagnostic, not a
+// score: a Mix track without stems is ready; a Remix track without them isn't. Hover lists what's missing.
+// Stem quality as the separation measured it (quality.rs): { grade, notes[] } or null.
+function stemQuality(t) {
+  if (!t.stem_quality) return null;
+  try { return typeof t.stem_quality === "string" ? JSON.parse(t.stem_quality) : t.stem_quality; } catch { return null; }
 }
-function stemPill(t) {
-  const j = jobFor(t.id, "stems");
-  const st = j?.status === "running" ? "running" : t.stems;
-  const label = { done: "Stems ready", running: j?.status === "running" ? `Making stems ${Math.round(j.progress * 100)}%` : "Making stems",
-                  queued: "Stems queued", failed: "Stems failed" }[st] || "No stems";
-  const svg = icon("deck", `ic stem-ic ${st}`);
-  svg.setAttribute("role", "img"); svg.removeAttribute("aria-hidden"); svg.setAttribute("aria-label", label);
-  return h("span", { title: label }, svg);
+function readiness(t) {
+  const aj = jobFor(t.id, "analyse"), sj = jobFor(t.id, "stems"), d = exp.root && exp.plan?.details?.find((x) => x.id === t.id);
+  const seg = (key, state, text) => ({ key, state, text });
+  const out = [];
+  out.push(t.file_missing ? seg("file", "bad", "File missing") : t.deck_problem && !t.deck_copy ? seg("file", "bad", "Won't play on the deck: convert it") : seg("file", "ok", "Plays on the deck"));
+  out.push(aj?.status === "running" ? seg("analysed", "busy", `Analysing ${Math.round(aj.progress * 100)}%`) : aj?.status === "queued" ? seg("analysed", "busy", "Queued for analysis")
+    : t.analysed_at ? seg("analysed", "ok", "Analysed") : seg("analysed", "todo", "Not analysed"));
+  const gridChecked = t.grid_ok_at || t.grid_offset_ms || t.downbeat_shift;
+  out.push(!t.analysed_at ? seg("grid", "na", "Beat grid: after analysis") : gridChecked ? seg("grid", "ok", "Beat grid confirmed") : seg("grid", "todo", "Beat grid not confirmed by ear (open the track: ✓ or nudge)"));
+  out.push(t.hot_cues ? seg("cues", "ok", `${plural(t.hot_cues, "hot cue")}`) : t.analysed_at ? seg("cues", "todo", "No hot cues") : seg("cues", "na", "Cues: after analysis"));
+  const q = stemQuality(t);
+  const stemsDone = q?.grade === "poor" ? seg("stems", "bad", `Stems are poor: ${q.notes[0] || "don't rely on them live"}`) : q?.grade === "usable" ? seg("stems", "ok", `Stems usable (${q.notes[0] || "see the track"})`) : seg("stems", "ok", "Stems ready");
+  if (wantsStems(t)) out.push(t.stems === "done" ? stemsDone : sj?.status === "running" ? seg("stems", "busy", `Making stems ${Math.round(sj.progress * 100)}%`)
+    : t.stems === "queued" || sj?.status === "queued" ? seg("stems", "busy", "Stems queued") : t.stems === "failed" ? seg("stems", "bad", "Stems failed") : seg("stems", "todo", `No stems yet (${intentOf(t)[1]} needs them)`));
+  else out.push(seg("stems", "na", t.stems === "done" ? "Stems ready (not needed for this intent)" : "Stems not needed for this intent"));
+  out.push(t.lufs != null ? seg("loud", "ok", `${t.lufs.toFixed(1)} LUFS`) : t.analysed_at ? seg("loud", "todo", "Loudness not measured yet") : seg("loud", "na", "Loudness: after analysis"));
+  out.push(!exp.root || !exp.plan ? seg("card", "na", "On the card: choose a drive to know") : !d ? seg("card", "todo", "Not in this export") : d.skipped ? seg("card", "bad", `Skipped by the export: ${d.notes.join(" · ")}`) : seg("card", "ok", "Goes with the next export"));
+  return out;
 }
-// Mood: a coloured label; "?" when the guess is close between two moods (under 50 % sure).
+const RING_COLOR = { ok: "var(--ok)", todo: "var(--line-strong)", bad: "var(--alert)", busy: "var(--accent)", na: "var(--line)" };
+function readinessCell(t) {
+  const segs = readiness(t), n = segs.length, R = 9, C = 2 * Math.PI * R, gap = 2.2;
+  const bad = segs.some((s) => s.state === "bad"), busy = segs.some((s) => s.state === "busy");
+  const live = segs.filter((s) => s.state !== "na"), ready = live.length && live.every((s) => s.state === "ok");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("class", "ready" + (busy ? " busy" : ""));
+  segs.forEach((s, i) => {
+    const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    const len = C / n - gap;
+    c.setAttribute("cx", "12"); c.setAttribute("cy", "12"); c.setAttribute("r", String(R));
+    c.setAttribute("fill", "none"); c.setAttribute("stroke", RING_COLOR[s.state]); c.setAttribute("stroke-width", s.state === "na" ? "1.5" : "3");
+    c.setAttribute("stroke-dasharray", `${len.toFixed(2)} ${(C - len).toFixed(2)}`); c.setAttribute("stroke-dashoffset", String((-i * C / n).toFixed(2)));
+    c.setAttribute("transform", "rotate(-90 12 12)");
+    svg.append(c);
+  });
+  if (ready || bad) {
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", ready ? "M8.5 12.2 11 14.7l4.5-5" : "M12 8.5v4M12 15.5h.01");
+    p.setAttribute("fill", "none"); p.setAttribute("stroke", ready ? "var(--ok)" : "var(--alert)"); p.setAttribute("stroke-width", "2.2"); p.setAttribute("stroke-linecap", "round"); p.setAttribute("stroke-linejoin", "round");
+    svg.append(p);
+  }
+  const label = ready ? `Ready (${intentOf(t)[1]})` : segs.filter((s) => s.state !== "ok" && s.state !== "na").map((s) => s.text).join(" · ") || "Ready";
+  return h("span", { class: "st", role: "img", "aria-label": label, title: `${intentOf(t)[1]}: ${label}` }, svg);
+}
 function moodPill(t) {
   const m = moodOf(t.mood);
   if (!m) return h("span", { class: "muted" }, t.analysed_at ? "–" : "");
@@ -314,7 +378,7 @@ function withMoodGroups(vis, rows) {
   vis.forEach(({ t }, k) => {
     if (k === 0 || vis[k - 1].t.mood !== t.mood) {
       const group = vis.filter((x) => x.t.mood === t.mood).map((x) => x.t), m = moodOf(t.mood);
-      out.push(h("tr", { class: "group", "aria-hidden": "true" }, h("td", { colspan: "13" },
+      out.push(h("tr", { class: "group", "aria-hidden": "true" }, h("td", { colspan: "11" },
         h("span", { class: "mood", style: `--mood:${m ? MOOD_COLOR[m.id] : "#8a8a90"}` }, h("i"), m ? m.label : "No mood yet"),
         h("span", { class: "muted" }, `${plural(group.length, "track")} · ${fmtDur(group.reduce((a, x) => a + (x.duration || 0), 0))}`))));
     }
@@ -354,9 +418,7 @@ function renderTracks() {
       h("td", { class: "c-energy" + (wasEdited(t, "energy") ? " edited" : ""), "data-edit": "energy" }, energyBars(t.energy)),
       h("td", { class: "num lufs c-lufs", title: t.lufs != null ? `${t.lufs.toFixed(1)} LUFS. The export writes ${fmtGain(t)} for the deck (target ${state.settings?.target_lufs ?? -9} LUFS).` : null },
         t.lufs != null ? t.lufs.toFixed(1) : ""),
-      h("td", { class: "c-st c-stems" }, stemPill(t)),
-      h("td", { class: "c-an" }, analysisCell(t)),
-      h("td", { class: "c-card" }, cardCell(t)),
+      h("td", { class: "c-an" }, state.filter === "mixes" ? matchCell(t) : readinessCell(t)),
       h("td", { class: "c-menu" }, h("button", { class: "row-menu", "aria-label": `Actions for ${t.title || "track"}`, title: "Actions",
         onclick: (e) => { e.stopPropagation(); rowMenu(e.currentTarget, t); } }, icon("more", "ic sm"))));
     tr.addEventListener("click", (e) => {
@@ -368,6 +430,7 @@ function renderTracks() {
       if (cell && alone) { clearTimeout(state.editT); state.editT = setTimeout(() => beginEdit(t.id, cell.dataset.edit), 260); }
     });
     tr.addEventListener("dblclick", (e) => { clearTimeout(state.editT); if (!e.target.closest("input")) openFocus(t.id); });
+    tr.addEventListener("contextmenu", (e) => { if (e.target.closest("input")) return; e.preventDefault(); clearTimeout(state.editT); rowMenu(e, t); });
     tr.addEventListener("dragstart", (e) => {
       if (!state.selected.has(t.id)) { state.selected = new Set([t.id]); renderTracks(); }
       e.dataTransfer.setData("application/x-tracks", JSON.stringify([...state.selected]));
@@ -401,16 +464,15 @@ function updateStatusCells() {
   for (const tr of $$("#tracks tbody tr")) {
     const t = state.tracks.find((x) => x.id === +tr.dataset.id);
     if (!t) continue;
-    tr.querySelector(".c-an")?.replaceChildren(analysisCell(t));
-    tr.querySelector(".c-st")?.replaceChildren(stemPill(t));
-    tr.querySelector(".c-card")?.replaceChildren(cardCell(t));
+    tr.querySelector(".c-an")?.replaceChildren(readinessCell(t));
   }
 }
 function renderLibStatus() {
   const n = state.tracks.length, secs = state.tracks.reduce((a, t) => a + (t.duration || 0), 0);
   const pl = state.playlists.find((p) => p.id === state.playlist);
   $("#statusLib").textContent = !state.loaded ? "Loading library…"
-    : `${pl ? pl.name + " · " : ""}${plural(n, "track")} · ${fmtDur(secs)}` + (state.view.length !== n ? ` · ${state.view.length} shown` : "");
+    : `${pl ? pl.name + " · " : ""}${plural(n, "track")} · ${fmtDur(secs)}` + (state.view.length !== n ? ` · ${state.view.length} shown` : "")
+      + (state.filter === "mixes" && state.mixBase != null ? ` · what follows ${state.tracks.find((t) => t.id === state.mixBase)?.title || "the track"}` : "");
   const attn = state.tracks.filter((t) => issues(t).length).length;
   $("#attnCount").textContent = attn ? String(attn) : "";
 }
@@ -421,16 +483,30 @@ $("#sortSel").addEventListener("change", () => {
 });
 
 // ── Small menus (row and panel "⋮") ─────────────────────────────────────────
-function openMenu(anchor, items) {
+// Items: { label, run, icon?, hint? (right-hand text, e.g. a key), checked? (a tick, for a choice), danger? },
+// "-" for a line, { head } for a group title. `at` is a button (the menu hangs under it) or a pointer event
+// (the menu opens at the pointer, as a right-click menu does).
+function openMenu(at, items) {
   const m = $("#menu");
-  fill(m, items.filter(Boolean).map((it) => it === "-" ? h("hr") :
-    h("button", { role: "menuitem", class: it.danger ? "danger-item" : "", onclick: () => { closeMenu(); it.run(); } }, it.label)));
+  fill(m, items.filter(Boolean).map((it) => it === "-" ? h("hr") : it.head ? h("div", { class: "menu-head" }, it.head) :
+    h("button", { role: it.checked != null ? "menuitemradio" : "menuitem", "aria-checked": it.checked != null ? String(!!it.checked) : null,
+                  class: (it.danger ? "danger-item" : "") + (it.checked ? " checked" : ""), disabled: it.disabled ? true : null, title: it.title || null,
+                  onclick: () => { closeMenu(); it.run(); } },
+      h("span", { class: "mi-ic" }, it.icon ? icon(it.icon, "ic sm") : null), h("span", { class: "mi-label" }, it.label),
+      it.hint ? h("kbd", {}, it.hint) : null, it.checked ? icon("check", "ic sm mi-check") : null)));
   m.hidden = false;
-  const r = anchor.getBoundingClientRect(), mw = m.offsetWidth, mh = m.offsetHeight;
-  m.style.left = `${Math.max(8, Math.min(innerWidth - mw - 8, r.right - mw))}px`;
-  m.style.top = `${r.bottom + mh + 8 > innerHeight ? r.top - mh - 4 : r.bottom + 4}px`;
-  m.querySelector("button")?.focus();
-  state.menuFrom = anchor;
+  const mw = m.offsetWidth, mh = m.offsetHeight;
+  if (at instanceof Event || at?.clientX != null) {
+    m.style.left = `${Math.max(8, Math.min(innerWidth - mw - 8, at.clientX))}px`;
+    m.style.top = `${Math.max(8, Math.min(innerHeight - mh - 8, at.clientY))}px`;
+    state.menuFrom = at.target?.closest?.("tr, button, .wstack") || null;
+  } else {
+    const r = at.getBoundingClientRect();
+    m.style.left = `${Math.max(8, Math.min(innerWidth - mw - 8, r.right - mw))}px`;
+    m.style.top = `${r.bottom + mh + 8 > innerHeight ? r.top - mh - 4 : r.bottom + 4}px`;
+    state.menuFrom = at;
+  }
+  m.querySelector("button:not([disabled])")?.focus();
 }
 function closeMenu() { const m = $("#menu"); if (!m.hidden) { m.hidden = true; state.menuFrom?.focus?.(); } }
 addEventListener("mousedown", (e) => { if (!$("#menu").hidden && !$("#menu").contains(e.target)) closeMenu(); });
@@ -467,21 +543,42 @@ async function removeDeckCopy(ids) {
     if (state.current && ids.includes(state.current.id)) openTrack(state.current.id);
   } catch (e) { fail(e); }
 }
-function trackMenuItems(t) {
-  const ids = [t.id];
+// The track menu (right-click, the row's ⋮, the open track's ⋮). On a selected row it acts on the whole selection.
+function trackMenuItems(t, ids = [t.id]) {
+  const many = ids.length > 1, sel = ids.map((id) => state.tracks.find((x) => x.id === id) || t);
+  const n = (s) => (many ? ` ${ids.length} ${s}` : "");
+  const unplayable = sel.filter((x) => x.deck_problem).map((x) => x.id), copies = sel.filter((x) => x.deck_copy).map((x) => x.id);
+  const noStems = sel.filter((x) => !["done", "running", "queued"].includes(x.stems)).map((x) => x.id);
+  const intents = new Set(sel.map((x) => x.intent || "mix"));
+  const lists = state.playlists.filter((p) => !p.is_folder);
+  const inList = state.playlist ? lists.find((p) => p.id === state.playlist) : null;
   return [
-    t.deck_problem ? { label: "Convert for the deck", run: () => convertForDeck(ids) } : null,
-    t.deck_copy ? { label: "Use the original for the deck", run: () => removeDeckCopy(ids) } : null,
-    { label: t.analysed_at ? "Re-analyse" : "Analyse", run: () => api("/api/analyse", { body: { ids } }).then(() => { toast("Analysing"); pollJobs(); }).catch(fail) },
-    t.stems !== "done" && t.stems !== "running" && t.stems !== "queued" ? { label: "Make stems", run: () => api("/api/stems", { body: { ids } }).then(() => { toast("Making stems"); loadTracks(); pollJobs(); }).catch(fail) } : null,
-    ...state.playlists.filter((p) => !p.is_folder).slice(0, 8).map((p) => ({ label: `Add to "${p.name}"`, run: () => addToPlaylist(p.id, ids).catch(fail) })),
+    !many ? { icon: "play", label: state.current?.id === t.id && state.focus ? "Playing" : "Open", hint: "↵", run: () => openFocus(t.id) } : null,
+    !many && t.analysed_at ? { icon: "shuffle", label: "Mixes with this", title: "Rank the library as the next track after this one, with the reasons", run: () => { state.mixBase = t.id; state.selected.clear(); $('#filters [data-filter="mixes"]').click(); } } : null,
+    { head: many ? `Prepare ${ids.length} as` : "Prepare as" },
+    ...INTENTS.map(([id, label, about]) => ({ label, title: about, checked: intents.size === 1 && intents.has(id), run: () => setIntent(ids, id) })),
     "-",
-    { label: "Remove from library", danger: true, run: () => { state.selected = new Set(ids); removeSelected().catch(fail); } },
+    { icon: "refresh", label: (sel.every((x) => x.analysed_at) ? "Re-analyse" : "Analyse") + n("tracks"), run: () => api("/api/analyse", { body: { ids } }).then(() => { toast(`Analysing${n("tracks") || ""}`); pollJobs(); }).catch(fail) },
+    noStems.length ? { icon: "deck", label: "Make stems" + n(""), run: () => api("/api/stems", { body: { ids: noStems } }).then(() => { toast("Making stems"); loadTracks(); pollJobs(); }).catch(fail) } : null,
+    unplayable.length ? { icon: "card", label: `Convert${many ? " " + unplayable.length : ""} for the deck`, title: "A 16-bit FLAC copy the deck can play; the original stays", run: () => convertForDeck(unplayable) } : null,
+    copies.length ? { icon: "card", label: "Use the original for the deck", run: () => removeDeckCopy(copies) } : null,
+    !many && t.analysed_at ? { icon: "check", label: t.grid_ok_at ? "Beat grid confirmed" : "Confirm the beat grid", checked: !!t.grid_ok_at, title: "You listened and the grid is right",
+      run: () => api(`/api/tracks/${t.id}`, { method: "PATCH", body: { grid_ok_at: t.grid_ok_at ? null : Date.now() / 1000 } }).then((r) => { toast(t.grid_ok_at ? "Beat grid unconfirmed" : "Beat grid confirmed", r.undo); loadTracks(); if (state.current?.id === t.id) openTrack(t.id); }).catch(fail) } : null,
+    lists.length ? { head: "Add to playlist" } : null,
+    ...lists.slice(0, 8).map((p) => ({ icon: "list", label: p.name, hint: String(p.count), run: () => addToPlaylist(p.id, ids).catch(fail) })),
+    { icon: "plus", label: "New playlist with " + (many ? `these ${ids.length}` : "this track"), run: () => { state.selected = new Set(ids); newPlaylist(false).catch(fail); } },
+    inList ? { icon: "x", label: `Remove from “${inList.name}”`, run: async () => {
+      const keep = state.tracks.map((x) => x.id).filter((x) => !ids.includes(x));
+      const r = await api(`/api/playlists/${state.playlist}/tracks`, { method: "PUT", body: { track_ids: keep } });
+      toast(`Removed ${ids.length} from ${inList.name}`, r.undo); state.selected.clear(); loadTracks(); loadPlaylists(); } } : null,
+    "-",
+    { icon: "x", label: "Remove from library" + n(""), hint: "Del", danger: true, title: "The files stay on disk", run: () => { state.selected = new Set(ids); removeSelected().catch(fail); } },
   ];
 }
-function rowMenu(btn, t) {
+// The row's ⋮ or a right-click: a selected row acts for the whole selection, any other row for itself.
+function rowMenu(at, t) {
   if (!state.selected.has(t.id)) { state.selected = new Set([t.id]); state.anchor = t.id; renderTracks(); }
-  openMenu(btn, trackMenuItems(t));
+  openMenu(at, trackMenuItems(t, state.selected.has(t.id) && state.selected.size > 1 ? [...state.selected] : [t.id]));
 }
 function clickRow(e, id, vi) {
   const view = state.view;
@@ -503,6 +600,7 @@ function clickRow(e, id, vi) {
 $("#tracks tbody").addEventListener("keydown", (e) => {
   if (e.target.closest("input, select")) return;
   if (e.key === "F2") { const id = +document.activeElement?.dataset?.id; if (id) { e.preventDefault(); beginEdit(id, "title"); } return; }
+  if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) { const id = +document.activeElement?.dataset?.id, t = state.tracks.find((x) => x.id === id); if (t) { e.preventDefault(); rowMenu(document.activeElement, t); } return; }
   if (!["ArrowDown", "ArrowUp", "Enter", "Home", "End"].includes(e.key) || !state.view.length) return;
   e.preventDefault();
   const view = state.view, cur = view.findIndex((t) => t.id === +document.activeElement?.dataset?.id);
@@ -622,8 +720,10 @@ $$("#filters button").forEach((b) => b.addEventListener("click", () => {
     const one = state.selected.size === 1 ? state.tracks.find((t) => state.selected.has(t.id)) : null;
     if (!one && state.mixBase == null) return toast("Select one track first, then show what mixes with it");
     if (one) state.mixBase = one.id;
+    loadTransitions(state.mixBase);
     const base = state.tracks.find((t) => t.id === state.mixBase);
-    b.textContent = base ? `Mixes with ${(base.title || "track").slice(0, 22)}` : "Mixes with selected";
+    const label = base ? `What follows ${base.title || "this track"}` : "Mixes with the selected track";
+    b.title = label; b.setAttribute("aria-label", label);
   }
   state.filter = b.dataset.filter;
   $$("#filters button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
@@ -652,6 +752,10 @@ function renderContext() {
     ...[["artist", "Artist"], ["album", "Album"], ["genre", "Genre"], ["year", "Year"], ["comment", "Comment"]].map(([k, label]) => ({ label: `Set ${label.toLowerCase()} for ${ids.length}…`, run: () => bulkEdit(ids, k, label) })),
     "-", { label: `Set key shift for ${ids.length}…`, run: () => bulkEdit(ids, "key_shift", "Key shift (semitones, -12 to 12)") },
   ]), title: "Change one field on all selected tracks (each can be undone)" }, "Edit selected…"));
+  parts.push(h("button", { class: "ghost small", title: "How you'll use these tracks: decides what gets prepared", onclick: (e) => openMenu(e.currentTarget, [
+    ...INTENTS.map(([id, label, about]) => ({ label: `${label}: ${about}`, run: () => setIntent(ids, id) })),
+    "-", { label: `Prepare ${ids.length} as set`, run: () => api("/api/prepare", { body: { ids } }).then((r) => { toast(`Analysing ${r.analyse}, stems for ${r.stems}, converting ${r.convert}`); loadTracks(); pollJobs(); }).catch(fail) },
+  ]) }, "Prepare…"));
   const unplayable = sel.filter((t) => t.deck_problem).map((t) => t.id);
   if (unplayable.length) parts.push(h("button", { class: "ghost small", onclick: () => convertForDeck(unplayable),
     title: "16-bit FLAC copies the deck can play; the originals stay as they are" }, `Convert ${unplayable.length} for the deck`));
@@ -672,6 +776,17 @@ function renderContext() {
   parts.push(h("button", { class: "ghost small icon-btn", "aria-label": "Clear selection", title: "Clear selection",
                            onclick: () => { state.selected.clear(); renderTracks(); } }, icon("x", "ic sm")));
   box.replaceChildren(...parts);
+}
+// Intent for one or many tracks, then prepare what it asks for.
+async function setIntent(ids, intent) {
+  try {
+    for (const id of ids) await api(`/api/tracks/${id}`, { method: "PATCH", body: { intent } });
+    const r = await api("/api/prepare", { body: { ids } });
+    const made = [r.analyse ? `analysing ${r.analyse}` : null, r.stems ? `stems for ${r.stems}` : null, r.convert ? `converting ${r.convert}` : null].filter(Boolean).join(", ");
+    toast(`${INTENTS.find((i) => i[0] === intent)[1]} for ${plural(ids.length, "track")}${made ? ": " + made : ""}`);
+    await loadTracks(); pollJobs();
+    if (state.current && ids.includes(state.current.id)) openTrack(state.current.id);
+  } catch (e) { fail(e); }
 }
 async function removeSelected() {
   const ids = [...state.selected];
@@ -727,7 +842,7 @@ async function openTrack(id, play) {
   const same = state.current?.id === id;
   state.current = t;
   if (!same) {
-    state.stemSolo = null;
+    state.stemSolo = null; state.sel = null; state.loop = false;
     state.stemPeaks = null;
     player.src = `/api/tracks/${id}/audio`;
     state.wave = null;
@@ -745,7 +860,7 @@ function loadStemPeaks(id) {
     if (state.current?.id !== id) return;
     const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
     state.stemPeaks = Object.fromEntries(Object.entries(p.peaks).map(([k, v]) => [k, Float32Array.from(b64(v), (x) => x / 255)]));
-    if (state.wave && state.focus) buildWaves();
+    if (state.wave && state.focus) { buildWaves(); renderDetail(); }   // the chips can now use the stems
   }).catch(() => {});
 }
 // The open track covers the list and the card; Esc, the back glyph or the preview bar's chevron brings the list back.
@@ -875,6 +990,8 @@ function renderDetail() {
       h("span", { id: "gridReadout", "aria-live": "polite" }, fmtNudge(gridNow(t))),
       h("button", { "aria-label": "Later by 1 ms (], Shift for 10 ms)", title: "Later by 1 ms (], Shift+] for 10 ms)", onclick: (e) => gridNudge(e.shiftKey ? 10 : 1) }, "›"),
       h("button", { class: "tb small", "aria-label": "Move the bar start one beat later", title: "Downbeat +1", onclick: () => gridNudge(0, 1) }, "+1"),
+      h("button", { class: "tb small grid-ok", "aria-pressed": String(!!t.grid_ok_at), "aria-label": t.grid_ok_at ? "Beat grid confirmed: click to unconfirm" : "Confirm the beat grid by ear",
+        title: t.grid_ok_at ? "Beat grid confirmed by you. Click to take that back" : "I listened: the grid is right", onclick: () => saveField("grid_ok_at", t.grid_ok_at ? null : Date.now() / 1000) }, icon("check", "ic sm")),
       h("button", { class: "tb small", "aria-label": "Back to the analysis grid", title: "Back to the analysis grid", onclick: gridReset }, icon("refresh", "ic sm")))
     : h("span", { class: "muted", title: "The beat grid appears after analysis" }, icon("nudge", "ic sm"));
   const keyPill = h("div", { class: "pill-ctl key", role: "group", "aria-label": "Key shift in semitones: the deck plays the track shifted, the file stays as it is" }, icon("key", "ic sm"),
@@ -882,9 +999,26 @@ function renderDetail() {
     h("span", { id: "shiftReadout", "aria-live": "polite", title: "Key shift on the deck (semitones)" }, keyShiftText(t)),
     h("button", { "aria-label": "Key up one semitone", title: "One semitone up", onclick: () => keyShiftBy(1) }, "›"),
     keyShiftNow(t) ? h("button", { class: "tb small", "aria-label": "No key shift", title: "No key shift", onclick: () => keyShiftBy(-keyShiftNow(t)) }, icon("x", "ic sm")) : null);
+  // Mix in / out: where this track enters and leaves a mix. Analysed by default (hollow), yours once you set them
+  // (I / O at the playhead, or a click on the readout to jump there). The card gets them for the deck's autopilot.
+  const mixBtn = (k, name, key) => {
+    const own = !t[`${k}_auto`], v = t[k];
+    return h("button", { class: "mix-pt" + (own ? " own" : ""), title: v == null ? `No ${name.toLowerCase()} point yet. Press ${key} to set it at the playhead` : `Mix ${name.toLowerCase()} at ${fmtMs(v)} (${own ? "yours" : "analysed"}). Click to jump; ${key} sets it at the playhead`,
+      "aria-label": `Mix ${name.toLowerCase()} ${v == null ? "not set" : "at " + fmtMs(v)}${own ? ", set by you" : ""}`, onclick: () => { if (v != null) player.currentTime = v / 1000; } },
+      h("b", {}, name), v == null ? "–" : fmtMs(v));
+  };
+  const mixPill = h("div", { class: "pill-ctl mix", role: "group", "aria-label": "Mix in and mix out points" }, icon("arrow-right", "ic sm"),
+    mixBtn("mix_in_ms", "IN", "I"), mixBtn("mix_out_ms", "OUT", "O"),
+    (!t.mix_in_ms_auto || !t.mix_out_ms_auto) ? h("button", { class: "tb small", "aria-label": "Back to the analysed mix points", title: "Back to the analysed mix points", onclick: () => setMixPoints({ mix_in_ms: null, mix_out_ms: null }) }, icon("refresh", "ic sm")) : null);
   const lines = [splitSuggestion(t),
     why.length ? h("div", { class: "warn-line" }, icon("alert", "ic sm"), h("span", {}, why.join(" · "), t.deck_problem ? ". The original is still exported (CDJs play it)." : ""),
       t.deck_problem ? h("button", { class: "small", onclick: () => convertForDeck([t.id]), title: "Makes a 16-bit FLAC copy for the deck. The original stays as it is." }, "Convert for the deck") : null) : null,
+    stemQuality(t) && stemQuality(t).grade !== "good" && t.stems === "done" ? h("div", { class: stemQuality(t).grade === "poor" ? "warn-line" : "ok-line" }, icon(stemQuality(t).grade === "poor" ? "alert" : "info", "ic sm"),
+      h("span", {}, `${stemQuality(t).grade === "poor" ? "Poor stems" : "Usable stems"}: ${stemQuality(t).notes.join(" · ")}.`),
+      h("button", { class: "ghost small", title: "Separate again (a new run can come out differently)", onclick: () => api("/api/stems", { body: { ids: [t.id], force: true } }).then(() => { toast("Making stems again"); pollJobs(); }).catch(fail) }, "Redo")) : null,
+    t.stems_range ? h("div", { class: "ok-line" }, icon("deck", "ic sm"),
+      h("span", {}, `The stems cover ${fmtMs(JSON.parse(t.stems_range)[0])}–${fmtMs(JSON.parse(t.stems_range)[1])} only (silence elsewhere).`),
+      h("button", { class: "ghost small", onclick: () => api("/api/stems", { body: { ids: [t.id] } }).then(() => { toast("Making stems for the whole track"); pollJobs(); }).catch(fail) }, "Whole track")) : null,
     t.deck_copy ? h("div", { class: "ok-line" }, icon("check", "ic sm"),
       h("span", {}, `The deck gets a 16-bit FLAC copy${t.deck_copy_bytes ? ` (${fmtBytes(t.deck_copy_bytes)})` : ""} instead of the original.`),
       h("button", { class: "ghost small", onclick: () => removeDeckCopy([t.id]) }, "Use the original")) : null].filter(Boolean);
@@ -897,12 +1031,14 @@ function renderDetail() {
         h("div", { class: "tp-artist" }, t.artist || "Unknown artist")),
       h("div", { class: "tp-meta" },
         t.bpm ? h("b", { title: "BPM" }, fmtBpm(t.bpm)) : null, keyEl, moodPicker(t), energyBars(t.energy),
+        intentPicker(t),
         t.lufs != null ? h("span", { class: "muted", title: `${t.lufs.toFixed(1)} LUFS. The export writes ${fmtGain(t)} for the deck (target ${state.settings?.target_lufs ?? -9} LUFS).` }, `${t.lufs.toFixed(1)} LUFS`) : null,
         h("span", { class: "muted", title: "Length" }, fmtTime(t.duration))),
       h("button", { class: "tb", "aria-label": "Track actions", title: "Actions",
-        onclick: (e) => openMenu(e.currentTarget, [...trackMenuItems(t), { label: "Close track", run: closeDetail }]) }, icon("more"))),
+        onclick: (e) => openMenu(e.currentTarget, [...trackMenuItems(t), { icon: "arrow-left", label: "Close track", hint: "Esc", run: closeDetail }]) }, icon("more"))),
     lines.length ? h("div", { class: "tp-lines" }, lines) : null,
     h("section", { "aria-label": "Waveforms", class: "tp-waves" }, waveStack),
+    sectionChips(t),
     t.sections?.length ? h("div", { class: "phrases", role: "group", "aria-label": "Sections and phrases" }, t.sections.map((s) => h("button", { class: "phrase", style: `flex:${Math.max(1, s.end_ms - s.start_ms)} 1 0`,
         title: `${s.kind} at ${fmtMs(s.start_ms)}${s.bars ? ` · ${s.bars} bars` : ""}`, onclick: () => { player.currentTime = s.start_ms / 1000; } },
       h("i", { style: `background:${phraseColor(s.kind)}` }), h("b", {}, s.kind)))) : null,
@@ -911,7 +1047,13 @@ function renderDetail() {
       pads,
       h("button", { class: "tb", "aria-pressed": String(!!state.cueEdit), "aria-label": "Edit cues: clear or name them, memory cues", title: "Edit cues",
         onclick: () => { state.cueEdit = !state.cueEdit; renderDetail(); } }, icon("pencil")),
-      gridPill, keyPill, stemsCtl,
+      state.sel ? h("div", { class: "pill-ctl sel", role: "group", "aria-label": "Selected section" },
+        h("span", { class: "sel-text", title: "Drag on the waveform to change it" }, h("b", {}, `${state.sel.bars || "—"} bars`), ` ${fmtMs(state.sel.start_ms)}–${fmtMs(state.sel.end_ms)}`),
+        h("button", { class: "tb small", "aria-pressed": String(!!state.loop), "aria-label": "Loop this section", title: "Loop this section (L)", onclick: toggleLoop }, icon("repeat", "ic sm")),
+        h("button", { class: "tb small", "aria-label": "Save as a loop", title: "Save as a loop (a memory cue with an end: the card carries it as a loop)", onclick: saveLoop }, icon("plus", "ic sm")),
+        h("button", { class: "tb small", "aria-label": "Make stems for this section only", title: `Make stems for this section only (${fmtMs(state.sel.start_ms)}–${fmtMs(state.sel.end_ms)}, with context; silence elsewhere)`, onclick: stemsForSel }, icon("deck", "ic sm")),
+        h("button", { class: "tb small", "aria-label": "Clear the selection", title: "Clear (Esc)", onclick: () => setSel(null) }, icon("x", "ic sm"))) : null,
+      mixPill, gridPill, keyPill, stemsCtl,
       h("span", { class: "spacer" }),
       h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
         h("button", { "aria-label": "Zoom out", title: "Zoom out", onclick: () => zoomWave(0.5) }, "−"),
@@ -933,6 +1075,13 @@ function renderDetail() {
   syncMarkers();
 }
 
+// Intent: how the track will be used, with what that prepares in the tooltip.
+function intentPicker(t) {
+  const sel = h("select", { class: "intent-sel", "aria-label": "How you'll use this track", title: INTENTS.map(([, l, a]) => `${l}: ${a}`).join("\n") },
+    INTENTS.map(([id, label]) => h("option", { value: id, selected: (t.intent || "mix") === id }, label)));
+  sel.addEventListener("change", () => setIntent([t.id], sel.value));
+  return sel;
+}
 // Mood in the track panel: the label and a menu to set it. Picking one teaches the automatic
 // moods (mood.rs); "Automatic" hands the track back to the analysis.
 function moodPicker(t) {
@@ -1013,8 +1162,9 @@ async function saveField(key, value) {
   try {
     const r = await api(`/api/tracks/${state.current.id}`, { method: "PATCH", body: { [key]: value } });
     Object.assign(state.current, r.track);
-    toast("Saved", r.undo);
+    toast(key === "grid_ok_at" ? (value ? "Beat grid confirmed" : "Beat grid unconfirmed") : "Saved", r.undo);
     loadTracks();
+    if (state.focus && key === "grid_ok_at") renderDetail();
   } catch (e) { fail(e); }
 }
 // All cue edits go through one PUT of the whole list. A user edit makes every remaining
@@ -1025,6 +1175,110 @@ async function putCues(cues, message) {
   state.current.cues = r.cues;
   toast(message, r.undo);
   renderDetail();
+}
+// ── Sections ──────────────────────────────────────────────────────────────
+// A section is a run of bars on the phrase grid (8 bars from the first downbeat, where ClubCraft's sections start).
+// Drag on the full mix, or click a chip, to select one; then loop it (L), save it as a loop (a memory cue with an
+// end, which the card carries as a rekordbox loop) or make stems for just that range.
+const SECTION_BARS = [4, 8, 16, 32, 64];
+const barStartMs = (g, n) => g.first_beat_ms + (g.downbeat_index + 4 * n) * g.period_ms;
+function snapSel(aMs, bMs) {
+  const t = state.current, g = effectiveGrid(t);
+  if (!t || !g || !g.period_ms) return null;
+  const bar = 4 * g.period_ms, dur = (t.duration || 0) * 1000;
+  const barOf = (ms) => (ms - barStartMs(g, 0)) / bar;
+  const start = Math.max(0, Math.round(barOf(aMs) / 8) * 8);
+  const want = Math.max(1, barOf(bMs) - start);
+  const bars = SECTION_BARS.reduce((best, n) => (Math.abs(n - want) < Math.abs(best - want) ? n : best), SECTION_BARS[0]);
+  const a = barStartMs(g, start), b = Math.min(dur, barStartMs(g, start + bars));
+  return b - a < bar ? null : { start_ms: Math.round(a), end_ms: Math.round(b), bars, start_bar: start };
+}
+function setSel(sel) {
+  state.sel = sel;
+  if (!sel) state.loop = false;
+  renderDetail();
+}
+function toggleLoop() {
+  if (!state.sel) return toast("Select a section first: drag on the waveform or click a chip");
+  state.loop = !state.loop;
+  if (state.loop && (player.currentTime * 1000 < state.sel.start_ms || player.currentTime * 1000 >= state.sel.end_ms)) player.currentTime = state.sel.start_ms / 1000;
+  if (state.loop && player.paused) player.play().catch(() => {});
+  renderDetail();
+}
+// Suggested sections: the analysed sections, plus runs of phrases with no singing (instrumental) or with the
+// vocal up front (vocal), from the stem peaks when the track has stems.
+function candidates(t) {
+  const g = effectiveGrid(t), out = [];
+  if (!g?.period_ms) return out;
+  const snapTo = (a, b) => snapSel(a, b);
+  for (const s of t.sections || []) {
+    const sel = snapTo(s.start_ms, s.end_ms);
+    if (sel && sel.bars >= 4) out.push({ ...sel, kind: s.kind, label: `${s.kind} ${sel.bars}` });
+  }
+  const pk = state.stemPeaks;
+  if (pk?.vocals && pk?.drums) {
+    const bar = 4 * g.period_ms, cols = 150, n = pk.vocals.length;
+    const mean = (arr, a, b) => { let s = 0, k = 0; for (let i = Math.max(0, Math.floor(a)); i < Math.min(n, Math.floor(b)); i++) { s += arr[i]; k++; } return k ? s / k : 0; };
+    const phrases = [];
+    for (let p = 0; barStartMs(g, p * 8) < (t.duration || 0) * 1000 - bar; p++) {
+      const a = barStartMs(g, p * 8) / 1000 * cols, b = barStartMs(g, p * 8 + 8) / 1000 * cols;
+      const v = mean(pk.vocals, a, b), d = mean(pk.drums, a, b), o = mean(pk.other, a, b) + mean(pk.bass, a, b);
+      phrases.push({ p, v, d, o, instrumental: v < 0.08 && d + o > 0.15, vocal: v > 0.25 });
+    }
+    const runs = (key, name) => {
+      const found = [];
+      for (let i = 0; i < phrases.length;) {
+        if (!phrases[i][key]) { i++; continue; }
+        let j = i; while (j < phrases.length && phrases[j][key]) j++;
+        const bars = Math.min(64, (j - i) * 8), sel = { start_ms: Math.round(barStartMs(g, i * 8)), end_ms: Math.round(Math.min((t.duration || 0) * 1000, barStartMs(g, i * 8 + bars))), bars, start_bar: i * 8 };
+        if (bars >= 8) found.push({ ...sel, kind: name, label: `${name} ${bars}` });
+        i = j;
+      }
+      return found.sort((x, y) => y.bars - x.bars).slice(0, 3);
+    };
+    out.push(...runs("instrumental", "Instrumental"), ...runs("vocal", "Vocal"));
+  }
+  return out;
+}
+function sectionChips(t) {
+  const saved = t.cues.filter((c) => !c.slot && c.end_ms > c.start_ms).sort((a, b) => a.start_ms - b.start_ms);
+  const cands = candidates(t).filter((c) => !saved.some((s) => Math.abs(s.start_ms - c.start_ms) < 500 && Math.abs(s.end_ms - c.end_ms) < 500));
+  if (!saved.length && !cands.length) return null;
+  const isSel = (a, b) => state.sel && Math.abs(state.sel.start_ms - a) < 50 && Math.abs(state.sel.end_ms - b) < 50;
+  return h("div", { class: "chips-row", role: "group", "aria-label": "Sections" },
+    saved.map((c) => h("span", { class: "chip saved" + (isSel(c.start_ms, c.end_ms) ? " on" : "") },
+      h("button", { class: "chip-main", title: `Saved loop ${fmtMs(c.start_ms)}–${fmtMs(c.end_ms)}. Click to select it`, onclick: () => setSel(snapSel(c.start_ms, c.end_ms) || { start_ms: c.start_ms, end_ms: c.end_ms, bars: 0 }) },
+        icon("repeat", "ic sm"), c.label || "Loop"),
+      h("button", { class: "chip-x", "aria-label": `Delete loop ${c.label || ""}`, title: "Delete this loop", onclick: () => removeMemory(c).catch(fail) }, icon("x", "ic sm")))),
+    cands.map((c) => h("button", { class: "chip" + (isSel(c.start_ms, c.end_ms) ? " on" : ""), style: `--k:${phraseColor(c.kind)}`, title: `${c.kind}: ${c.bars} bars from ${fmtMs(c.start_ms)}. Click to select`,
+      onclick: () => setSel(c) }, h("i"), c.label)));
+}
+async function saveLoop() {
+  const s = state.sel;
+  if (!s) return;
+  const name = await ask(`Name for this ${s.bars}-bar loop`, "", "Save");
+  if (name == null) return;
+  const cues = state.current.cues.map((c) => ({ ...c }));
+  cues.push({ slot: 0, start_ms: s.start_ms, end_ms: s.end_ms, label: name || null, auto: 0 });
+  putCues(cues, `Loop saved${name ? ": " + name : ""}`).catch(fail);
+}
+function stemsForSel() {
+  const s = state.sel, t = state.current;
+  if (!s || !t) return;
+  api("/api/stems", { body: { ids: [t.id], range_ms: [s.start_ms, s.end_ms] } })
+    .then(() => { toast(`Making stems for ${fmtMs(s.start_ms)}–${fmtMs(s.end_ms)}`); pollJobs(); loadTracks(); openTrack(t.id); }).catch(fail);
+}
+// Mix points: saved per track (NULL = the analysed point), beat-snapped like a cue, one undo.
+const MIX = [["mix_in_ms", "IN"], ["mix_out_ms", "OUT"]];
+async function setMixPoints(fields) {
+  const t = state.current;
+  if (!t) return;
+  try {
+    const r = await api(`/api/tracks/${t.id}`, { method: "PATCH", body: fields });
+    const what = Object.entries(fields).map(([k, v]) => `${k === "mix_in_ms" ? "Mix in" : "Mix out"} ${v == null ? "analysed" : "at " + fmtMs(v)}`).join(", ");
+    toast(what, r.undo);
+    await openTrack(t.id);
+  } catch (e) { fail(e); }
 }
 // Cue names live in DKPRP (the pads, the waveform) and go to the deck as hints in POCKETDECK/analysis; the rekordbox files
 // have no field for them.
@@ -1143,6 +1397,7 @@ player.addEventListener("play", setPlayIcon);
 player.addEventListener("pause", setPlayIcon);
 player.addEventListener("timeupdate", () => {
   if (!state.current) return;
+  if (state.loop && state.sel && player.currentTime * 1000 >= state.sel.end_ms - 30) player.currentTime = state.sel.start_ms / 1000;
   $("#timeLabel").textContent = fmtTime(player.currentTime);
   const wt = $("#waveTime"); if (wt) wt.textContent = waveTimeText();
   if (!state.seeking) $("#seek").value = player.currentTime;
@@ -1182,7 +1437,7 @@ const STEM_COLORS = { drums: CUE_COLORS[1], bass: CUE_COLORS[2], other: CUE_COLO
 
 function cssVar(n) { return cssCache[n] ??= getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 const waveStack = h("div", { class: "wstack", tabindex: "0", role: "group",
-  "aria-label": "Waveforms. Up and Down choose the full mix or a stem to listen to, Left and Right move the playhead (Shift: 10 s, Alt: a beat, Ctrl: a bar), Page Up and Page Down jump between cues, double-click sets the next hot cue." });
+  "aria-label": "Waveforms. Up and Down choose the full mix or a stem to listen to, Left and Right move the playhead (Shift: 10 s, Alt: a beat, Ctrl: a bar), Page Up and Page Down jump between cues, I and O set the mix in and out points, double-click sets the next hot cue." });
 const fmtClock = (s) => { s = Math.max(0, s || 0); return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`; };
 function waveTimeText() { const t = state.current; return t ? `${fmtClock(player.currentTime)} / ${fmtClock(t.duration)}` : ""; }
 const waveBox = h("div", { class: "waves", id: "waves" });
@@ -1291,12 +1546,15 @@ function buildWaves() {
   // The full mix takes the height the stack has left after the stem lanes and the overview (120-320 px).
   const stemLanes = STEM_ORDER.filter((n) => state.stemPeaks?.[n]).length;
   const fullH = Math.max(120, Math.min(320, (waveStack.clientHeight || 0) - 20 - stemLanes * 47 - 29 - 18 - 4));
-  state.ws = WaveSurfer.create({ container: waveBox, peaks: [positions(state.bands[0].length)], ...base(full, fullH),
+  state.ws = WaveSurfer.create({ container: waveBox, peaks: [positions(state.bands[0].length)], ...base(full, fullH), dragToSeek: false,
     plugins: [state.regions, hoverPlugin(), WaveSurfer.Timeline.create({ height: 18, formatTimeCallback: clockLabel, secondaryLabelOpacity: 0.35,
       style: { fontSize: "10px", color: "#b6b6bb", fontFamily: "inherit" } }), WaveSurfer.Minimap.create({ container: overviewBox, height: 26, renderFunction: full, waveColor: "#888888", progressColor: "rgba(0,0,0,0.5)",
       dragToSeek: true, cursorColor: PLAYHEAD, overlayColor: "rgba(255,255,255,.12)" })] });
   state.ws.on("ready", syncMarkers);
   state.ws.on("dblclick", (rx) => nextHotCueAt(rx * w.duration));
+  // Drag on the full mix selects a section, snapped to the phrase grid (a click still seeks).
+  state.ws.once("ready", () => state.regions.enableDragSelection({ color: withAlpha(cssVar("--accent") || "#f0574c", 0.22), drag: false, resize: false }));
+  state.regions.on("region-created", (r) => { if (r.id.startsWith("x-")) return; const sel = snapSel(r.start * 1000, r.end * 1000); r.remove(); if (sel) setSel(sel); });
   waveBox.append(h("span", { class: "lane-tip" }, "FULL MIX"));
   const overviewRow = () => { waveStack.append(h("span", { class: "wlabel", style: "color:#8a8a90", title: "Overview" }, h("i")), overviewBox); overviewBox.append(h("span", { class: "lane-tip" }, "OVERVIEW")); markActiveLane(); };
   if (!state.stemPeaks) return overviewRow();
@@ -1324,6 +1582,9 @@ function zoomWave(f) {
 
 // Beat grid (faint beats, solid downbeats, bar numbers every 8 bars), then hot cues (A-H) and
 // memory cues (M). The waveform panel is always dark, so the lines are light.
+let markSeq = 0;
+// Markers and spans never take the pointer: a drag that starts on a cue line still selects a section.
+const mark = (reg, opts) => { const r = reg.addRegion({ id: `x-${++markSeq}`, ...opts }); if (r.element) r.element.style.pointerEvents = "none"; return r; };
 function syncMarkers() {
   const t = state.current, g = effectiveGrid(t), reg = state.regions;
   if (!reg || !state.wave) return;
@@ -1333,10 +1594,16 @@ function syncMarkers() {
     sr.clearRegions();
     if (g && g.period_ms > 0 && (g.duration_ms - g.first_beat_ms) / g.period_ms < 3000) {
       const beats = Math.floor((g.duration_ms - g.first_beat_ms) / g.period_ms) + 1;
-      for (let k = 0; k < beats; k++) if (((k - g.downbeat_index) % 4 + 4) % 4 === 0) sr.addRegion({ start: (g.first_beat_ms + k * g.period_ms) / 1000, color: "rgba(242,242,242,0.28)", drag: false, resize: false });
+      for (let k = 0; k < beats; k++) if (((k - g.downbeat_index) % 4 + 4) % 4 === 0) mark(sr, { start: (g.first_beat_ms + k * g.period_ms) / 1000, color: "rgba(242,242,242,0.28)", drag: false, resize: false });
     }
-    for (const c of t.cues) sr.addRegion({ start: c.start_ms / 1000, color: c.slot ? CUE_COLORS[c.slot - 1] : "#f2f2f2", drag: false, resize: false });
+    for (const c of t.cues) mark(sr, { start: c.start_ms / 1000, color: c.slot ? CUE_COLORS[c.slot - 1] : "#f2f2f2", drag: false, resize: false });
+    for (const [k] of MIX) if (t[k] != null) mark(sr, { start: t[k] / 1000, color: "rgba(242,242,242,0.6)", drag: false, resize: false });
   }
+  // The selected section and the saved loops: translucent spans on every lane.
+  const spans = [...t.cues.filter((c) => !c.slot && c.end_ms > c.start_ms).map((c) => ({ a: c.start_ms, b: c.end_ms, color: "rgba(242,242,242,0.10)", label: c.label || "Loop" })),
+                 ...(state.sel ? [{ a: state.sel.start_ms, b: state.sel.end_ms, color: withAlpha(cssVar("--accent") || "#f0574c", 0.22), label: `${state.sel.bars} bars` }] : [])];
+  const spanLabel = (s) => h("span", { style: `display:inline-block;font:600 10px var(--f-text);letter-spacing:.04em;padding:1px 5px;border-radius:2px;background:rgba(0,0,0,.55);color:#f2f2f2;margin:2px` }, s.label);
+  for (const s of spans) for (const r of [reg, ...(state.stemRegions || [])]) mark(r, { start: s.a / 1000, end: s.b / 1000, color: s.color, drag: false, resize: false, content: r === reg ? spanLabel(s) : undefined });
   if (g && g.period_ms > 0) {
     const down = "rgba(242,242,242,0.55)", beat = "rgba(242,242,242,0.16)";
     const beats = Math.floor((g.duration_ms - g.first_beat_ms) / g.period_ms) + 1;
@@ -1347,7 +1614,7 @@ function syncMarkers() {
       if (isDown) bar++;
       if (!isDown && !everyBeat) continue;
       const label = isDown && bar % 8 === 1 ? h("span", { style: "font:600 10px var(--f-text);color:#b6b6bb;padding:0 3px" }, String(bar)) : undefined;
-      reg.addRegion({ start: (g.first_beat_ms + k * g.period_ms) / 1000, color: isDown ? down : beat, content: label, drag: false, resize: false });
+      mark(reg, { start: (g.first_beat_ms + k * g.period_ms) / 1000, color: isDown ? down : beat, content: label, drag: false, resize: false });
     }
   }
   for (const c of t.cues) {
@@ -1355,7 +1622,14 @@ function syncMarkers() {
     const col = c.slot ? CUE_COLORS[c.slot - 1] : "#f2f2f2";
     const label = h("span", { style: `display:inline-block;font:600 11px var(--f-text);padding:0 4px;border-radius:0 2px 2px 0;background:${col};color:#111112` },
       c.slot ? PAD[c.slot - 1] : "M");
-    reg.addRegion({ start: c.start_ms / 1000, color: col, content: label, drag: false, resize: false });
+    mark(reg, { start: c.start_ms / 1000, color: col, content: label, drag: false, resize: false });
+  }
+  // Mix in / out: white flags, solid when they are yours, hollow when analysed.
+  for (const [k, name] of MIX) {
+    if (t[k] == null) continue;
+    const own = !t[`${k}_auto`];
+    const label = h("span", { style: `display:inline-block;font:600 10px var(--f-text);letter-spacing:.04em;padding:0 4px;border-radius:0 2px 2px 0;${own ? "background:#f2f2f2;color:#111112" : "border:1px solid #f2f2f2;color:#f2f2f2;background:rgba(0,0,0,.5)"}` }, name);
+    mark(reg, { start: t[k] / 1000, color: own ? "#f2f2f2" : "rgba(242,242,242,0.6)", content: label, drag: false, resize: false });
   }
 }
 
@@ -1405,11 +1679,13 @@ async function pollJobs() {
   updateStatusCells();
   if (lastActive && active.length < lastActive) {     // something finished
     loadTracks();
+    if (state.models) loadModels();
     if (state.current) openTrack(state.current.id);
     if (exp.root) updatePlan();
   } else if (state.current && active.some((j) => j.track_id === state.current.id && j.kind === "stems")) {
     renderStemProgress();
   }
+  if (state.models?.stems_model?.job && $("#view-settings").classList.contains("active")) loadModels();
   lastActive = active.length;
   pollTimer = setTimeout(pollJobs, active.length ? 1000 : 4000);
 }
@@ -1446,6 +1722,7 @@ function renderInlineJobs() {
       el.append(h("div", { class: "plan" }, h("b", {}, "Export complete"),
         h("div", {}, `Exported ${j.result.tracks} tracks (${j.result.copied} files copied), ${j.result.playlists} playlists, ${j.result.stems} with stems.` +
           (j.result.missing_files ? ` ${j.result.missing_files} files were missing and skipped.` : "")),
+        cardCheck(j.result.check),
         ...deckWarnings(j.result.warnings)));
     }
   }
@@ -1464,6 +1741,7 @@ function toggleJobs(show = $("#jobsPanel").hidden) {
 $("#jobsBtn").addEventListener("click", () => toggleJobs());
 $("#closeJobs").addEventListener("click", () => toggleJobs(false));
 $("#clearJobs").addEventListener("click", () => api("/api/jobs/clear", { body: {} }).then(pollJobs));
+$("#prepareAll").addEventListener("click", () => api("/api/prepare", { body: {} }).then((r) => { toast(`Analysing ${r.analyse}, stems for ${r.stems}, converting ${r.convert}`); loadTracks(); pollJobs(); }).catch(fail));
 
 // ── Export view ──────────────────────────────────────────────────────────────
 const exp = { root: null, drives: [], plan: null };
@@ -1485,6 +1763,15 @@ function foreignLibrary(why) {
 }
 
 // Files are copied as they are; these are the ones the deck can't decode.
+// The read-back check after an export (usb::validate): every file on the card opened and compared with its
+// source. Problems are found here, not in the booth.
+function cardCheck(c) {
+  if (!c) return null;
+  if (!c.problems?.length) return h("div", { class: "ok-line" }, icon("check", "ic sm"), h("span", {}, `Checked: ${plural(c.files, "file")} on the card read back as written.`));
+  return h("div", { class: "warn-line" }, icon("alert", "ic sm"),
+    h("span", {}, `${plural(c.problems.length, "problem")} on the card: ${c.problems[0]}${c.problems.length > 1 ? ` (+${c.problems.length - 1} more)` : ""}. Export again, or try another drive.`,
+      c.problems.length > 1 ? h("button", { class: "ghost small", onclick: () => notice("Card check", h("ul", { class: "plain" }, ...c.problems.map((x) => h("li", {}, x)))) }, "All") : null));
+}
 function deckWarnings(list) {
   if (!list || !list.length) return [];
   return [h("div", { class: "warn-line" }, h("b", {}, `${plural(list.length, "track")} won't play on the DECK001`), " (they're still copied, CDJs play them):"),
@@ -1537,6 +1824,41 @@ function renderTarget(p) {
       p ? h("i", { class: p.fits ? "need" : "over", style: `left:${used * 100}%;width:${(p.fits ? need : 1 - used) * 100}%` }) : null),
     p ? h("span", { class: "muted tnum" }, p.fits ? `Uses up to ${fmtBytes(p.bytes)}, leaving about ${fmtBytes(Math.max(0, p.free - p.bytes))}` : `Needs ${fmtBytes(p.bytes)}, only ${fmtBytes(p.free)} free`) : null);
 }
+// The set strip: one playlist as the scope is a set, and the card column shows it the way it will play: the
+// energy curve, the order with the transition verdict between each pair (click for the reasons), running
+// time, the deck's load estimate, and "Order by" (ClubCraft's planner; undoable).
+function setStrip(s) {
+  const ts = s.tracks, n = ts.length;
+  if (!n) return null;
+  const W = 300, H = 36;
+  const pts = s.energy.map((e, i) => `${(n > 1 ? i / (n - 1) : 0.5) * W},${H - 2 - ((e || 1) - 1) / 9 * (H - 6)}`);
+  const curve = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [k, v] of Object.entries({ class: "set-curve", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img", "aria-label": `Energy: ${s.energy.map((e) => e ?? "?").join(", ")}` })) curve.setAttribute(k, v);
+  curve.innerHTML = `<polyline points="${pts.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/>` +
+    pts.map((p) => `<circle cx="${p.split(",")[0]}" cy="${p.split(",")[1]}" r="2.5" fill="var(--accent)"/>`).join("");
+  const v = s.verdicts, verdictText = v.no ? `${plural(v.no, "transition")} won't work` : v.ok ? `${v.ok} to check` : v.unknown === n - 1 ? "analyse the tracks to check the transitions" : "every transition works";
+  const orderBy = (e) => openMenu(e.currentTarget, [{ head: "Order the set" },
+    ...[["auto", "Balanced", "shuffle"], ["key", "By key", "key"], ["tempo", "By tempo", "clock"], ["energy", "Rising energy", "arrow-right"]].map(([by, label, ic]) => ({ icon: ic, label,
+      run: async () => { try { const r = await api(`/api/sets/${s.playlist.id}/order`, { body: { by } }); toast(`${s.playlist.name} ordered ${label.toLowerCase()}`, r.undo); loadTracks(); updatePlan(); } catch (e) { fail(e); } } }))]);
+  const rowsEl = [];
+  ts.forEach((t, i) => {
+    if (i > 0) {
+      const tr = s.transitions[i - 1];
+      rowsEl.push(h("button", { class: `set-tr ${tr ? tr.verdict : "unknown"}`, title: tr ? tr.reasons.map((r) => (r.ok ? "✓ " : "! ") + r.text).join("\n") : "Analyse both tracks to check this transition",
+        "aria-label": tr ? `Transition ${tr.score} of 100` : "Transition unknown",
+        onclick: (e) => tr && openMenu(e.currentTarget, [{ head: `${ts[i - 1].title || "?"} → ${t.title || "?"} · ${tr.beats / 4} bars · ${tr.score}` }, ...tr.reasons.map((r) => ({ icon: r.ok ? "check" : "alert", label: r.text, run: () => {} }))]) },
+        h("i")));
+    }
+    rowsEl.push(h("div", { class: "set-row", onclick: () => openFocus(t.id) }, h("span", { class: "set-n" }, String(i + 1)), h("span", { class: "set-title" }, t.title || "Untitled"),
+      h("span", { class: "set-meta" }, t.bpm ? fmtBpm(t.bpm) : "", " ", t.shifted_camelot || t.camelot || ""), readinessCell(t)));
+  });
+  return h("details", { class: "set-strip", open: true },
+    h("summary", {}, h("b", {}, "Set · "), `${plural(n, "track")} · ${fmtDur(s.duration_s)} · ${verdictText}`),
+    curve,
+    h("div", { class: "set-tools" }, h("span", { class: "muted" }, `Loads in about ${Math.max(1, Math.round(s.load_s))} s on the deck`),
+      h("button", { class: "ghost small", onclick: orderBy, title: "Reorder this playlist with the planner (undoable)" }, icon("shuffle", "ic sm"), " Order by…")),
+    h("div", { class: "set-list" }, rowsEl));
+}
 let planSeq = 0;
 // The dry run: what each track needs before you export. Nothing is written until you press Export.
 function dryRun(p) {
@@ -1569,6 +1891,7 @@ async function updatePlan() {
         h("dt", {}, "With stems"), h("dd", {}, body.include_stems ? String(p.with_stems) : "Stems off"),
         h("dt", {}, "Size"), h("dd", {}, `up to ${fmtBytes(p.bytes)} (${fmtBytes(p.free)} free)`)),
       p.unanalysed ? h("div", { class: "muted" }, `${p.unanalysed} tracks aren't analysed yet; they'll be analysed during the export (slower).`) : null,
+      p.set ? setStrip(p.set) : null,
       dryRun(p),
       ...deckWarnings(p.warnings),
       p.fits ? null : h("div", { class: "alert-text" }, h("b", {}, "Doesn't fit. "), "Choose fewer playlists or turn off stems."),
@@ -1654,7 +1977,7 @@ async function loadSettings() {
     if (el.type === "checkbox") el.checked = !!v; else el.value = v;
   }
   state.system = await api("/api/system");
-  renderSystem();
+  await loadModels();
   const hist = await api("/api/history");
   $("#history").replaceChildren(...(hist.length ? hist.slice(0, 60).map((r) => h("div", { class: "h" },
     h("span", { class: "when" }, new Date(r.at * 1000).toLocaleString()),
@@ -1663,11 +1986,19 @@ async function loadSettings() {
     : [h("p", { class: "muted" }, "No changes yet.")]));
 }
 function renderSystem() {
-  const s = state.system;
+  const s = state.system, m = state.models?.stems_model;
+  // The stems model (174 MB) isn't in the installer on Windows and Linux: fetched once, checked against the build's hash.
+  const model = !m ? "…" : m.present ? h("span", { class: "ok-text" }, icon("check", "ic sm"), "Ready")
+    : m.job ? h("span", { class: "muted" }, `Downloading ${Math.round(m.job.progress * 100)}% · ${m.job.message}`)
+    : h("span", { class: "row-btns" }, h("span", { class: "muted" }, m.fetchable ? `Not downloaded (${m.bytes ? Math.round(m.bytes / 1e6) + " MB" : "174 MB"}, once)` : "Not found"),
+        m.fetchable ? h("button", { class: "small primary", onclick: () => api("/api/models", { body: {} }).then(() => { toast("Downloading the stems model"); pollJobs(); loadModels(); }).catch(fail) }, "Download") : null,
+        !m.fetchable ? h("span", { class: "muted" }, `Put htdemucs.onnx in ${m.dir || "the models folder"}`) : null);
   $("#system").replaceChildren(h("span", { class: "k" }, "Application"), h("span", {}, `DKPRP ${s.version || ""}`),
     h("span", { class: "k" }, "Device"), h("span", {}, "DECK001"),
+    h("span", { class: "k" }, "Stems model"), model,
     h("span", { class: "k" }, "Library and stems"), h("span", {}, s.data_dir || ""));
 }
+function loadModels() { return api("/api/models").then((m) => { state.models = m; renderSystem(); }).catch(() => {}); }
 $("#settingsForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = e.target, v = {};
@@ -1691,6 +2022,7 @@ addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !typing) {
     if (!$("#jobsPanel").hidden) return toggleJobs(false);
     if (!$("#playlistsBox").hidden) return setPlaylistsOpen(false);
+    if (state.focus && state.sel) return setSel(null);
     if (state.focus) return setFocus(false);
     if (!$("#view-library").classList.contains("active")) return showView("library");
   }
@@ -1705,6 +2037,9 @@ addEventListener("keydown", (e) => {
     cue ? (player.currentTime = cue.start_ms / 1000) : setCue(slot, player.currentTime * 1000).catch(fail);
   }
   if (state.current && (e.key === "m" || e.key === "M")) addMemory(player.currentTime * 1000).catch(fail);
+  if (state.current && state.focus && (e.key === "l" || e.key === "L")) toggleLoop();
+  if (state.current && (e.key === "i" || e.key === "I")) setMixPoints({ mix_in_ms: Math.round(snapToBeat(player.currentTime * 1000)) });
+  if (state.current && (e.key === "o" || e.key === "O")) setMixPoints({ mix_out_ms: Math.round(snapToBeat(player.currentTime * 1000)) });
   if (state.current && (e.code === "BracketLeft" || e.code === "BracketRight")) {
     e.preventDefault();
     gridNudge((e.code === "BracketLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1));

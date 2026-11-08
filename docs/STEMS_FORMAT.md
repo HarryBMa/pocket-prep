@@ -112,3 +112,18 @@ Measured on four real stem files (4 to 6.5 minutes of house and DnB):
 3. Keep the SEEKTABLE and the first-frame offset; seek as above on load, cue and jump.
 4. Decode frames in step with the main track's playhead (in seconds); resample 44.1 → 48 kHz.
 5. Per stem: gain (mute/solo/fader) per L/R pair, then sum the four into the deck's channel.
+
+## Partial stems (0.6)
+
+A stems file may cover only a section of the track: DKPRP separates the requested range (with 10 s of context
+on each side, cut away afterwards) and writes the whole-length file with digital silence outside the range, so a
+reader needs nothing new. `POCKETDECK/analysis/<id>.json` carries `stems_range: [start_ms, end_ms]` when that is
+the case (absent or null = the whole track).
+
+## Quality grade
+
+After each separation `src/quality.rs` grades the stems file from the audio alone (clipping per stem,
+reconstruction residual, vocal bleed via ClubCraft's vocal map). The grade (`good` / `usable` /
+`poor`) and the numbers live in `tracks.stem_quality`; the card's `POCKETDECK/analysis/<id>.json`
+carries `stem_quality: "<grade>"` so the deck can warn before a poor stem goes on the floor. A
+"Redo" (POST `/api/stems` with `force: true`) separates again even though stems exist.

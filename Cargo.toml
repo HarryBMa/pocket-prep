@@ -28,6 +28,7 @@ dirs = "6"
 chrono = "0.4"
 flacenc = { version = "0.5", features = ["par"] }   # stem files (same version as clubcraft-stems)
 blake3 = "1"                                        # fingerprint of the export.pdb we wrote
+sha2 = "0.10"                                       # the fetched stems model against the hash the build pinned
 claxon = "0.4"                                      # reading stem files back (pure-Rust FLAC decoder)
 
 # Analysis (beat grid, key, energy, sections, auto cues), decoding and stem separation come
@@ -37,14 +38,25 @@ clubcraft-audio = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd
 clubcraft-analysis = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
 clubcraft-stems = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
 
-[dev-dependencies]
-# Independent rekordbox parser (MPL-2.0), used in tests to check our export.pdb and ANLZ files.
+# Independent rekordbox parser (MPL-2.0): reads the card back after an export (usb::validate) and checks
+# our export.pdb and ANLZ files in tests.
 rekordcrate = { git = "https://github.com/Holzhaus/rekordcrate", rev = "68cd702e9c78bde4b9eab477e0a7547a0cb69768" }
 fallible-iterator = "0.3"
 binrw = "0.15"
 
+[dev-dependencies]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+# Lean installer: one codegen unit with fat LTO, symbols stripped, no unwinding tables.
+# (cargo test ignores `panic` for the test and bench profiles.)
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
 
 [profile.dev.package."*"]
 opt-level = 3                     # DSP and FFT code is far too slow unoptimised

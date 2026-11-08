@@ -13,7 +13,7 @@ POCKETDECK/export.json                            what wrote the drive, when, wa
                                                   and the hash of the export.pdb it wrote
 POCKETDECK/stems.json                             stem file per track (docs/STEMS_FORMAT.md)
 POCKETDECK/STEMS/xxxxxxxx.flac                    8-channel stems
-POCKETDECK/analysis/xxxxxxxx.json                 sections, phrases, energy, loudness_lufs, gain_db, key, key_shift,
+POCKETDECK/analysis/xxxxxxxx.json                 sections, phrases, energy, loudness_lufs, gain_db, key, key_shift, mix_in_ms, mix_out_ms,
                                                   audible_start_ms, audible_end_ms, cue_labels
 ```
 
@@ -40,3 +40,10 @@ ours. If a drive has `PIONEER/rekordbox/export.pdb` but no Pocket Prep `export.j
 or `export.pdb` no longer matches the hash in it (rekordbox rewrote it), Pocket Prep
 refuses to export there, so it never overwrites someone else's library. See
 `foreign_library` in `src/export/usb.rs`.
+
+## POCKETDECK/sets/<playlist id>.json
+
+One file per exported playlist (`sets.rs::card_json`): `name`, `duration_s`, `tracks` (track id, `file_path` on the
+card, title, artist, bpm, camelot after the key shift, energy) in play order, and `transitions[i]` between
+`tracks[i]` and `tracks[i+1]`: `beats`, `out_ms`, `in_ms`, `verdict` (good | ok | no), `score` (0-100) and the
+`reasons` as text, or null when a side isn't analysed.
