@@ -104,6 +104,11 @@ pub fn conn() -> MutexGuard<'static, Connection> {
                 c.execute_batch(&format!("ALTER TABLE tracks ADD COLUMN {col} {decl}")).unwrap();
             }
         }
+        // Smart playlists: a rule (JSON, see library::smart_track_ids) fills the playlist from the library.
+        let has_rule: bool = c.prepare("SELECT 1 FROM pragma_table_info('playlists') WHERE name='rule'").unwrap().exists([]).unwrap();
+        if !has_rule {
+            c.execute_batch("ALTER TABLE playlists ADD COLUMN rule TEXT").unwrap();
+        }
         // Stems from the Python app were separate MP3s; the new format is one 8-channel WAV.
         // MP3 encoder delay makes the old files drift from the track, so they must be remade.
         let mut st = c.prepare("SELECT id FROM tracks WHERE stems='done'").unwrap();

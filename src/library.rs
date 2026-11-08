@@ -146,10 +146,71 @@ pub fn playlist_tree() -> Result<Vec<Row>> {
     let mut rows = db::query("SELECT * FROM playlists ORDER BY parent_id, sort, name", &[])?;
     let counts = db::query("SELECT playlist_id, COUNT(*) n FROM playlist_tracks GROUP BY playlist_id", &[])?;
     for r in &mut rows {
-        let n = counts.iter().find(|c| c["playlist_id"] == r["id"]).map(|c| c["n"].clone()).unwrap_or(json!(0));
+        let n = match r.get("rule").and_then(Value::as_str) {
+            Some(rule) => json!(smart_track_ids(rule)?.len()),
+            None => counts.iter().find(|c| c["playlist_id"] == r["id"]).map(|c| c["n"].clone()).unwrap_or(json!(0)),
+        };
         r.insert("count".into(), n);
+        // The rule as JSON, not a string, so the UI edits it as it is.
+        let rule = r.get("rule").and_then(Value::as_str).and_then(|s| serde_json::from_str::<Value>(s).ok());
+        r.insert("rule".into(), rule.unwrap_or(Value::Null));
     }
     Ok(rows)
+}
+
+/// The rule of a smart playlist (JSON text), or None for an ordinary one.
+pub fn playlist_rule(pid: i64) -> Result<Option<String>> {
+    Ok(db::one("SELECT rule FROM playlists WHERE id=?", &[json!(pid)])?.and_then(|r| r.get("rule").and_then(Value::as_str).map(str::to_string)))
+}
+
+/// A smart playlist's tracks: every library track the rule matches, by tempo then title. The rule is JSON with
+/// any of: `text` (words in title / artist / album / genre / comment), `bpm_min` / `bpm_max`, `energy_min` /
+/// `energy_max`, `keys` (Camelot codes, matched after the deck's key shift), `moods` (ids), `intents`,
+/// `stems` (true: only tracks with stems), `genre` (substring).
+pub fn smart_track_ids(rule: &str) -> Result<Vec<i64>> {
+    let r: Value = serde_json::from_str(rule).unwrap_or(json!({}));
+    let words: Vec<String> = r["text"].as_str().unwrap_or("").to_lowercase().split_whitespace().map(str::to_string).collect();
+    let list = |k: &str| -> Vec<String> { r[k].as_array().map(|a| a.iter().filter_map(Value::as_str).map(|s| s.to_uppercase()).collect()).unwrap_or_default() };
+    let (keys, moods, intents) = (list("keys"), list("moods"), list("intents"));
+    let genre = r["genre"].as_str().unwrap_or("").to_lowercase();
+    let mut rows = db::query("SELECT id, title, artist, album, genre, comment, bpm, energy, camelot, key_shift, mood, intent, stems FROM tracks WHERE deleted=0", &[])?;
+    rows.retain(|t| {
+        let num = |k: &str| t[k].as_f64();
+        if let Some(m) = r["bpm_min"].as_f64() { if num("bpm").is_none_or(|b| b < m) { return false; } }
+        if let Some(m) = r["bpm_max"].as_f64() { if num("bpm").is_none_or(|b| b > m) { return false; } }
+        if let Some(m) = r["energy_min"].as_f64() { if num("energy").is_none_or(|e| e < m) { return false; } }
+        if let Some(m) = r["energy_max"].as_f64() { if num("energy").is_none_or(|e| e > m) { return false; } }
+        if !keys.is_empty() {
+            let key = crate::analysis::shifted_key(t["camelot"].as_str(), t["key_shift"].as_i64().unwrap_or(0)).map(|k| k.0)
+                .or_else(|| t["camelot"].as_str().map(str::to_string)).map(|k| k.to_uppercase());
+            if key.is_none_or(|k| !keys.contains(&k)) { return false; }
+        }
+        if !moods.is_empty() && t["mood"].as_str().is_none_or(|m| !moods.contains(&m.to_uppercase())) { return false; }
+        if !intents.is_empty() && !intents.contains(&t["intent"].as_str().unwrap_or("mix").to_uppercase()) { return false; }
+        if r["stems"].as_bool() == Some(true) && t["stems"] != "done" { return false; }
+        if !genre.is_empty() && !t["genre"].as_str().unwrap_or("").to_lowercase().contains(&genre) { return false; }
+        if !words.is_empty() {
+            let text = ["title", "artist", "album", "genre", "comment"].iter().map(|k| t[*k].as_str().unwrap_or("")).collect::<Vec<_>>().join(" ").to_lowercase();
+            if !words.iter().all(|w| text.contains(w)) { return false; }
+        }
+        true
+    });
+    rows.sort_by(|a, b| a["bpm"].as_f64().unwrap_or(0.0).total_cmp(&b["bpm"].as_f64().unwrap_or(0.0))
+        .then_with(|| a["title"].as_str().unwrap_or("").to_lowercase().cmp(&b["title"].as_str().unwrap_or("").to_lowercase())));
+    Ok(rows.iter().filter_map(|t| t["id"].as_i64()).collect())
+}
+
+/// Set or clear a playlist's rule (an ordinary playlist becomes smart and vice versa; its own tracks are dropped).
+pub fn set_playlist_rule(pid: i64, rule: Option<&Value>) -> Result<()> {
+    let text = rule.filter(|r| r.is_object()).map(|r| r.to_string());
+    db::tx(|c| {
+        c.execute("UPDATE playlists SET rule=? WHERE id=?", params![text, pid])?;
+        if text.is_some() {
+            c.execute("DELETE FROM playlist_tracks WHERE playlist_id=?", [pid])?;
+        }
+        db::log(c, "playlist_rule", json!({"playlist_id": pid, "smart": text.is_some()}), None)
+    })?;
+    Ok(())
 }
 
 pub fn create_playlist(name: &str, parent_id: i64, is_folder: bool) -> Result<Row> {
@@ -188,12 +249,18 @@ pub fn delete_playlist(pid: i64) -> Result<()> {
 }
 
 pub fn playlist_track_ids(pid: i64) -> Result<Vec<i64>> {
+    if let Some(rule) = playlist_rule(pid)? {
+        return smart_track_ids(&rule);
+    }
     Ok(db::query("SELECT track_id FROM playlist_tracks WHERE playlist_id=? ORDER BY position", &[json!(pid)])?
         .iter().filter_map(|r| r["track_id"].as_i64()).collect())
 }
 
 /// Replace the playlist's order (used for add, remove and reorder). Undoable.
 pub fn set_playlist_tracks(pid: i64, track_ids: &[i64], action: &str) -> Result<i64> {
+    if playlist_rule(pid)?.is_some() {
+        anyhow::bail!("A smart playlist fills itself from its rule: edit the rule instead");
+    }
     let before = playlist_track_ids(pid)?;
     db::tx(|c| {
         c.execute("DELETE FROM playlist_tracks WHERE playlist_id=?", [pid])?;

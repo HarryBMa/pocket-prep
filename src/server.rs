@@ -411,12 +411,22 @@ async fn get_playlists() -> R {
 }
 
 async fn new_playlist(Json(b): Json<Value>) -> R {
-    blocking(move || Ok(json!(library::create_playlist(b["name"].as_str().unwrap_or(""), b["parent_id"].as_i64().unwrap_or(0),
-                                                       b["is_folder"].as_bool().unwrap_or(false))?))).await
+    blocking(move || {
+        let p = library::create_playlist(b["name"].as_str().unwrap_or(""), b["parent_id"].as_i64().unwrap_or(0), b["is_folder"].as_bool().unwrap_or(false))?;
+        if b["rule"].is_object() {
+            library::set_playlist_rule(p["id"].as_i64().unwrap_or(0), Some(&b["rule"]))?;
+        }
+        Ok(json!(p))
+    }).await
 }
 
+/// Rename a playlist and / or set its rule (`rule: {...}` makes it smart, `rule: null` makes it ordinary again).
 async fn rename_playlist(P(pid): P<i64>, Json(b): Json<Value>) -> R {
-    blocking(move || { library::rename_playlist(pid, b["name"].as_str().unwrap_or(""))?; Ok(json!({"ok": true})) }).await
+    blocking(move || {
+        if let Some(name) = b["name"].as_str() { library::rename_playlist(pid, name)?; }
+        if b.get("rule").is_some() { library::set_playlist_rule(pid, b["rule"].as_object().map(|_| &b["rule"]))?; }
+        Ok(json!({"ok": true}))
+    }).await
 }
 
 async fn remove_playlist(P(pid): P<i64>) -> R {

@@ -37,7 +37,7 @@ Measured against the brief, so the gaps are honest. "✓" means built and tested
 | Library | Duplicates, missing files, unplayable formats (M4A, AIFF, 24-bit WAV) + convert for the deck | ✓ | 0.5.0 |
 | | Clipping detection, bitrate validation | ✓ | 0.7: `tracks.clip_pct` in the loudness pass; lossy < 192 kbps flagged |
 | | Playlists, folders, tags (artist, album, genre, year, comment, colour, rating) | ✓ | |
-| | Smart playlists | ✗ | |
+| | Smart playlists | ✓ | 0.7: `playlists.rule` (tempo, key, energy, mood, intent, stems, genre, words), evaluated everywhere a playlist is read |
 | | What follows: transitions scored with reasons (tempo, key, energy, level, phrase lines, clashes) | ✓ | 0.6: `transitions.rs`, `POST /api/transitions` |
 | Stems | 4-stem htdemucs, 8-channel FLAC, DirectML / CoreML / CPU, per-track | ✓ | |
 | | Section-only separation, stem quality grade | ✓ | 0.6: range stems with context; `quality.rs` grades every run |
@@ -221,8 +221,8 @@ Nothing needs a network at any point; the models ship with the app or are fetche
 | P1 | Sets with order, energy curve, `set.json` | **done (0.6)**: `sets.rs`, set strip, Order by…, `POCKETDECK/sets/` |
 | P1 | Performance simulation (the set-level dry run) | **done (0.6)**: the plan carries the set report (verdicts, readiness rings, load estimate) |
 | P2 | First vocal cue, vocal units as chips | **done (0.7)**: `vocals.rs`, chips with role and quality, hints |
-| P2 | Clipping, bitrate checks; smart playlists | |
-| P2 | Time signature | ClubCraft would need it first |
+| P2 | Clipping, bitrate checks; smart playlists | **done (0.7)**: `clip_pct`, lossy < 192 kbps, rule editor in the playlists popover |
+| P2 | Time signature | not done: ClubCraft would need it first (4/4 assumed everywhere) |
 
 Not planned: automatic set construction as a product feature (the planner's order is a starting
 point, never the set), AI recommendations beyond the library, rendered mixes.
