@@ -40,3 +40,10 @@ ours. If a drive has `PIONEER/rekordbox/export.pdb` but no Pocket Prep `export.j
 or `export.pdb` no longer matches the hash in it (rekordbox rewrote it), Pocket Prep
 refuses to export there, so it never overwrites someone else's library. See
 `foreign_library` in `src/export/usb.rs`.
+
+## POCKETDECK/sets/<playlist id>.json
+
+One file per exported playlist (`sets.rs::card_json`): `name`, `duration_s`, `tracks` (track id, `file_path` on the
+card, title, artist, bpm, camelot after the key shift, energy) in play order, and `transitions[i]` between
+`tracks[i]` and `tracks[i+1]`: `beats`, `out_ms`, `in_ms`, `verdict` (good | ok | no), `score` (0-100) and the
+`reasons` as text, or null when a side isn't analysed.

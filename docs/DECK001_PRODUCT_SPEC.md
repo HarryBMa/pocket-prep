@@ -45,7 +45,7 @@ Measured against the brief, so the gaps are honest. "✓" means built and tested
 | Export | rekordbox PDB + ANLZ, POCKETDECK/analysis hints (grid, key shift, gain, audible start/end, cue names), dry-run check | ✓ | |
 | | Export validation after writing | ✓ | 0.6: `usb::validate` reads the card back with rekordcrate after every export |
 | Deck | Status, OTA (signed), wired recovery (typed FLASH) | ✓ | |
-| Sets | setlists, energy curve, transition planning | ✗ | ClubCraft `planner.rs` and `mix.rs` exist, unused |
+| Sets | a playlist as a set: order, energy curve, transitions, load estimate, planner ordering, `POCKETDECK/sets/<id>.json` | ✓ | 0.6: `sets.rs`; the card column shows it when one playlist is the scope |
 
 ## 2. The features, by the question they answer
 
@@ -214,8 +214,8 @@ Nothing needs a network at any point; the models ship with the app or are fetche
 | P1 | Stem quality grade | **done (0.6)**: `quality.rs`, ring + open-track note, Redo |
 | P1 | Transition window + reasons, suggestions list | **done (0.6)**: `transitions.rs`, match pill with reasons |
 | P1 | Card validation after export | **done (0.6)**: `check` in the export result, shown in the card column |
-| P1 | Sets with order, energy curve, `set.json` | the planning layer |
-| P1 | Performance simulation (the set-level dry run) | |
+| P1 | Sets with order, energy curve, `set.json` | **done (0.6)**: `sets.rs`, set strip, Order by…, `POCKETDECK/sets/` |
+| P1 | Performance simulation (the set-level dry run) | **done (0.6)**: the plan carries the set report (verdicts, readiness rings, load estimate) |
 | P2 | First vocal cue, vocal units as chips | needs stems; land after sections |
 | P2 | Clipping, bitrate checks; smart playlists | |
 | P2 | Time signature | ClubCraft would need it first |

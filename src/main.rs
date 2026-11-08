@@ -22,6 +22,7 @@ mod models;
 mod mood;
 mod quality;
 mod server;
+mod sets;
 mod stems;
 mod transitions;
 #[cfg(test)]

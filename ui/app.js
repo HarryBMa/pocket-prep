@@ -1824,6 +1824,41 @@ function renderTarget(p) {
       p ? h("i", { class: p.fits ? "need" : "over", style: `left:${used * 100}%;width:${(p.fits ? need : 1 - used) * 100}%` }) : null),
     p ? h("span", { class: "muted tnum" }, p.fits ? `Uses up to ${fmtBytes(p.bytes)}, leaving about ${fmtBytes(Math.max(0, p.free - p.bytes))}` : `Needs ${fmtBytes(p.bytes)}, only ${fmtBytes(p.free)} free`) : null);
 }
+// The set strip: one playlist as the scope is a set, and the card column shows it the way it will play: the
+// energy curve, the order with the transition verdict between each pair (click for the reasons), running
+// time, the deck's load estimate, and "Order by" (ClubCraft's planner; undoable).
+function setStrip(s) {
+  const ts = s.tracks, n = ts.length;
+  if (!n) return null;
+  const W = 300, H = 36;
+  const pts = s.energy.map((e, i) => `${(n > 1 ? i / (n - 1) : 0.5) * W},${H - 2 - ((e || 1) - 1) / 9 * (H - 6)}`);
+  const curve = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [k, v] of Object.entries({ class: "set-curve", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img", "aria-label": `Energy: ${s.energy.map((e) => e ?? "?").join(", ")}` })) curve.setAttribute(k, v);
+  curve.innerHTML = `<polyline points="${pts.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/>` +
+    pts.map((p) => `<circle cx="${p.split(",")[0]}" cy="${p.split(",")[1]}" r="2.5" fill="var(--accent)"/>`).join("");
+  const v = s.verdicts, verdictText = v.no ? `${plural(v.no, "transition")} won't work` : v.ok ? `${v.ok} to check` : v.unknown === n - 1 ? "analyse the tracks to check the transitions" : "every transition works";
+  const orderBy = (e) => openMenu(e.currentTarget, [{ head: "Order the set" },
+    ...[["auto", "Balanced", "shuffle"], ["key", "By key", "key"], ["tempo", "By tempo", "clock"], ["energy", "Rising energy", "arrow-right"]].map(([by, label, ic]) => ({ icon: ic, label,
+      run: async () => { try { const r = await api(`/api/sets/${s.playlist.id}/order`, { body: { by } }); toast(`${s.playlist.name} ordered ${label.toLowerCase()}`, r.undo); loadTracks(); updatePlan(); } catch (e) { fail(e); } } }))]);
+  const rowsEl = [];
+  ts.forEach((t, i) => {
+    if (i > 0) {
+      const tr = s.transitions[i - 1];
+      rowsEl.push(h("button", { class: `set-tr ${tr ? tr.verdict : "unknown"}`, title: tr ? tr.reasons.map((r) => (r.ok ? "✓ " : "! ") + r.text).join("\n") : "Analyse both tracks to check this transition",
+        "aria-label": tr ? `Transition ${tr.score} of 100` : "Transition unknown",
+        onclick: (e) => tr && openMenu(e.currentTarget, [{ head: `${ts[i - 1].title || "?"} → ${t.title || "?"} · ${tr.beats / 4} bars · ${tr.score}` }, ...tr.reasons.map((r) => ({ icon: r.ok ? "check" : "alert", label: r.text, run: () => {} }))]) },
+        h("i")));
+    }
+    rowsEl.push(h("div", { class: "set-row", onclick: () => openFocus(t.id) }, h("span", { class: "set-n" }, String(i + 1)), h("span", { class: "set-title" }, t.title || "Untitled"),
+      h("span", { class: "set-meta" }, t.bpm ? fmtBpm(t.bpm) : "", " ", t.shifted_camelot || t.camelot || ""), readinessCell(t)));
+  });
+  return h("details", { class: "set-strip", open: true },
+    h("summary", {}, h("b", {}, "Set · "), `${plural(n, "track")} · ${fmtDur(s.duration_s)} · ${verdictText}`),
+    curve,
+    h("div", { class: "set-tools" }, h("span", { class: "muted" }, `Loads in about ${Math.max(1, Math.round(s.load_s))} s on the deck`),
+      h("button", { class: "ghost small", onclick: orderBy, title: "Reorder this playlist with the planner (undoable)" }, icon("shuffle", "ic sm"), " Order by…")),
+    h("div", { class: "set-list" }, rowsEl));
+}
 let planSeq = 0;
 // The dry run: what each track needs before you export. Nothing is written until you press Export.
 function dryRun(p) {
@@ -1856,6 +1891,7 @@ async function updatePlan() {
         h("dt", {}, "With stems"), h("dd", {}, body.include_stems ? String(p.with_stems) : "Stems off"),
         h("dt", {}, "Size"), h("dd", {}, `up to ${fmtBytes(p.bytes)} (${fmtBytes(p.free)} free)`)),
       p.unanalysed ? h("div", { class: "muted" }, `${p.unanalysed} tracks aren't analysed yet; they'll be analysed during the export (slower).`) : null,
+      p.set ? setStrip(p.set) : null,
       dryRun(p),
       ...deckWarnings(p.warnings),
       p.fits ? null : h("div", { class: "alert-text" }, h("b", {}, "Doesn't fit. "), "Choose fewer playlists or turn off stems."),

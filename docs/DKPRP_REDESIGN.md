@@ -173,3 +173,8 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   stems file at its source size, every ANLZ file parsed by rekordcrate (an independent parser, now a runtime
   dependency), every hints file valid JSON, export.pdb opened with the right number of tracks. The card column
   shows "Checked: N files" or the first problem with the rest behind *All*.
+- **Sets** (0.6): a playlist is a set. With one playlist as the card's scope, the card column shows the set strip:
+  the energy curve, the tracks in order with their readiness rings, a bar between each pair coloured by the
+  transition verdict (click: the reasons and the window), running time and the deck's load estimate. *Order by…*
+  hands the tracks to ClubCraft's planner (balanced, by key, by tempo, rising energy; undoable). The export writes
+  `POCKETDECK/sets/<playlist id>.json` for every playlist on the card: order, card paths, windows and verdicts.

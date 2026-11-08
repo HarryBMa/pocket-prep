@@ -273,7 +273,13 @@ pub fn plan(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool) -> Re
         }
     }
     let free = free_space(Path::new(root));
+    // One playlist as the scope: the plan is also a set check (order, transitions, load).
+    let set = match playlist_ids {
+        Some([pid]) if pls.iter().any(|p| p["id"] == json!(pid) && p["is_folder"].as_i64() != Some(1)) => crate::sets::report(*pid).ok(),
+        _ => None,
+    };
     Ok(json!({
+        "set": set,
         "tracks": tracks.len(), "playlists": pls.len(), "bytes": need, "free": free, "fits": (need as f64) < free as f64 * 0.98,
         "unanalysed": tracks.iter().filter(|t| t["analysed_at"].is_null()).count(),
         "with_stems": tracks.iter().filter(|t| t["stems"] == "done").count(),
@@ -296,6 +302,8 @@ fn copy_if_changed(src: &Path, dst: &Path) -> Result<bool> {
 
 /// What the export wrote for one track, for the read-back check.
 struct Written {
+    tid: i64,
+    card_path: String,
     title: String,
     src: PathBuf,
     dst: PathBuf,
@@ -490,7 +498,7 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
         };
         database.add(pdb::T_TRACKS, pdb::track_row(&row, n));
         exported.push(tid);
-        let mut w = Written { title: s("title").unwrap_or_default(), src: src.clone(), dst: dst.clone(), anlz: adir.clone(), hints: PathBuf::new(), stems: None };
+        let mut w = Written { tid, card_path: audio_path.clone(), title: s("title").unwrap_or_default(), src: src.clone(), dst: dst.clone(), anlz: adir.clone(), hints: PathBuf::new(), stems: None };
 
         // 5. Pocket Deck extras: stems and phrase data
         let ext_id = format!("{tid:08X}");
@@ -558,6 +566,15 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
                 database.add(pdb::T_PLAYLIST_ENTRIES, pdb::playlist_entry_row(i as u32 + 1, *t as u32, pid as u32));
             }
         }
+    }
+
+    // Sets: every exported playlist as the order it plays in, with the windows between tracks.
+    let sets_dir = root.join("POCKETDECK/sets");
+    std::fs::create_dir_all(&sets_dir)?;
+    for pl in pls.iter().filter(|p| p["is_folder"].as_i64() != Some(1)) {
+        let pid = pl["id"].as_i64().unwrap_or(0);
+        let card_path = |tid: i64| written.iter().find(|w| w.tid == tid).map(|w| w.card_path.clone());
+        std::fs::write(sets_dir.join(format!("{pid}.json")), serde_json::to_string_pretty(&crate::sets::card_json(pid, &card_path)?)?)?;
     }
 
     progress(0.95, "Writing database");

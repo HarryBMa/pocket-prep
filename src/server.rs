@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 use crate::db::{self, Row};
 use crate::export::usb;
-use crate::{analysis, config, convert, deck, jobs, library, models, mood, stems, transitions};
+use crate::{analysis, config, convert, deck, jobs, library, models, mood, sets, stems, transitions};
 
 pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -28,7 +28,7 @@ pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 #[folder = "ui/"]
 struct Ui;
 
-const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
+pub const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
     rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
     mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s, mix_in_ms, mix_out_ms, intent, grid_ok_at, \
     stems_range, stem_quality, (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
@@ -363,6 +363,16 @@ async fn transitions_from(Json(b): Json<Value>) -> R {
     }).await
 }
 
+/// A playlist as a set: the order, the transition between each pair, energy curve, time and load (sets.rs).
+async fn set_report(P(pid): P<i64>) -> R {
+    blocking(move || Ok(sets::report(pid)?)).await
+}
+
+/// Reorder a playlist with the planner: `by` = auto | key | tempo | energy. Undoable.
+async fn set_order(P(pid): P<i64>, Json(b): Json<Value>) -> R {
+    blocking(move || Ok(json!({"undo": sets::order(pid, b["by"].as_str().unwrap_or("auto"))?}))).await
+}
+
 /// Prepare everything the intents ask for, for the given tracks (or the whole library): analysis where
 /// missing, stems where the intent wants them, a deck copy where the file won't play. Nothing is redone.
 async fn prepare(Json(b): Json<Value>) -> R {
@@ -595,6 +605,8 @@ pub fn router() -> Router {
         .route("/api/stems", post(make_stems))
         .route("/api/prepare", post(prepare))
         .route("/api/transitions", post(transitions_from))
+        .route("/api/sets/{pid}", get(set_report))
+        .route("/api/sets/{pid}/order", post(set_order))
         .route("/api/playlists", get(get_playlists).post(new_playlist))
         .route("/api/playlists/{pid}", axum::routing::patch(rename_playlist).delete(remove_playlist))
         .route("/api/playlists/{pid}/tracks", put(order_playlist))
