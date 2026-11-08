@@ -31,7 +31,7 @@ struct Ui;
 pub const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
     rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
     mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s, mix_in_ms, mix_out_ms, intent, grid_ok_at, \
-    stems_range, stem_quality, (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
+    stems_range, stem_quality, clip_pct, first_vocal_ms, bitrate, sample_rate, (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 

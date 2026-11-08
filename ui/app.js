@@ -275,12 +275,16 @@ function findDuplicates() {
 }
 // What would go wrong at the booth: the server's check of the file (deck_problem: a 24-bit WAV, an M4A...) and what the
 // track list already knows. "Convert for the deck" makes a copy the deck can play and clears the first one.
+// A lossy file under 192 kbps (the export's dry run says the same).
+const lowBitrate = (t) => /\.(mp3|m4a|aac|ogg|opus)$/i.test(t.path || "") && t.bitrate > 0 && t.bitrate < 192;
 function issues(t) {
   const out = [];
   if (t.lead_s > 2) out.push(`Starts with ${Math.round(t.lead_s)} s of near silence`);
   if (t.tail_s > 6) out.push(`Ends with ${Math.round(t.tail_s)} s of near silence (an autopilot mix would wait for it)`);
   if (t.file_missing) out.push("File not found: it was moved, renamed or its drive is not connected");
   if (t.deck_problem) out.push(t.deck_problem);
+  if (t.clip_pct >= 0.1) out.push(`Clips: ${t.clip_pct.toFixed(1)} % of samples at full scale`);
+  if (lowBitrate(t)) out.push(`Low bitrate (${t.bitrate} kbps): thin on a club system`);
   if (state.dups?.has(t.id)) out.push(`Same artist and title as ${state.dups.get(t.id).map((id) => `#${id}`).join(", ")}`);
   if (!t.artist) out.push("No artist");
   if (!t.analysed_at && jobFor(t.id, "analyse")?.status === "failed") out.push("Analysis failed");

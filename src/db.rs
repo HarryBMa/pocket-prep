@@ -93,7 +93,11 @@ pub fn conn() -> MutexGuard<'static, Connection> {
                             // stems_range: JSON [start_ms, end_ms] when the stems file covers only that range (silence outside).
                             ("stems_range", "TEXT"),
                             // stem_quality: JSON from quality::assess (grade good|usable|poor, measures, notes) for the stems file.
-                            ("stem_quality", "TEXT")] {
+                            ("stem_quality", "TEXT"),
+                            // clip_pct: share of samples at full scale (%), from the analysis / levels pass.
+                            ("clip_pct", "REAL"),
+                            // first_vocal_ms: where the singing starts (vocal map, needs stems); NULL = unknown or none.
+                            ("first_vocal_ms", "REAL")] {
             let has: bool = c.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name=?").unwrap()
                 .exists([col]).unwrap();
             if !has {
