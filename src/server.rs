@@ -31,7 +31,7 @@ struct Ui;
 const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
     rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
     mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s, mix_in_ms, mix_out_ms, intent, grid_ok_at, \
-    (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
+    stems_range, (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -120,9 +120,14 @@ fn intent_rank(tid: i64) -> usize {
     INTENT_ORDER.iter().position(|i| *i == intent).unwrap_or(3)
 }
 fn queue_stems(track_ids: &[i64]) -> anyhow::Result<Vec<i64>> {
+    queue_stems_range(track_ids, None)
+}
+/// `range_ms`: separate only that part of each track (a section), with context; the file stays whole.
+fn queue_stems_range(track_ids: &[i64], range_ms: Option<(f64, f64)>) -> anyhow::Result<Vec<i64>> {
     if !models::stems_ready() {
         anyhow::bail!("The stems model isn't downloaded yet (Settings → System)");
     }
+    if let Some((a, b)) = range_ms { if !(b > a && a >= 0.0) { anyhow::bail!("The range is empty"); } }
     let mut ordered: Vec<i64> = track_ids.to_vec();
     ordered.sort_by_key(|&t| intent_rank(t));
     let mut out = vec![];
@@ -130,14 +135,27 @@ fn queue_stems(track_ids: &[i64]) -> anyhow::Result<Vec<i64>> {
         if jobs::pending_for(tid, "stems") {
             continue;
         }
+        // Already made: the whole track, or exactly this range. Nothing is separated twice.
+        if let Some(t) = db::track(tid)? {
+            let have_range: Option<(f64, f64)> = t.get("stems_range").and_then(Value::as_str).and_then(|s| serde_json::from_str::<Vec<f64>>(s).ok())
+                .filter(|v| v.len() == 2).map(|v| (v[0], v[1]));
+            let done = t.get("stems").and_then(Value::as_str) == Some("done") && stems::has_stems(tid);
+            let same = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1.0 && (a.1 - b.1).abs() < 1.0;
+            if done && (have_range.is_none() || range_ms.is_some_and(|r| same(r, have_range.unwrap()))) {
+                continue;
+            }
+        }
         db::tx(|c| Ok(c.execute("UPDATE tracks SET stems='queued' WHERE id=?", [tid])?))?;
-        out.push(jobs::submit("stems", &format!("Stems: {}", title_of(tid)), "gpu", Some(tid), move |h| {
-            stems::separate(tid, &|f, m| h.progress(f, m), &|| h.cancelled())?;
+        let label = match range_ms { Some((a, b)) => format!("Stems {}–{}: {}", clock_ms(a), clock_ms(b), title_of(tid)), None => format!("Stems: {}", title_of(tid)) };
+        // A section goes to the front of the gpu lane in effect: it is small, and the intent order already puts it first.
+        out.push(jobs::submit("stems", &label, "gpu", Some(tid), move |h| {
+            stems::separate(tid, range_ms, &|f, m| h.progress(f, m), &|| h.cancelled())?;
             Ok(None)
         }));
     }
     Ok(out)
 }
+fn clock_ms(ms: f64) -> String { let s = (ms / 1000.0).round() as i64; format!("{}:{:02}", s / 60, s % 60) }
 
 // ── Tracks ───────────────────────────────────────────────────────────────────
 
@@ -323,7 +341,10 @@ async fn analyse_tracks(Json(b): Json<Value>) -> R {
 }
 
 async fn make_stems(Json(b): Json<Value>) -> R {
-    blocking(move || Ok(json!({"jobs": queue_stems(&ids(&b, "ids"))?}))).await
+    blocking(move || {
+        let range = b["range_ms"].as_array().and_then(|r| Some((r.first()?.as_f64()?, r.get(1)?.as_f64()?)));
+        Ok(json!({"jobs": queue_stems_range(&ids(&b, "ids"), range)?}))
+    }).await
 }
 
 /// Prepare everything the intents ask for, for the given tracks (or the whole library): analysis where

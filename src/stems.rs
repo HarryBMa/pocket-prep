@@ -14,6 +14,7 @@
 //! Encoding is flacenc (same crate ClubCraft uses); decoding here is claxon.
 
 use anyhow::{anyhow, Context, Result};
+use serde_json::json;
 use clubcraft_stems::{Quality, Separator};
 use flacenc::component::{BitRepr, MetadataBlockData};
 use flacenc::error::Verify;
@@ -258,7 +259,25 @@ pub fn stem_preview(track_id: i64, name: &str) -> Result<PathBuf> {
 
 // ── Separation ───────────────────────────────────────────────────────────────
 
-pub fn separate(track_id: i64, progress: &dyn Fn(f64, &str), cancel: &dyn Fn() -> bool) -> Result<()> {
+/// Seconds of audio given to the model on each side of a requested range, so the separation at the
+/// range's edges sees the same context as inside a whole track (Demucs works on ~7.8 s windows with
+/// 25 % overlap: two windows of context is plenty), then cut away.
+pub const RANGE_PAD_S: f64 = 10.0;
+
+/// The frames to feed the model for a requested range, and where the range sits inside them.
+/// Returns (slice start, slice end, offset of the range inside the slice), all in frames.
+pub fn padded_range(range_ms: (f64, f64), frames: usize, rate: u32) -> (usize, usize, usize) {
+    let f = |ms: f64| ((ms / 1000.0) * rate as f64).round().max(0.0) as usize;
+    let pad = (RANGE_PAD_S * rate as f64) as usize;
+    let (a, b) = (f(range_ms.0).min(frames), f(range_ms.1).min(frames));
+    let start = a.saturating_sub(pad);
+    (start, (b + pad).min(frames), a - start)
+}
+
+/// Separate a whole track, or only `range_ms` of it: the stems file keeps the whole track's length,
+/// with silence outside the range, so the deck reads it like any other (docs/STEMS_FORMAT.md). A range
+/// is separated with [`RANGE_PAD_S`] of context on each side.
+pub fn separate(track_id: i64, range_ms: Option<(f64, f64)>, progress: &dyn Fn(f64, &str), cancel: &dyn Fn() -> bool) -> Result<()> {
     let t = db::track(track_id)?.ok_or_else(|| anyhow!("unknown track"))?;
     db::tx(|c| Ok(c.execute("UPDATE tracks SET stems='running' WHERE id=?", [track_id])?))?;
     let res = (|| -> Result<()> {
@@ -272,16 +291,33 @@ pub fn separate(track_id: i64, progress: &dyn Fn(f64, &str), cancel: &dyn Fn() -
         }
         let sep = g.as_ref().unwrap();
         let backend = sep.backend_name();
-        let stems = sep.separate(&audio, &mut |p| {
-            progress(0.05 + 0.9 * p as f64, &format!("Separating ({backend})"));
-            !cancel()
-        })?;
+        let mut report = |p: f32| { progress(0.05 + 0.9 * p as f64, &format!("Separating ({backend})")); !cancel() };
+        let out: StemAudio = match range_ms {
+            None => sep.separate(&audio, &mut report)?.stems,
+            Some(r) => {
+                let frames = audio.left.len();
+                let (s, e, off) = padded_range(r, frames, RATE);
+                if e <= s { anyhow::bail!("The range is empty"); }
+                let part = clubcraft_audio::AudioBuffer::new(RATE, audio.left[s..e].to_vec(), audio.right[s..e].to_vec());
+                let got = sep.separate(&part, &mut report)?.stems;
+                // Place the range (without its context) into silence the length of the track.
+                let (ra, rb) = (s + off, (((r.1 / 1000.0) * RATE as f64).round() as usize).min(frames));
+                std::array::from_fn(|k| {
+                    let (mut l, mut rr) = (vec![0f32; frames], vec![0f32; frames]);
+                    let n = rb.saturating_sub(ra).min(got[k].0.len().saturating_sub(off));
+                    l[ra..ra + n].copy_from_slice(&got[k].0[off..off + n]);
+                    rr[ra..ra + n].copy_from_slice(&got[k].1[off..off + n]);
+                    (l, rr)
+                })
+            }
+        };
         drop(g);
         progress(0.97, "Writing stems");
-        write_stems(&stem_file(track_id), &stems.stems)
+        write_stems(&stem_file(track_id), &out)
     })();
     let state = if res.is_ok() { "done" } else { "failed" };
-    db::tx(|c| Ok(c.execute("UPDATE tracks SET stems=? WHERE id=?", rusqlite::params![state, track_id])?))?;
+    let range = range_ms.filter(|_| res.is_ok()).map(|(a, b)| json!([a.round(), b.round()]).to_string());
+    db::tx(|c| Ok(c.execute("UPDATE tracks SET stems=?, stems_range=? WHERE id=?", rusqlite::params![state, range, track_id])?))?;
     res?;
     progress(1.0, "Done");
     Ok(())
@@ -292,13 +328,27 @@ pub fn remove(track_id: i64) -> Result<()> {
     for name in STEM_NAMES {
         let _ = std::fs::remove_file(preview_file(track_id, name));
     }
-    db::tx(|c| Ok(c.execute("UPDATE tracks SET stems='none' WHERE id=?", [track_id])?))?;
+    db::tx(|c| Ok(c.execute("UPDATE tracks SET stems='none', stems_range=NULL WHERE id=?", [track_id])?))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A range is padded by RANGE_PAD_S on each side, clamped to the track, and the offset says where
+    /// the range starts inside the padded slice.
+    #[test]
+    fn padded_range_clamps_to_the_track() {
+        let rate = 44100;
+        let frames = 60 * rate as usize;                       // a minute
+        let (s, e, off) = padded_range((20_000.0, 30_000.0), frames, rate);
+        assert_eq!((s, e, off), (10 * rate as usize, 40 * rate as usize, 10 * rate as usize));
+        let (s, e, off) = padded_range((2_000.0, 30_000.0), frames, rate);   // near the start: less context, offset shrinks
+        assert_eq!((s, off), (0, 2 * rate as usize)); assert_eq!(e, 40 * rate as usize);
+        let (s, e, _) = padded_range((55_000.0, 70_000.0), frames, rate);   // past the end: clamped
+        assert_eq!((s, e), (45 * rate as usize, frames));
+    }
 
     /// One column per 1/150 s, the loudest stem scaled to 255, quieter stems in proportion.
     #[test]

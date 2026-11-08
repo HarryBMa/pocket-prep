@@ -452,7 +452,9 @@ fn export_to(root: &str, playlist_ids: Option<&[i64]>, include_stems: bool,
             "mix_out_ms": t["mix_out_ms"].as_f64().or(a["mix_out_ms"].as_f64()),
             // Names you gave cues in DKPRP (the rekordbox files have no field for them).
             "cue_labels": cue_rows.iter().filter(|q| q["label"].as_str().is_some_and(|l| !l.is_empty()))
-                .map(|q| json!({"slot": q["slot"], "start_ms": q["start_ms"], "label": q["label"]})).collect::<Vec<_>>()}).to_string())?;
+                .map(|q| json!({"slot": q["slot"], "start_ms": q["start_ms"], "end_ms": q["end_ms"], "label": q["label"]})).collect::<Vec<_>>(),
+            // Stems that cover only a section of the track (silence outside): [start_ms, end_ms].
+            "stems_range": t["stems_range"].as_str().and_then(|s| serde_json::from_str::<Value>(s).ok())}).to_string())?;
     }
 
     // Name tables

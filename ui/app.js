@@ -809,7 +809,7 @@ async function openTrack(id, play) {
   const same = state.current?.id === id;
   state.current = t;
   if (!same) {
-    state.stemSolo = null;
+    state.stemSolo = null; state.sel = null; state.loop = false;
     state.stemPeaks = null;
     player.src = `/api/tracks/${id}/audio`;
     state.wave = null;
@@ -827,7 +827,7 @@ function loadStemPeaks(id) {
     if (state.current?.id !== id) return;
     const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
     state.stemPeaks = Object.fromEntries(Object.entries(p.peaks).map(([k, v]) => [k, Float32Array.from(b64(v), (x) => x / 255)]));
-    if (state.wave && state.focus) buildWaves();
+    if (state.wave && state.focus) { buildWaves(); renderDetail(); }   // the chips can now use the stems
   }).catch(() => {});
 }
 // The open track covers the list and the card; Esc, the back glyph or the preview bar's chevron brings the list back.
@@ -980,6 +980,9 @@ function renderDetail() {
   const lines = [splitSuggestion(t),
     why.length ? h("div", { class: "warn-line" }, icon("alert", "ic sm"), h("span", {}, why.join(" · "), t.deck_problem ? ". The original is still exported (CDJs play it)." : ""),
       t.deck_problem ? h("button", { class: "small", onclick: () => convertForDeck([t.id]), title: "Makes a 16-bit FLAC copy for the deck. The original stays as it is." }, "Convert for the deck") : null) : null,
+    t.stems_range ? h("div", { class: "ok-line" }, icon("deck", "ic sm"),
+      h("span", {}, `The stems cover ${fmtMs(JSON.parse(t.stems_range)[0])}–${fmtMs(JSON.parse(t.stems_range)[1])} only (silence elsewhere).`),
+      h("button", { class: "ghost small", onclick: () => api("/api/stems", { body: { ids: [t.id] } }).then(() => { toast("Making stems for the whole track"); pollJobs(); }).catch(fail) }, "Whole track")) : null,
     t.deck_copy ? h("div", { class: "ok-line" }, icon("check", "ic sm"),
       h("span", {}, `The deck gets a 16-bit FLAC copy${t.deck_copy_bytes ? ` (${fmtBytes(t.deck_copy_bytes)})` : ""} instead of the original.`),
       h("button", { class: "ghost small", onclick: () => removeDeckCopy([t.id]) }, "Use the original")) : null].filter(Boolean);
@@ -999,6 +1002,7 @@ function renderDetail() {
         onclick: (e) => openMenu(e.currentTarget, [...trackMenuItems(t), { icon: "arrow-left", label: "Close track", hint: "Esc", run: closeDetail }]) }, icon("more"))),
     lines.length ? h("div", { class: "tp-lines" }, lines) : null,
     h("section", { "aria-label": "Waveforms", class: "tp-waves" }, waveStack),
+    sectionChips(t),
     t.sections?.length ? h("div", { class: "phrases", role: "group", "aria-label": "Sections and phrases" }, t.sections.map((s) => h("button", { class: "phrase", style: `flex:${Math.max(1, s.end_ms - s.start_ms)} 1 0`,
         title: `${s.kind} at ${fmtMs(s.start_ms)}${s.bars ? ` · ${s.bars} bars` : ""}`, onclick: () => { player.currentTime = s.start_ms / 1000; } },
       h("i", { style: `background:${phraseColor(s.kind)}` }), h("b", {}, s.kind)))) : null,
@@ -1007,6 +1011,12 @@ function renderDetail() {
       pads,
       h("button", { class: "tb", "aria-pressed": String(!!state.cueEdit), "aria-label": "Edit cues: clear or name them, memory cues", title: "Edit cues",
         onclick: () => { state.cueEdit = !state.cueEdit; renderDetail(); } }, icon("pencil")),
+      state.sel ? h("div", { class: "pill-ctl sel", role: "group", "aria-label": "Selected section" },
+        h("span", { class: "sel-text", title: "Drag on the waveform to change it" }, h("b", {}, `${state.sel.bars || "—"} bars`), ` ${fmtMs(state.sel.start_ms)}–${fmtMs(state.sel.end_ms)}`),
+        h("button", { class: "tb small", "aria-pressed": String(!!state.loop), "aria-label": "Loop this section", title: "Loop this section (L)", onclick: toggleLoop }, icon("repeat", "ic sm")),
+        h("button", { class: "tb small", "aria-label": "Save as a loop", title: "Save as a loop (a memory cue with an end: the card carries it as a loop)", onclick: saveLoop }, icon("plus", "ic sm")),
+        h("button", { class: "tb small", "aria-label": "Make stems for this section only", title: `Make stems for this section only (${fmtMs(state.sel.start_ms)}–${fmtMs(state.sel.end_ms)}, with context; silence elsewhere)`, onclick: stemsForSel }, icon("deck", "ic sm")),
+        h("button", { class: "tb small", "aria-label": "Clear the selection", title: "Clear (Esc)", onclick: () => setSel(null) }, icon("x", "ic sm"))) : null,
       mixPill, gridPill, keyPill, stemsCtl,
       h("span", { class: "spacer" }),
       h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
@@ -1129,6 +1139,98 @@ async function putCues(cues, message) {
   state.current.cues = r.cues;
   toast(message, r.undo);
   renderDetail();
+}
+// ── Sections ──────────────────────────────────────────────────────────────
+// A section is a run of bars on the phrase grid (8 bars from the first downbeat, where ClubCraft's sections start).
+// Drag on the full mix, or click a chip, to select one; then loop it (L), save it as a loop (a memory cue with an
+// end, which the card carries as a rekordbox loop) or make stems for just that range.
+const SECTION_BARS = [4, 8, 16, 32, 64];
+const barStartMs = (g, n) => g.first_beat_ms + (g.downbeat_index + 4 * n) * g.period_ms;
+function snapSel(aMs, bMs) {
+  const t = state.current, g = effectiveGrid(t);
+  if (!t || !g || !g.period_ms) return null;
+  const bar = 4 * g.period_ms, dur = (t.duration || 0) * 1000;
+  const barOf = (ms) => (ms - barStartMs(g, 0)) / bar;
+  const start = Math.max(0, Math.round(barOf(aMs) / 8) * 8);
+  const want = Math.max(1, barOf(bMs) - start);
+  const bars = SECTION_BARS.reduce((best, n) => (Math.abs(n - want) < Math.abs(best - want) ? n : best), SECTION_BARS[0]);
+  const a = barStartMs(g, start), b = Math.min(dur, barStartMs(g, start + bars));
+  return b - a < bar ? null : { start_ms: Math.round(a), end_ms: Math.round(b), bars, start_bar: start };
+}
+function setSel(sel) {
+  state.sel = sel;
+  if (!sel) state.loop = false;
+  renderDetail();
+}
+function toggleLoop() {
+  if (!state.sel) return toast("Select a section first: drag on the waveform or click a chip");
+  state.loop = !state.loop;
+  if (state.loop && (player.currentTime * 1000 < state.sel.start_ms || player.currentTime * 1000 >= state.sel.end_ms)) player.currentTime = state.sel.start_ms / 1000;
+  if (state.loop && player.paused) player.play().catch(() => {});
+  renderDetail();
+}
+// Suggested sections: the analysed sections, plus runs of phrases with no singing (instrumental) or with the
+// vocal up front (vocal), from the stem peaks when the track has stems.
+function candidates(t) {
+  const g = effectiveGrid(t), out = [];
+  if (!g?.period_ms) return out;
+  const snapTo = (a, b) => snapSel(a, b);
+  for (const s of t.sections || []) {
+    const sel = snapTo(s.start_ms, s.end_ms);
+    if (sel && sel.bars >= 4) out.push({ ...sel, kind: s.kind, label: `${s.kind} ${sel.bars}` });
+  }
+  const pk = state.stemPeaks;
+  if (pk?.vocals && pk?.drums) {
+    const bar = 4 * g.period_ms, cols = 150, n = pk.vocals.length;
+    const mean = (arr, a, b) => { let s = 0, k = 0; for (let i = Math.max(0, Math.floor(a)); i < Math.min(n, Math.floor(b)); i++) { s += arr[i]; k++; } return k ? s / k : 0; };
+    const phrases = [];
+    for (let p = 0; barStartMs(g, p * 8) < (t.duration || 0) * 1000 - bar; p++) {
+      const a = barStartMs(g, p * 8) / 1000 * cols, b = barStartMs(g, p * 8 + 8) / 1000 * cols;
+      const v = mean(pk.vocals, a, b), d = mean(pk.drums, a, b), o = mean(pk.other, a, b) + mean(pk.bass, a, b);
+      phrases.push({ p, v, d, o, instrumental: v < 0.08 && d + o > 0.15, vocal: v > 0.25 });
+    }
+    const runs = (key, name) => {
+      const found = [];
+      for (let i = 0; i < phrases.length;) {
+        if (!phrases[i][key]) { i++; continue; }
+        let j = i; while (j < phrases.length && phrases[j][key]) j++;
+        const bars = Math.min(64, (j - i) * 8), sel = { start_ms: Math.round(barStartMs(g, i * 8)), end_ms: Math.round(Math.min((t.duration || 0) * 1000, barStartMs(g, i * 8 + bars))), bars, start_bar: i * 8 };
+        if (bars >= 8) found.push({ ...sel, kind: name, label: `${name} ${bars}` });
+        i = j;
+      }
+      return found.sort((x, y) => y.bars - x.bars).slice(0, 3);
+    };
+    out.push(...runs("instrumental", "Instrumental"), ...runs("vocal", "Vocal"));
+  }
+  return out;
+}
+function sectionChips(t) {
+  const saved = t.cues.filter((c) => !c.slot && c.end_ms > c.start_ms).sort((a, b) => a.start_ms - b.start_ms);
+  const cands = candidates(t).filter((c) => !saved.some((s) => Math.abs(s.start_ms - c.start_ms) < 500 && Math.abs(s.end_ms - c.end_ms) < 500));
+  if (!saved.length && !cands.length) return null;
+  const isSel = (a, b) => state.sel && Math.abs(state.sel.start_ms - a) < 50 && Math.abs(state.sel.end_ms - b) < 50;
+  return h("div", { class: "chips-row", role: "group", "aria-label": "Sections" },
+    saved.map((c) => h("span", { class: "chip saved" + (isSel(c.start_ms, c.end_ms) ? " on" : "") },
+      h("button", { class: "chip-main", title: `Saved loop ${fmtMs(c.start_ms)}–${fmtMs(c.end_ms)}. Click to select it`, onclick: () => setSel(snapSel(c.start_ms, c.end_ms) || { start_ms: c.start_ms, end_ms: c.end_ms, bars: 0 }) },
+        icon("repeat", "ic sm"), c.label || "Loop"),
+      h("button", { class: "chip-x", "aria-label": `Delete loop ${c.label || ""}`, title: "Delete this loop", onclick: () => removeMemory(c).catch(fail) }, icon("x", "ic sm")))),
+    cands.map((c) => h("button", { class: "chip" + (isSel(c.start_ms, c.end_ms) ? " on" : ""), style: `--k:${phraseColor(c.kind)}`, title: `${c.kind}: ${c.bars} bars from ${fmtMs(c.start_ms)}. Click to select`,
+      onclick: () => setSel(c) }, h("i"), c.label)));
+}
+async function saveLoop() {
+  const s = state.sel;
+  if (!s) return;
+  const name = await ask(`Name for this ${s.bars}-bar loop`, "", "Save");
+  if (name == null) return;
+  const cues = state.current.cues.map((c) => ({ ...c }));
+  cues.push({ slot: 0, start_ms: s.start_ms, end_ms: s.end_ms, label: name || null, auto: 0 });
+  putCues(cues, `Loop saved${name ? ": " + name : ""}`).catch(fail);
+}
+function stemsForSel() {
+  const s = state.sel, t = state.current;
+  if (!s || !t) return;
+  api("/api/stems", { body: { ids: [t.id], range_ms: [s.start_ms, s.end_ms] } })
+    .then(() => { toast(`Making stems for ${fmtMs(s.start_ms)}–${fmtMs(s.end_ms)}`); pollJobs(); loadTracks(); openTrack(t.id); }).catch(fail);
 }
 // Mix points: saved per track (NULL = the analysed point), beat-snapped like a cue, one undo.
 const MIX = [["mix_in_ms", "IN"], ["mix_out_ms", "OUT"]];
@@ -1259,6 +1361,7 @@ player.addEventListener("play", setPlayIcon);
 player.addEventListener("pause", setPlayIcon);
 player.addEventListener("timeupdate", () => {
   if (!state.current) return;
+  if (state.loop && state.sel && player.currentTime * 1000 >= state.sel.end_ms - 30) player.currentTime = state.sel.start_ms / 1000;
   $("#timeLabel").textContent = fmtTime(player.currentTime);
   const wt = $("#waveTime"); if (wt) wt.textContent = waveTimeText();
   if (!state.seeking) $("#seek").value = player.currentTime;
@@ -1407,12 +1510,15 @@ function buildWaves() {
   // The full mix takes the height the stack has left after the stem lanes and the overview (120-320 px).
   const stemLanes = STEM_ORDER.filter((n) => state.stemPeaks?.[n]).length;
   const fullH = Math.max(120, Math.min(320, (waveStack.clientHeight || 0) - 20 - stemLanes * 47 - 29 - 18 - 4));
-  state.ws = WaveSurfer.create({ container: waveBox, peaks: [positions(state.bands[0].length)], ...base(full, fullH),
+  state.ws = WaveSurfer.create({ container: waveBox, peaks: [positions(state.bands[0].length)], ...base(full, fullH), dragToSeek: false,
     plugins: [state.regions, hoverPlugin(), WaveSurfer.Timeline.create({ height: 18, formatTimeCallback: clockLabel, secondaryLabelOpacity: 0.35,
       style: { fontSize: "10px", color: "#b6b6bb", fontFamily: "inherit" } }), WaveSurfer.Minimap.create({ container: overviewBox, height: 26, renderFunction: full, waveColor: "#888888", progressColor: "rgba(0,0,0,0.5)",
       dragToSeek: true, cursorColor: PLAYHEAD, overlayColor: "rgba(255,255,255,.12)" })] });
   state.ws.on("ready", syncMarkers);
   state.ws.on("dblclick", (rx) => nextHotCueAt(rx * w.duration));
+  // Drag on the full mix selects a section, snapped to the phrase grid (a click still seeks).
+  state.ws.once("ready", () => state.regions.enableDragSelection({ color: withAlpha(cssVar("--accent") || "#f0574c", 0.22), drag: false, resize: false }));
+  state.regions.on("region-created", (r) => { if (r.id.startsWith("x-")) return; const sel = snapSel(r.start * 1000, r.end * 1000); r.remove(); if (sel) setSel(sel); });
   waveBox.append(h("span", { class: "lane-tip" }, "FULL MIX"));
   const overviewRow = () => { waveStack.append(h("span", { class: "wlabel", style: "color:#8a8a90", title: "Overview" }, h("i")), overviewBox); overviewBox.append(h("span", { class: "lane-tip" }, "OVERVIEW")); markActiveLane(); };
   if (!state.stemPeaks) return overviewRow();
@@ -1440,6 +1546,9 @@ function zoomWave(f) {
 
 // Beat grid (faint beats, solid downbeats, bar numbers every 8 bars), then hot cues (A-H) and
 // memory cues (M). The waveform panel is always dark, so the lines are light.
+let markSeq = 0;
+// Markers and spans never take the pointer: a drag that starts on a cue line still selects a section.
+const mark = (reg, opts) => { const r = reg.addRegion({ id: `x-${++markSeq}`, ...opts }); if (r.element) r.element.style.pointerEvents = "none"; return r; };
 function syncMarkers() {
   const t = state.current, g = effectiveGrid(t), reg = state.regions;
   if (!reg || !state.wave) return;
@@ -1449,11 +1558,16 @@ function syncMarkers() {
     sr.clearRegions();
     if (g && g.period_ms > 0 && (g.duration_ms - g.first_beat_ms) / g.period_ms < 3000) {
       const beats = Math.floor((g.duration_ms - g.first_beat_ms) / g.period_ms) + 1;
-      for (let k = 0; k < beats; k++) if (((k - g.downbeat_index) % 4 + 4) % 4 === 0) sr.addRegion({ start: (g.first_beat_ms + k * g.period_ms) / 1000, color: "rgba(242,242,242,0.28)", drag: false, resize: false });
+      for (let k = 0; k < beats; k++) if (((k - g.downbeat_index) % 4 + 4) % 4 === 0) mark(sr, { start: (g.first_beat_ms + k * g.period_ms) / 1000, color: "rgba(242,242,242,0.28)", drag: false, resize: false });
     }
-    for (const c of t.cues) sr.addRegion({ start: c.start_ms / 1000, color: c.slot ? CUE_COLORS[c.slot - 1] : "#f2f2f2", drag: false, resize: false });
-    for (const [k] of MIX) if (t[k] != null) sr.addRegion({ start: t[k] / 1000, color: "rgba(242,242,242,0.6)", drag: false, resize: false });
+    for (const c of t.cues) mark(sr, { start: c.start_ms / 1000, color: c.slot ? CUE_COLORS[c.slot - 1] : "#f2f2f2", drag: false, resize: false });
+    for (const [k] of MIX) if (t[k] != null) mark(sr, { start: t[k] / 1000, color: "rgba(242,242,242,0.6)", drag: false, resize: false });
   }
+  // The selected section and the saved loops: translucent spans on every lane.
+  const spans = [...t.cues.filter((c) => !c.slot && c.end_ms > c.start_ms).map((c) => ({ a: c.start_ms, b: c.end_ms, color: "rgba(242,242,242,0.10)", label: c.label || "Loop" })),
+                 ...(state.sel ? [{ a: state.sel.start_ms, b: state.sel.end_ms, color: withAlpha(cssVar("--accent") || "#f0574c", 0.22), label: `${state.sel.bars} bars` }] : [])];
+  const spanLabel = (s) => h("span", { style: `display:inline-block;font:600 10px var(--f-text);letter-spacing:.04em;padding:1px 5px;border-radius:2px;background:rgba(0,0,0,.55);color:#f2f2f2;margin:2px` }, s.label);
+  for (const s of spans) for (const r of [reg, ...(state.stemRegions || [])]) mark(r, { start: s.a / 1000, end: s.b / 1000, color: s.color, drag: false, resize: false, content: r === reg ? spanLabel(s) : undefined });
   if (g && g.period_ms > 0) {
     const down = "rgba(242,242,242,0.55)", beat = "rgba(242,242,242,0.16)";
     const beats = Math.floor((g.duration_ms - g.first_beat_ms) / g.period_ms) + 1;
@@ -1464,7 +1578,7 @@ function syncMarkers() {
       if (isDown) bar++;
       if (!isDown && !everyBeat) continue;
       const label = isDown && bar % 8 === 1 ? h("span", { style: "font:600 10px var(--f-text);color:#b6b6bb;padding:0 3px" }, String(bar)) : undefined;
-      reg.addRegion({ start: (g.first_beat_ms + k * g.period_ms) / 1000, color: isDown ? down : beat, content: label, drag: false, resize: false });
+      mark(reg, { start: (g.first_beat_ms + k * g.period_ms) / 1000, color: isDown ? down : beat, content: label, drag: false, resize: false });
     }
   }
   for (const c of t.cues) {
@@ -1472,14 +1586,14 @@ function syncMarkers() {
     const col = c.slot ? CUE_COLORS[c.slot - 1] : "#f2f2f2";
     const label = h("span", { style: `display:inline-block;font:600 11px var(--f-text);padding:0 4px;border-radius:0 2px 2px 0;background:${col};color:#111112` },
       c.slot ? PAD[c.slot - 1] : "M");
-    reg.addRegion({ start: c.start_ms / 1000, color: col, content: label, drag: false, resize: false });
+    mark(reg, { start: c.start_ms / 1000, color: col, content: label, drag: false, resize: false });
   }
   // Mix in / out: white flags, solid when they are yours, hollow when analysed.
   for (const [k, name] of MIX) {
     if (t[k] == null) continue;
     const own = !t[`${k}_auto`];
     const label = h("span", { style: `display:inline-block;font:600 10px var(--f-text);letter-spacing:.04em;padding:0 4px;border-radius:0 2px 2px 0;${own ? "background:#f2f2f2;color:#111112" : "border:1px solid #f2f2f2;color:#f2f2f2;background:rgba(0,0,0,.5)"}` }, name);
-    reg.addRegion({ start: t[k] / 1000, color: own ? "#f2f2f2" : "rgba(242,242,242,0.6)", content: label, drag: false, resize: false });
+    mark(reg, { start: t[k] / 1000, color: own ? "#f2f2f2" : "rgba(242,242,242,0.6)", content: label, drag: false, resize: false });
   }
 }
 
@@ -1826,6 +1940,7 @@ addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !typing) {
     if (!$("#jobsPanel").hidden) return toggleJobs(false);
     if (!$("#playlistsBox").hidden) return setPlaylistsOpen(false);
+    if (state.focus && state.sel) return setSel(null);
     if (state.focus) return setFocus(false);
     if (!$("#view-library").classList.contains("active")) return showView("library");
   }
@@ -1840,6 +1955,7 @@ addEventListener("keydown", (e) => {
     cue ? (player.currentTime = cue.start_ms / 1000) : setCue(slot, player.currentTime * 1000).catch(fail);
   }
   if (state.current && (e.key === "m" || e.key === "M")) addMemory(player.currentTime * 1000).catch(fail);
+  if (state.current && state.focus && (e.key === "l" || e.key === "L")) toggleLoop();
   if (state.current && (e.key === "i" || e.key === "I")) setMixPoints({ mix_in_ms: Math.round(snapToBeat(player.currentTime * 1000)) });
   if (state.current && (e.key === "o" || e.key === "O")) setMixPoints({ mix_out_ms: Math.round(snapToBeat(player.currentTime * 1000)) });
   if (state.current && (e.code === "BracketLeft" || e.code === "BracketRight")) {

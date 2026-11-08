@@ -155,3 +155,10 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   Make stems, Convert for the deck, Confirm the beat grid, Add to playlist (counts), New playlist with these, Remove
   from the playlist, Remove from library. Playlists get their own: Open, Add the selected, Export only this
   playlist, New playlist in this folder, Rename, Delete. Grouped, with glyphs and key hints, in the app's style.
+- **Sections** (0.6): drag on the full mix selects a run of bars snapped to the phrase grid (4 · 8 · 16 · 32 · 64,
+  from the first downbeat, where ClubCraft's sections start); chips under the waveform offer the analysed sections
+  and, with stems, instrumental and vocal runs. The selection pill loops it (`L`), saves it as a loop (a memory cue
+  with an end, which the card carries as a rekordbox loop and the hints list in `cue_labels`), or makes stems for
+  that range only: `POST /api/stems {ids, range_ms}` separates the range with 10 s of context each side and writes
+  a whole-length stems file with silence outside (`tracks.stems_range`, `stems_range` in the hints). Stems that
+  exist for the same range or the whole track are never made twice. Esc clears the selection before it closes the track.
