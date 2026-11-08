@@ -66,3 +66,18 @@ complex I/O, TDF, MWF). Under +0.15 dB → skip width, go to the architecture le
 3. TDF blocks (TRANSPOSE + FULLY_CONNECTED): check 0 CPU operators with `export_vela.py` on random weights first.
 4. Vocals-first cascade: the only published route to ~9 dB vocals under 70 M parameters.
 5. Multichannel Wiener filter on the M85 (+0.45 dB, no training): testable now on `b16_f64` with `norbert`.
+
+## Coordination (8 November 2026, Harry's chat session)
+
+The base 32 run is started by `F:\needle\queue_v7.ps1` (copy: `queue_v7.example.ps1`) after the
+base 16 / base 20 frames-128 runs and their exports. It runs training (two 11.5 h slices with
+`--resume`), the four evaluations, the Vela export and the int8 evaluation itself, and writes
+`results\b32_*_test.json` etc. **Do not start a duplicate training, evaluation or export for it**:
+the PC's memory and GPU are fully used while it runs (last night two runs died of exactly that).
+
+Recipe chosen: the frames-128 recipe of b16_f128_v3 / b20_f128_v3 (`-Recipe v3`), not the
+frames-64 one above, so that base 16 / 20 / 32 form one width series with identical data and
+training. Paired results of b16_f128_v3 against b16_f32_stems: MUSDB +0.09 [-0.04, +0.27],
+MoisesDB -0.09 [-0.16, -0.02], house +1.06 [+0.26, +1.99] (6/6 songs), Luke Traxx held-out 6.24 vs
+4.83. The comparison `b16_f64` vs `b32_f64_s2` proposed above would confound width with data
+(b16_f64 was MUSDB-only); use `paired.py results\b16_f128_v3_test.json results\b32_f128_v3_test.json`.
