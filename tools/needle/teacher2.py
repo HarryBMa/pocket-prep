@@ -47,11 +47,11 @@ def decode(path):
     return np.frombuffer(raw, np.float32).reshape(-1, 2).copy()
 
 
-def separator(model, out_dir, models_dir):
+def separator(model, out_dir, models_dir, shifts=2):
     from audio_separator.separator import Separator
     s = Separator(output_dir=str(out_dir), model_file_dir=str(models_dir), output_format="WAV",
                   normalization_threshold=1.0, use_soundfile=True,
-                  demucs_params={"segment_size": "Default", "shifts": 2, "overlap": 0.25, "segments_enabled": True})
+                  demucs_params={"segment_size": "Default", "shifts": shifts, "overlap": 0.25, "segments_enabled": True})
     s.load_model(model_filename=model)
     return s
 
@@ -73,6 +73,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--models", default=r"F:\needle\sep-models")
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--shifts", type=int, default=2, help="htdemucs shifts (2 = better, 1 = about twice as fast)")
     ap.add_argument("--max-seconds", type=float, help="only the first N seconds of each track (for testing)")
     a = ap.parse_args()
     out = Path(a.out)
@@ -90,7 +91,7 @@ def main():
     jobs = jobs[:a.limit] if a.limit else jobs
     print(f"{len(jobs)} tracks to do -> {out}", flush=True)
     tmp = Path(tempfile.mkdtemp(prefix="teacher2_"))
-    voc_sep, dem_sep = separator(VOCAL_MODEL, tmp, a.models), separator(DEMUCS_MODEL, tmp, a.models)
+    voc_sep, dem_sep = separator(VOCAL_MODEL, tmp, a.models), separator(DEMUCS_MODEL, tmp, a.models, a.shifts)
     for i, (name, src) in enumerate(jobs):
         t = time.time()
         try:
