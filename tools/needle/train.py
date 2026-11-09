@@ -38,7 +38,7 @@ from torch.utils.tensorboard import SummaryWriter
 from chunked import nsdr, separate_chunked, torch_predictor
 from data import (Prefetcher, StemBank, augment, hours, keep_awake, load_excerpts, load_musdb, load_teacher,
                   musdb_split)
-from needle import SOURCES, Needle, NeedleConfig, apply_masks, count_macs, istft, network_input
+from needle import SOURCES, Needle, NeedleConfig, apply_filters, apply_masks, count_macs, istft, network_input
 
 HERE = Path(__file__).parent
 
@@ -46,8 +46,9 @@ HERE = Path(__file__).parent
 # ── STFT on training crops ───────────────────────────────────────────────────
 
 def crop_length(cfg: NeedleConfig):
-    """Samples in one training crop: exactly `frames` STFT frames with center=False."""
-    return (cfg.frames - 1) * cfg.hop + cfg.n_fft          # 17,920 for 32 frames
+    """Samples in one training crop: `frames` STFT frames (with center=False), plus `context`
+    frames on each side when the model filters over neighbouring frames (cfg.taps)."""
+    return (cfg.frames + 2 * cfg.context - 1) * cfg.hop + cfg.n_fft          # 17,920 for 32 frames
 
 
 def stft_frames(x, cfg: NeedleConfig):
@@ -67,30 +68,41 @@ def check_alignment(cfg: NeedleConfig, device):
     """Masks of 1 must give back the input: iSTFT(STFT(crop)) == the middle of the crop.
     This proves the waveform target below is cut from the right samples."""
     x = torch.randn(2, 2, crop_length(cfg), device=device)
-    y = istft(stft_frames(x, cfg)[:, None], cfg, (cfg.frames - 1) * cfg.hop)[:, 0]
+    y = istft(stft_frames(x, cfg)[:, None], cfg, (cfg.frames + 2 * cfg.context - 1) * cfg.hop)[:, 0]
     h = cfg.n_fft // 2
     err = (y - x[..., h:h + y.shape[-1]]).abs().max().item()
     assert err < 1e-4, f"STFT/iSTFT alignment is off: {err}"
 
 
 def compute_loss(model, stems, cfg: NeedleConfig, wave_weight, amp_dtype, spec_norm, mr_weight=0.0):
-    """stems (B, S, C, L) float on the GPU. Returns (total, spectral L1, waveform L1)."""
+    """stems (B, S, C, L) float on the GPU. Returns (total, spectral L1, waveform L1).
+    The crop holds cfg.frames STFT frames plus cfg.context on each side (deep filtering only):
+    the network sees the middle ones, the filters use all of them, the loss judges the middle ones."""
     mix = stems.sum(1)                                            # (B, C, L)
-    mix_spec = stft_frames(mix, cfg)                              # (B, C, F, T)
+    mix_spec = stft_frames(mix, cfg)                              # (B, C, F, T + 2 context)
+    ctx, T = cfg.context, cfg.frames
+    core = mix_spec[..., ctx:ctx + T]
     with torch.autocast("cuda", dtype=amp_dtype or torch.float32, enabled=amp_dtype is not None):
-        masks = model(network_input(mix_spec, cfg))               # (B, S*C, bins, T), sigmoid
-    masks = masks.float()
+        out = model(network_input(core, cfg))                     # (B, K, bins, T): sigmoid masks, or tanh filters
+    out = out.float()
 
     # Spectral loss. apply_masks normalises the masks to sum to 1, exactly as on the device.
     # Magnitudes are divided by sqrt(sum(window^2)) so a spectrogram value and a waveform sample
     # are on the same scale; then "0.1 x waveform loss" really means a tenth of the weight.
-    est_mag = apply_masks(masks, mix_spec.abs(), cfg)             # (B, S, C, F, T)
-    tgt_mag = stft_frames(stems, cfg).abs()
+    tgt_mag = stft_frames(stems, cfg)[..., ctx:ctx + T].abs()
+    if cfg.taps:
+        est = apply_filters(out, mix_spec, cfg)                   # (B, S, C, F, T) complex
+        est_mag = est.abs()
+    else:
+        est_mag = apply_masks(out, core.abs(), cfg)               # (B, S, C, F, T)
+        est = None
     spec_l1 = (est_mag - tgt_mag).abs().mean() / spec_norm
 
     # Waveform loss: masked complex mixture -> iSTFT -> compare with the middle of the crop.
-    est_wav = istft(apply_masks(masks, mix_spec, cfg), cfg, (cfg.frames - 1) * cfg.hop)
-    h = cfg.n_fft // 2
+    if est is None:
+        est = apply_masks(out, core, cfg)
+    est_wav = istft(est, cfg, (T - 1) * cfg.hop)
+    h = cfg.n_fft // 2 + ctx * cfg.hop
     tgt_wav = stems[..., h:h + est_wav.shape[-1]]
     wave_l1 = (est_wav - tgt_wav).abs().mean()
     loss = spec_l1 + wave_weight * wave_l1
@@ -178,6 +190,11 @@ def main():
     ap.add_argument("--base", type=int, default=16)
     ap.add_argument("--mult", type=int, nargs="+", default=list(NeedleConfig.mult))
     ap.add_argument("--frames", type=int, default=32)
+    ap.add_argument("--coord", action="store_true", help="extra input channel: bin index / bins (CoordConv)")
+    ap.add_argument("--harmonics", type=int, nargs="*", default=[],
+                    help="extra input channels: mono log-magnitude at bin h*k for each h given, e.g. 2 3 4")
+    ap.add_argument("--taps", type=int, default=0,
+                    help="0 = sigmoid magnitude masks; odd N >= 1 = deep filtering over N STFT frames (1 = complex mask)")
     # optimisation
     ap.add_argument("--steps", type=int, default=200_000)
     ap.add_argument("--batch", type=int, default=64)
@@ -216,12 +233,14 @@ def main():
     run = Path(a.runs) / a.name
     run.mkdir(parents=True, exist_ok=True)
 
-    cfg = NeedleConfig(base=a.base, mult=tuple(a.mult), frames=a.frames)
+    cfg = NeedleConfig(base=a.base, mult=tuple(a.mult), frames=a.frames, coord=a.coord,
+                       harmonics=tuple(a.harmonics), taps=a.taps)
     cfg.check()
     check_alignment(cfg, device)
     model = Needle(cfg).to(device)
     info = count_macs(cfg)
-    print(f"Needle base {cfg.base} mult {cfg.mult} frames {cfg.frames}: {info['params']:,} parameters, "
+    print(f"Needle base {cfg.base} mult {cfg.mult} frames {cfg.frames} coord {cfg.coord} harmonics {cfg.harmonics} "
+          f"taps {cfg.taps}: {info['params']:,} parameters, "
           f"{info['gmac_per_audio_s']:.2f} GMAC per second of audio")
 
     # Weight decay on conv weights only: shrinking BatchNorm scales or biases towards 0 doesn't

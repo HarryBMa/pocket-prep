@@ -41,7 +41,7 @@ def build_keras(cfg: NeedleConfig, convs):
         layer.set_weights([w.permute(2, 3, 1, 0).numpy(), b.numpy()])   # OIHW -> HWIO
         return y
 
-    inp = keras.Input((cfg.bins, cfg.frames, cfg.audio_channels), batch_size=1)
+    inp = keras.Input((cfg.bins, cfg.frames, cfg.in_channels), batch_size=1)
     x, skips = inp, [inp]
     for _ in range(cfg.levels):
         x = conv(conv(x, 2), 1)
@@ -54,7 +54,7 @@ def build_keras(cfg: NeedleConfig, convs):
         x = keras.layers.Concatenate()([x, skips.pop()])
         x = conv(conv(x, 1), 1)
     x = conv(x, 1, act=False, k=1)
-    return keras.Model(inp, keras.layers.Activation("sigmoid")(x))
+    return keras.Model(inp, keras.layers.Activation("sigmoid" if cfg.taps == 0 else "tanh")(x))   # LOGISTIC or TANH: both NPU
 
 
 def calibration_chunks(cfg: NeedleConfig, audio_dir, n=64, pattern="**/*", max_files=40):
@@ -83,7 +83,7 @@ def calibration_chunks(cfg: NeedleConfig, audio_dir, n=64, pattern="**/*", max_f
         rng.shuffle(chunks)
     if not chunks:
         rng = np.random.default_rng(0)
-        chunks = [np.log1p(rng.lognormal(0, 1.5, (cfg.bins, cfg.frames, cfg.audio_channels))).astype(np.float32) for _ in range(n)]
+        chunks = [np.log1p(rng.lognormal(0, 1.5, (cfg.bins, cfg.frames, cfg.in_channels))).astype(np.float32) for _ in range(n)]
     return chunks[:n]
 
 
@@ -181,6 +181,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", type=int, default=16)
     ap.add_argument("--frames", type=int, default=64)
+    ap.add_argument("--coord", action="store_true", help="(random weights only) extra input channel: bin index")
+    ap.add_argument("--harmonics", type=int, nargs="*", default=[], help="(random weights only) harmonic input channels")
+    ap.add_argument("--taps", type=int, default=0, help="(random weights only) deep filtering over this many frames")
     ap.add_argument("--checkpoint")
     ap.add_argument("--audio", help="folder of 44.1 kHz stereo tracks for calibration (training data, never test)")
     ap.add_argument("--audio-glob", default="**/*", help='which files under --audio, e.g. "*/mixture.wav"')
@@ -195,11 +198,11 @@ def main():
         model = Needle(cfg)
         model.load_state_dict(ck["model"])
     else:
-        cfg = NeedleConfig(base=a.base, frames=a.frames)
+        cfg = NeedleConfig(base=a.base, frames=a.frames, coord=a.coord, harmonics=tuple(a.harmonics), taps=a.taps)
         model = Needle(cfg)
         torch.manual_seed(0)
     model.eval()
-    out = Path(a.out) / f"needle_b{cfg.base}_f{cfg.frames}"
+    out = Path(a.out) / f"needle_b{cfg.base}_f{cfg.frames}{cfg.tag()}"
     out.mkdir(parents=True, exist_ok=True)
     report = {"config": {k: v for k, v in cfg.__dict__.items()}, **count_macs(cfg)}
 

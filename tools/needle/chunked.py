@@ -18,7 +18,7 @@ in exactly the same way.
 import torch
 import torch.nn.functional as F
 
-from needle import SOURCES, NeedleConfig, istft, network_input, spectrogram
+from needle import SOURCES, NeedleConfig, apply_filters, istft, network_input, pad_time, spectrogram
 
 
 def crossfade_weights(frames: int, overlap: int) -> torch.Tensor:
@@ -65,6 +65,56 @@ def chunked_masks(predict, x: torch.Tensor, frames: int, overlap: int = 8, batch
 
 
 @torch.no_grad()
+def chunked_pieces(predict, x: torch.Tensor, frames: int, overlap: int = 8, batch: int = 64):
+    """Like chunked_masks, but yields (first_frame, outputs (K, bins, n)) pieces in order instead
+    of one array for the whole track: a frame is final as soon as the next chunk (the last one
+    that can cover it) has been added. Needed when K is large (deep filtering: 60 channels would
+    be 8 GB for a 6-minute song). The pieces cover the padded track; the caller clips to T."""
+    c, bins, t = x.shape
+    starts, t_pad = chunk_starts(t, frames, overlap)
+    x = F.pad(x, (0, t_pad - t))
+    w = crossfade_weights(frames, overlap).to(x.device)
+    step = frames - overlap
+    buf = wbuf = None
+    base = 0
+    for i in range(0, len(starts), batch):
+        group = starts[i:i + batch]
+        out = predict(torch.stack([x[..., a:a + frames] for a in group]))
+        need = group[-1] + frames - base
+        if buf is None:
+            buf = torch.zeros(out.shape[1], bins, need, device=x.device)
+            wbuf = torch.zeros(need, device=x.device)
+        else:
+            buf = F.pad(buf, (0, need - buf.shape[-1]))
+            wbuf = F.pad(wbuf, (0, need - wbuf.shape[-1]))
+        for m, a in zip(out, group):
+            buf[..., a - base:a - base + frames] += m.float().to(x.device) * w
+            wbuf[a - base:a - base + frames] += w
+        cut = t_pad if i + batch >= len(starts) else group[-1] + step      # frames below `cut` are final
+        n = cut - base
+        yield base, buf[..., :n] / wbuf[:n]
+        buf, wbuf, base = buf[..., n:], wbuf[n:], cut
+
+
+@torch.no_grad()
+def separate_filtered(predict, wav: torch.Tensor, cfg: NeedleConfig, overlap: int = 8, batch: int = 64) -> torch.Tensor:
+    """separate_once() for deep-filtering models (cfg.taps >= 1). The network's outputs (the
+    filter coefficients) are crossfaded between chunks exactly like masks are; each filter is then
+    applied to the mixture STFT, which has the neighbouring frames the filter needs (taps//2 on
+    each side), so chunk borders cost nothing. "other" is the residual (apply_filters)."""
+    spec = spectrogram(wav[None], cfg)[0]                    # (C, F, T) complex
+    c, f, t = spec.shape
+    ext = pad_time(spec[None], cfg)[0]                       # (C, F, T + taps - 1)
+    stems = torch.zeros(cfg.sources, c, f, t, dtype=spec.dtype, device=spec.device)
+    for base, piece in chunked_pieces(predict, network_input(spec[None], cfg)[0], cfg.frames, overlap, batch):
+        n = min(piece.shape[-1], t - base)
+        if n <= 0:
+            break
+        stems[..., base:base + n] = apply_filters(piece[None, ..., :n], ext[None, ..., base:base + n + cfg.taps - 1], cfg)[0]
+    return torch.stack([istft(stems[s][None, None], cfg, wav.shape[-1])[0, 0].cpu() for s in range(cfg.sources)])
+
+
+@torch.no_grad()
 def separate_chunked(predict, wav: torch.Tensor, cfg: NeedleConfig, overlap: int = 8, batch: int = 64,
                      shifts: int = 1) -> torch.Tensor:
     """separate_once(), optionally `shifts` times with the audio delayed a little each time, and
@@ -92,6 +142,8 @@ def separate_once(predict, wav: torch.Tensor, cfg: NeedleConfig, overlap: int = 
     the same result with a quarter of the memory: a 6-minute song as one tensor of four complex
     stems is several GB, and on Windows a GPU that runs out of memory doesn't fail, it silently
     spills into system RAM and becomes ~100x slower."""
+    if cfg.taps:
+        return separate_filtered(predict, wav, cfg, overlap, batch)
     spec = spectrogram(wav[None], cfg)[0]                    # (C, F, T) complex
     masks = chunked_masks(predict, network_input(spec[None], cfg)[0], cfg.frames, overlap, batch)
     c, f, t = spec.shape

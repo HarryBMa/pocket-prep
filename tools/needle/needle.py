@@ -10,11 +10,17 @@ Why it looks like this (every choice comes from what the U55 can run, see tools/
 - 2x2 strides everywhere: Vela only accelerates nearest-neighbour upsampling with equal H/W
   factors, so every level halves frequency and time together (like Spleeter's U-Net).
 
-Shapes (PyTorch, NCHW): input  (B, audio_channels, bins, frames)   log1p(|STFT|)
+Shapes (PyTorch, NCHW): input  (B, in_channels, bins, frames)   log1p(|STFT|) [+ coordinate and harmonic channels]
                          output (B, sources*audio_channels, bins, frames)   masks in 0..1
 Channel order of the output: source-major, i.e. [drums L, drums R, bass L, bass R, ...].
+
+Optional "frontier" features (all off by default, so the plain model and its checkpoints are unchanged):
+- coord / harmonics: extra input channels computed on the M85 (see network_input);
+- taps >= 1: deep filtering instead of masks (see apply_filters): the head outputs, per source except
+  "other", channel and bin, a complex filter over `taps` neighbouring STFT frames (tanh instead of
+  sigmoid), and "other" is the residual. Same layer types, so still 0 CPU operators in Vela.
 """
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -34,15 +40,46 @@ class NeedleConfig:
     hop: int = 512
     bins: int = 1024                              # STFT bins the network sees (drops Nyquist)
     frames: int = 64                              # frames per chunk on the device (0.74 s)
+    # Input features beyond the log-magnitudes (all computed on the M85, no NPU cost):
+    coord: bool = False                           # + 1 channel: bin index / bins (CoordConv)
+    harmonics: tuple = ()                         # + 1 channel per entry h: mono log-magnitude at bin h*k
+    # Output: 0 = sigmoid magnitude masks (sum to 1); taps >= 1 = deep filtering: per source
+    # (except "other"), channel and bin a complex FIR over `taps` frames (1 = complex mask);
+    # "other" is the residual, so the stems still add up to the mix.
+    taps: int = 0
+
+    def __post_init__(self):
+        self.mult, self.harmonics = tuple(self.mult), tuple(self.harmonics)
 
     @property
     def levels(self):
         return len(self.mult)
 
+    @property
+    def context(self):
+        """Frames of mixture STFT the output stage looks at on each side of a chunk (deep filtering)."""
+        return self.taps // 2
+
+    @property
+    def in_channels(self):
+        return self.audio_channels + int(self.coord) + len(self.harmonics)
+
+    @property
+    def out_channels(self):
+        if self.taps == 0:
+            return self.sources * self.audio_channels
+        return (self.sources - 1) * self.audio_channels * 2 * self.taps
+
     def check(self):
         assert self.bins % 2 ** self.levels == 0 and self.frames % 2 ** self.levels == 0, \
             f"bins and frames must be divisible by {2 ** self.levels}"
         assert self.bins <= self.n_fft // 2
+        assert self.taps == 0 or self.taps % 2 == 1, "taps must be 0 (masks) or odd (a centre frame and equal sides)"
+
+    def tag(self):
+        """Short name of the non-default features, for folder and file names ('' for the plain model)."""
+        return (("_c" if self.coord else "") + (("_h" + "".join(map(str, self.harmonics))) if self.harmonics else "")
+                + (f"_t{self.taps}" if self.taps else ""))
 
 
 class Block(nn.Module):
@@ -65,17 +102,26 @@ class Needle(nn.Module):
         self.cfg = cfg
         chans = [cfg.base * m for m in cfg.mult]
         self.enc = nn.ModuleList()
-        cin = cfg.audio_channels
+        cin = cfg.in_channels
         for c in chans:
             self.enc.append(Block(cin, c, 2))
             cin = c
         self.dec = nn.ModuleList()
         for i in reversed(range(len(chans))):          # upsample, concat the skip, refine
-            skip = chans[i - 1] if i > 0 else cfg.audio_channels
+            skip = chans[i - 1] if i > 0 else cfg.in_channels
             out = chans[i - 1] if i > 0 else cfg.base
             self.dec.append(Block(cin + skip, out, 1))
             cin = out
-        self.head = nn.Conv2d(cin, cfg.sources * cfg.audio_channels, 1)
+        self.head = nn.Conv2d(cin, cfg.out_channels, 1)
+        if cfg.taps:
+            # Deep filtering starts as a plain mask: the centre tap's real part is 0.25 for the
+            # three estimated stems (tanh(0.2554) = 0.25), everything else 0. Without this the
+            # first steps all go into finding the "identity" filter.
+            with torch.no_grad():
+                self.head.bias.zero_()
+                c = cfg.audio_channels
+                for s in range((cfg.sources - 1) * c):
+                    self.head.bias[(s * cfg.taps + cfg.taps // 2) * 2] = 0.2554
 
     def forward(self, x):
         skips = [x]
@@ -86,7 +132,8 @@ class Needle(nn.Module):
         for b in self.dec:
             x = F.interpolate(x, scale_factor=2, mode="nearest")
             x = b(torch.cat([x, skips.pop()], 1))
-        return torch.sigmoid(self.head(x))
+        x = self.head(x)
+        return torch.sigmoid(x) if self.cfg.taps == 0 else torch.tanh(x)
 
 
 # ── Front and back end (on the device these run on the Cortex-M85) ───────────
@@ -100,8 +147,25 @@ def spectrogram(wav, cfg: NeedleConfig):
 
 
 def network_input(spec, cfg: NeedleConfig):
-    """Complex STFT -> what the network sees: log1p magnitude of the first `bins` bins."""
-    return torch.log1p(spec[:, :, : cfg.bins].abs())
+    """Complex STFT (B, C, F, T) -> what the network sees (B, in_channels, bins, T):
+    log1p magnitudes, then optionally
+    - a coordinate channel, bin index / bins: a convolution is blind to where in the spectrum it
+      is, this tells it (bass lives at the bottom, cymbals at the top);
+    - harmonic channels: the mono log-magnitude at bin h*k for each h in cfg.harmonics, so a
+      3x3 kernel sees a note's fundamental and its harmonics in one place (as pitch trackers
+      do). Bins beyond the spectrum take the last bin."""
+    mag = spec.abs()
+    chans = [torch.log1p(mag[:, :, : cfg.bins])]
+    b, c, f, t = mag.shape
+    if cfg.coord:
+        k = torch.arange(cfg.bins, device=spec.device, dtype=torch.float32) / cfg.bins
+        chans.append(k[None, None, :, None].expand(b, 1, cfg.bins, t))
+    if cfg.harmonics:
+        mono = torch.log1p(mag.mean(1))                                  # (B, F, T)
+        k = torch.arange(cfg.bins, device=spec.device)
+        for h in cfg.harmonics:
+            chans.append(mono[:, (h * k).clamp(max=f - 1)][:, None])
+    return torch.cat(chans, 1)
 
 
 def apply_masks(masks, spec, cfg: NeedleConfig, eps=1e-4):
@@ -115,6 +179,54 @@ def apply_masks(masks, spec, cfg: NeedleConfig, eps=1e-4):
     full[:, :, :, : cfg.bins] = m
     full[:, SOURCES.index("other"), :, cfg.bins:] = 1.0
     return full * spec.unsqueeze(1)
+
+
+def apply_filters(out, spec, cfg: NeedleConfig):
+    """Deep filtering. out (B, K, bins, T) in -1..1 with K = (sources-1) * C * 2 * taps, order
+    [drums L tap0 re, im, tap1 re, im, ..., drums R ..., bass ..., vocals ...] (source-major,
+    "other" left out). spec: the mixture STFT (B, C, F, T + taps - 1), i.e. the chunk's frames
+    plus taps//2 frames of context on each side (zeros at the track ends).
+    Each stem is a complex FIR over `taps` neighbouring frames of the mixture, per bin: like a
+    mask, but it can also rotate phase and use the frames around (DeepFilterNet's idea).
+    "other" = mixture - the three estimated stems, so the four stems add up to the mix exactly.
+    Returns (B, S, C, F, T) complex in SOURCES order."""
+    b, c, f, t_ext = spec.shape
+    taps = cfg.taps
+    t = t_ext - taps + 1
+    h = out.reshape(b, cfg.sources - 1, c, taps, 2, cfg.bins, t)
+    h = torch.complex(h[:, :, :, :, 0], h[:, :, :, :, 1])            # (B, S-1, C, taps, bins, T)
+    x = spec[:, :, : cfg.bins]
+    y = torch.zeros(b, cfg.sources - 1, c, cfg.bins, t, dtype=spec.dtype, device=spec.device)
+    for j in range(taps):
+        y = y + h[:, :, :, j] * x[:, :, :, j:j + t].unsqueeze(1)
+    mid = spec[..., taps // 2: taps // 2 + t]                        # the chunk's own frames
+    stems = []
+    other = SOURCES.index("other")
+    k = 0
+    for i in range(cfg.sources):
+        if i == other:
+            stems.append(None)
+            continue
+        full = torch.zeros(b, c, f, t, dtype=spec.dtype, device=spec.device)
+        full[:, :, : cfg.bins] = y[:, k]
+        stems.append(full)
+        k += 1
+    stems[other] = mid - sum(s for s in stems if s is not None)
+    return torch.stack(stems, 1)
+
+
+def pad_time(spec, cfg: NeedleConfig):
+    """Zero frames on both sides so apply_filters can look taps//2 frames around each frame."""
+    p = cfg.taps // 2
+    return F.pad(spec, (p, p)) if p else spec
+
+
+def apply_output(out, spec, cfg: NeedleConfig):
+    """Network output + the chunk's mixture STFT (B, C, F, T) -> per-source STFT (B, S, C, F, T),
+    for either output type."""
+    if cfg.taps == 0:
+        return apply_masks(out, spec, cfg)
+    return apply_filters(out, pad_time(spec, cfg), cfg)
 
 
 def istft(spec, cfg: NeedleConfig, length):
@@ -133,8 +245,8 @@ def separate(model: Needle, wav):
     t = spec.shape[-1]
     pad = (-t) % (2 ** cfg.levels)
     x = F.pad(network_input(spec, cfg), (0, pad))
-    masks = model(x)[..., :t]
-    return istft(apply_masks(masks, spec, cfg), cfg, wav.shape[-1])
+    out = model(x)[..., :t]
+    return istft(apply_output(out, spec, cfg), cfg, wav.shape[-1])
 
 
 # ── Export helpers ───────────────────────────────────────────────────────────
@@ -166,7 +278,7 @@ def count_macs(cfg: NeedleConfig):
         total += outp.numel() * k
     hs = [mod.register_forward_hook(hook) for mod in m.modules() if isinstance(mod, nn.Conv2d)]
     with torch.no_grad():
-        m(torch.zeros(1, cfg.audio_channels, cfg.bins, cfg.frames))
+        m(torch.zeros(1, cfg.in_channels, cfg.bins, cfg.frames))
     for h in hs:
         h.remove()
     chunk_s = cfg.frames * cfg.hop / cfg.sample_rate
@@ -175,17 +287,19 @@ def count_macs(cfg: NeedleConfig):
 
 
 def selftest():
-    """Shapes, and that the four stems add back up to the mixture (normalised masks)."""
+    """Shapes, and that the four stems add back up to the mixture, for masks and for deep
+    filtering with the extra input channels."""
     torch.manual_seed(0)
-    cfg = NeedleConfig(base=8)
-    model = Needle(cfg).eval()
-    wav = torch.randn(1, 2, cfg.sample_rate * 3) * 0.1
-    with torch.no_grad():
-        stems = separate(model, wav)
-    assert stems.shape == (1, 4, 2, wav.shape[-1]), stems.shape
-    err = (stems.sum(1) - wav).abs().max().item()
-    assert err < 1e-3, f"stems don't sum to the mix: {err}"
-    print("selftest ok: stems", tuple(stems.shape), "sum-to-mix error", f"{err:.2e}")
+    for cfg in (NeedleConfig(base=8), NeedleConfig(base=8, coord=True, harmonics=(2, 3, 4), taps=5)):
+        model = Needle(cfg).eval()
+        wav = torch.randn(1, 2, cfg.sample_rate * 3) * 0.1
+        with torch.no_grad():
+            stems = separate(model, wav)
+        assert stems.shape == (1, 4, 2, wav.shape[-1]), stems.shape
+        err = (stems.sum(1) - wav).abs().max().item()
+        assert err < 1e-3, f"stems don't sum to the mix: {err}"
+        print(f"selftest ok (taps {cfg.taps}, in {cfg.in_channels}, out {cfg.out_channels}): stems",
+              tuple(stems.shape), "sum-to-mix error", f"{err:.2e}")
 
 
 if __name__ == "__main__":
