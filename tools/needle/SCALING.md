@@ -74,6 +74,31 @@ Extrapolations **[extrapolation; log-linear in parameters and context, which is 
 - Width + context inside this family, with the data recipe already in the repo (real stems + teacher stems): b16 → b48 (3.2 doublings, assume 0.2–0.3 dB each with saturation: +0.6–1.0), f64 → f128 (+0.15–0.3), data (+0.4–0.9, between Needle's measured +0.37 and D3Net's +0.67 for 1,500 songs) ⇒ **≈ 5.6–6.7 avg**; vocals from 5.39 with 0.3–0.45/doubling ⇒ **≈ 6.6–7.4**. The avg gate is at the edge of this range; **the vocals gate (9.0) is 1.6–2.4 dB beyond it**, consistent with the literature: 9 dB vocals has only been reached with complex I/O, per-source models/heads, band-aware frequency modelling and ≥ 3 s context.
 - What base/frames the family would need for 6.5 avg *if* the slopes held: base 48–64 at frames 128 with the full data recipe (≈ 4.5–8 M params). This is where the Vela ladder below concentrates.
 
+### 2b. Measured width series, 9 November 2026 (supersedes the slope above)
+
+The b16/b20/b32 runs at frames 128 with the identical v3 recipe and data (`queue_v6`/`queue_v7`) are the clean width
+experiment Section 2 asked for. MUSDB18-HQ test, float (`results/b{16,20,32}_f128_v3_test.json`):
+
+| Run | Params | MUSDB avg | MUSDB vocals | MoisesDB avg | Ibiza v2 avg | int8 avg |
+|---|---|---|---|---|---|---|
+| b16 f128 v3 | 501 k | 4.40 | 5.16 | 5.76 | 7.72 | 4.39 |
+| b20 f128 v3 | 782 k | 4.56 | 5.27 | 5.83 | 8.19 | 4.56 |
+| b32 f128 v3 | 1 997 k | 4.61 | 5.34 | 5.89 | 8.48 | 4.60 |
+
+- **The width slope is ≈ 0.10 dB avg / 0.09 dB vocals per doubling of parameters**, not 0.30 / 0.45: two doublings
+  (501 k → 2.0 M) bought +0.21 avg and +0.18 vocals, and the second doubling (782 k → 2.0 M, +0.05 avg) is already
+  flat. Section 2's extrapolations are therefore optimistic by about 3×, and the "base 48–64 reaches 6.5" line in
+  Section 2/Step 3 is dead: at 0.10 dB/doubling, 6.5 avg from b32 would need ≈ 19 doublings.
+- Frames 128 did not rescue it either: b16 f64 scored 4.48 and b16 f128 4.40, i.e. the context gain measured at
+  f32 → f64 does not continue.
+- **In-domain data is where the gain is.** The same three nets on the Ibiza/house test set rise 7.72 → 8.48 (+0.76
+  over the same two doublings, 3.6× the MUSDB slope), and the earlier data step was +1.9 dB on house. The product
+  metric moves with data, the MUSDB gate barely moves with anything.
+- **int8 is free**: ≤ 0.01 dB at every width. Quantisation is not what stands between Needle and the gate.
+- Consequence for the ladder: skip further width. The remaining candidates for the 6.5/9.0 gate are the
+  architecture levers (complex spectrogram in/out, deep-filter taps — both already implemented in `needle.py`
+  as of `2b99f24` — TDF blocks, band compression, vocals-first cascade) and more teacher data; width is spent.
+
 ---
 
 ## 3. Vela feasibility ladder (random weights; Vela 5.2.0, Ethos-U55-256 @ 500 MHz)
