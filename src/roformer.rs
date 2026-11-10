@@ -158,8 +158,9 @@ mod tests {
         assert!(split(&["vocals".to_string()], vec![stem(0.1)]).is_err());
     }
 
-    /// Whether a graphics device the model can use is there: a Vulkan driver file on Linux (CI installs Mesa's software
-    /// one), or `POCKET_PREP_GPU_TEST=1` where we can't tell (Windows, macOS: set it on a machine with a GPU).
+    /// Whether a graphics device the model can use is there: a Vulkan driver file on Linux, or `POCKET_PREP_GPU_TEST=1`
+    /// where we can't tell (Windows, macOS: set it on a machine with a GPU). GitHub's runners have none, and their
+    /// Mesa software driver crashes the test process (SIGSEGV), so CI skips this test; it was run with a newer Mesa.
     #[cfg(feature = "roformer")]
     fn gpu_present() -> bool {
         std::env::var_os("POCKET_PREP_GPU_TEST").is_some()

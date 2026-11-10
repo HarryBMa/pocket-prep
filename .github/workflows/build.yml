@@ -61,7 +61,7 @@ jobs:
             target: x86_64-pc-windows-msvc
           - os: macos-14
             target: aarch64-apple-darwin
-          - os: macos-13
+          - os: macos-15-intel          # macos-13 was retired; its job queued for ever (every earlier tag build timed out on it)
             target: x86_64-apple-darwin
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
@@ -73,7 +73,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libudev-dev libclang-dev cmake mesa-vulkan-drivers
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libudev-dev libclang-dev cmake
       - uses: actions/download-artifact@v4
         with:
           name: models
