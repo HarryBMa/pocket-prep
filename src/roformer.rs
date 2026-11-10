@@ -158,12 +158,26 @@ mod tests {
         assert!(split(&["vocals".to_string()], vec![stem(0.1)]).is_err());
     }
 
+    /// Whether a graphics device the model can use is there: a Vulkan driver file on Linux (CI installs Mesa's software
+    /// one), or `POCKET_PREP_GPU_TEST=1` where we can't tell (Windows, macOS: set it on a machine with a GPU).
+    #[cfg(feature = "roformer")]
+    fn gpu_present() -> bool {
+        std::env::var_os("POCKET_PREP_GPU_TEST").is_some()
+            || ["/usr/share/vulkan/icd.d", "/etc/vulkan/icd.d", "/usr/local/share/vulkan/icd.d"].iter()
+                .any(|d| std::fs::read_dir(d).is_ok_and(|mut r| r.next().is_some()))
+    }
+
     /// The vendored model code runs here, end to end, on the tiny test model through the GPU path (Vulkan: a software
-    /// device on machines without a GPU): a second of tone in, two stems of the same length out, finite.
+    /// device on machines without a GPU): a second of tone in, two stems of the same length out, finite. Without a
+    /// graphics device the test says so and returns: it needs one, and a runner without one can't tell us anything.
     #[cfg(feature = "roformer")]
     #[test]
     fn the_tiny_model_separates_through_the_gpu_path() {
         use watershed_separation::BurnSeparator;
+        if !gpu_present() {
+            eprintln!("skipped: no Vulkan device found (set POCKET_PREP_GPU_TEST=1 to run it anyway)");
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("pocketprep_roformer_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let yaml = dir.join("tiny.yaml");
