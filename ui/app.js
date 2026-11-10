@@ -203,18 +203,22 @@ function playlistMenu(p, at) {
       if (state.playlist === p.id) selectPlaylist(0); else loadPlaylists(); } },
   ]);
 }
-async function newPlaylist(isFolder) {
+// `ids`: the tracks to put in the new playlist (default: the selection; a drop passes the dragged tracks).
+async function newPlaylist(isFolder, ids = [...state.selected]) {
   const inFolder = state.playlists.find((p) => p.id === state.openFolderTarget);
   const name = await ask((isFolder ? "New folder" : "New playlist") + (inFolder ? ` in "${inFolder.name}"` : ""), "", "Create");
   if (!name) return;
   const parent = inFolder ? state.openFolderTarget : 0;
   const p = await api("/api/playlists", { body: { name, parent_id: parent, is_folder: isFolder } });
-  if (!isFolder && state.selected.size) await addToPlaylist(p.id, [...state.selected], p.name || name);
+  if (!isFolder && ids.length) await addToPlaylist(p.id, ids, p.name || name);
   loadPlaylists();
 }
 $("#newPlaylist").addEventListener("click", () => newPlaylist(false).catch(fail));
 $("#newFolder").addEventListener("click", () => newPlaylist(true).catch(fail));
 $("#newSmart").addEventListener("click", () => editRule(null).catch(fail));
+// Dropping tracks on "Playlist" makes a playlist of them; on "Smart" it opens the rule dialog (a smart playlist is a rule, not a list).
+dropTarget($("#newPlaylist"), (ids) => newPlaylist(false, ids).catch(fail));
+dropTarget($("#newSmart"), () => editRule(null).catch(fail));
 
 // ── Smart playlists: a rule instead of a track list ──────────────────────────
 // The rule is JSON the server evaluates (library::smart_track_ids): text, bpm_min/max, energy_min/max, keys,
