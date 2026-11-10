@@ -23,6 +23,7 @@ mod models;
 mod player;
 mod mood;
 mod quality;
+mod roformer;
 mod server;
 mod sets;
 mod stems;

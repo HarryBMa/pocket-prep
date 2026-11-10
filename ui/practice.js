@@ -6,6 +6,10 @@
 
 const PRACTICE = { open: false, el: null, binds: [], saved: "", pendingSave: null, applied: null };
 const PRACTICE_DEFAULT = { tempo: 1, semitones: 0 };
+// The four stems of the deck's file, plus guitar and piano when the RoFormer engine made them.
+const PRACTICE_STEMS = ["drums", "bass", "other", "vocals", "guitar", "piano"];
+const PRACTICE_LABEL = { drums: "Drums", bass: "Bass", other: "Melody", vocals: "Vocals", guitar: "Guitar", piano: "Piano" };
+const PRACTICE_COLOR = { guitar: "#e8a33d", piano: "#8fb8a0" };
 
 // What is saved per track: everything a musician sets while practicing, nothing about where the playhead is.
 function practiceSettings(s) {
@@ -14,7 +18,7 @@ function practiceSettings(s) {
     vocal: { formants: s.vocal_formants, tonality_limit: s.vocal_tonality_limit },
     click: { on: s.click.on, count_in: s.click.count_in, gain: Math.round(s.click.gain * 100) / 100, sound: s.click.sound, channels: s.click.channels },
     // Only real stems: the original mix, loaded as one track called "mix", has no mixer.
-    stems: Object.fromEntries(s.stems.filter((x) => STEM_ORDER.includes(x.name)).map((x) => [x.name, { gain: Math.round(x.gain * 100) / 100, pan: Math.round(x.pan * 100) / 100, mute: x.mute, pitch_lock: x.pitch_lock, offset_ms: Math.round(x.offset_ms) }])),
+    stems: Object.fromEntries(s.stems.filter((x) => PRACTICE_STEMS.includes(x.name)).map((x) => [x.name, { gain: Math.round(x.gain * 100) / 100, pan: Math.round(x.pan * 100) / 100, mute: x.mute, pitch_lock: x.pitch_lock, offset_ms: Math.round(x.offset_ms) }])),
   };
 }
 // Nothing to remember: the defaults (the saved value is then cleared).
@@ -31,7 +35,7 @@ async function applyPractice(t, whole = true) {
   PRACTICE.applied = t.id;
   if (whole) await player.set({ tempo: p?.tempo ?? PRACTICE_DEFAULT.tempo, semitones: p?.semitones ?? PRACTICE_DEFAULT.semitones,
                                 vocal: p?.vocal || { formants: false, tonality_limit: false }, click: p?.click || { on: false, count_in: false } });
-  if (player.snap?.stems_loaded) for (const [name, v] of Object.entries(p?.stems || {})) { if (STEM_ORDER.includes(name)) await player.stem(name, v).catch(() => {}); }
+  if (player.snap?.stems_loaded) for (const [name, v] of Object.entries(p?.stems || {})) { if (PRACTICE_STEMS.includes(name)) await player.stem(name, v).catch(() => {}); }
   PRACTICE.saved = JSON.stringify(practiceSettings(player.snap));
 }
 
@@ -115,9 +119,9 @@ function buildPractice() {
   // Stems
   let sec3;
   if (s?.stems_loaded && s.stems.length) {
-    const lbl = { drums: "Drums", bass: "Bass", other: "Melody", vocals: "Vocals" };
+    const lbl = PRACTICE_LABEL;
     sec3 = h("section", {}, h("h4", {}, "Stems"), ...s.stems.map((x) => {
-      const n = x.name, c = STEM_COLORS[n] || "var(--ink-2)";
+      const n = x.name, c = STEM_COLORS[n] || PRACTICE_COLOR[n] || "var(--ink-2)";
       const vol = bind(range(0, 150, 1, `${lbl[n] || n} volume`, (v) => player.stem(n, { gain: v / 100 })), (st) => Math.round(st.stems.find((q) => q.name === n)?.gain * 100));
       const pan = bind(range(-100, 100, 1, `${lbl[n] || n} pan`, (v) => player.stem(n, { pan: v / 100 })), (st) => Math.round(st.stems.find((q) => q.name === n)?.pan * 100));
       pan.addEventListener("dblclick", () => player.stem(n, { pan: 0 })); vol.addEventListener("dblclick", () => player.stem(n, { gain: 1 }));

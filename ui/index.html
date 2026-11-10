@@ -225,6 +225,14 @@
                 <label>Loudness target (LUFS) <input name="target_lufs" type="number" min="-20" max="-3" step="0.5" title="The export writes the gain (dB) that brings each track to this loudness; the deck can use it to level tracks"></label>
               </fieldset>
               <fieldset>
+                <legend>Stems</legend>
+                <label>Engine <select name="stems_engine" title="Which model separates a track into stems">
+                  <option value="demucs">htdemucs: fast, four stems, small</option>
+                  <option value="roformer">BS-RoFormer: GPU, six stems (folded to four for the deck)</option>
+                </select></label>
+                <div id="roformerRow" class="kv"></div>
+              </fieldset>
+              <fieldset>
                 <legend>DECK001</legend>
                 <label>Network address <input name="deck_address" spellcheck="false"></label>
               </fieldset>

@@ -1,0 +1,39 @@
+[package]
+name = "watershed-roformer"
+description = "BS-RoFormer on burn + wgpu, the native separation backend."
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+burn = { version = "=0.22.1", default-features = false, features = ["std", "wgpu"] }
+burn-cubecl = { version = "=0.22.1", default-features = false, features = ["std"] }
+cubek = { version = "=0.3.1", default-features = false, features = ["matmul", "matmul-multi-level", "stdlib"] }
+cubecl-environment = "=0.11.3"
+half = "2.7"
+pytorch-reader = "=0.22.1"
+safetensors = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+thiserror = "2"
+watershed-dsp = { path = "../dsp" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+burn = { version = "=0.22.1", default-features = false, features = ["std", "metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+burn = { version = "=0.22.1", default-features = false, features = ["std", "vulkan"] }
+
+[dev-dependencies]
+anyhow = "1"
+burn = { version = "=0.22.1", default-features = false, features = ["std", "flex"] }
+sha2 = "0.11"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

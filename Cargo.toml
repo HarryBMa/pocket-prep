@@ -36,6 +36,7 @@ claxon = "0.4"                                      # reading stem files back (p
 clubcraft-core = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
 clubcraft-audio = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
 clubcraft-analysis = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
+watershed-separation = { path = "vendor/watershed/crates/separation", optional = true }   # RoFormer stems engine (GPU), from Watershed
 watershed-audio = { path = "vendor/watershed/crates/audio" }   # the practice player's engine (Watershed, MIT OR Apache-2.0)
 clubcraft-stems = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
 
@@ -45,19 +46,24 @@ rekordcrate = { git = "https://github.com/Holzhaus/rekordcrate", rev = "68cd702e
 fallible-iterator = "0.3"
 binrw = "0.15"
 
+[features]
+default = ["roformer"]
+# The BS-RoFormer stems engine (burn + wgpu). Off: a leaner build with htdemucs only.
+roformer = ["dep:watershed-separation"]
+
 [dev-dependencies]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-# Lean installer: one codegen unit with fat LTO, symbols stripped, no unwinding tables.
-# (cargo test ignores `panic` for the test and bench profiles.)
+# Lean installer: one codegen unit with fat LTO, symbols stripped. Panics unwind (no `panic = "abort"`): the RoFormer
+# engine reports a GPU failure (no adapter, a buffer the device can't allocate) as a panic that its caller catches and
+# turns into a failed job; with abort the whole app would die with it.
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-panic = "abort"
 
 [profile.dev.package."*"]
 opt-level = 3                     # DSP and FFT code is far too slow unoptimised

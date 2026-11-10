@@ -1776,7 +1776,7 @@ async function pollJobs() {
   } else if (state.current && active.some((j) => j.track_id === state.current.id && j.kind === "stems")) {
     renderStemProgress();
   }
-  if (state.models?.stems_model?.job && $("#view-settings").classList.contains("active")) loadModels();
+  if ((state.models?.stems_model?.job || state.models?.roformer?.job) && $("#view-settings").classList.contains("active")) loadModels();
   lastActive = active.length;
   pollTimer = setTimeout(pollJobs, active.length ? 1000 : 4000);
 }
@@ -2091,6 +2091,16 @@ function renderSystem() {
     h("span", { class: player.engine ? "ok-text" : "muted" }, player.engine ? `Practice engine · ${player.deviceName}` : `Browser player${player.error ? ` (${player.error})` : ""}`),
     h("button", { class: "small", title: forced ? "Use the practice engine again (needs a reload)" : "Use the browser's player instead of the practice engine (needs a reload)",
       onclick: () => { try { forced ? localStorage.removeItem("player") : localStorage.setItem("player", "browser"); } catch {} location.reload(); } }, forced ? "Use the practice engine" : "Use the browser player"));
+  // The RoFormer engine (Watershed's model): optional, GPU, fetched once from its original source.
+  const rf = state.models?.roformer;
+  $("#roformerRow").replaceChildren(...[h("span", { class: "k" }, "RoFormer model"),
+    !rf ? h("span", {}, "…") : !rf.built ? h("span", { class: "muted" }, "Not in this build")
+      : rf.present ? h("span", { class: "ok-text" }, icon("check", "ic sm"), "Ready")
+      : rf.job ? h("span", { class: "muted" }, `Downloading ${Math.round(rf.job.progress * 100)}% · ${rf.job.message}`)
+      : h("span", { class: "row-btns" }, h("span", { class: "muted", title: "The model's author declares no licence, so it is downloaded from where it is published, checked, converted here and never bundled" }, `Not downloaded (${Math.round(rf.bytes / 1e6)} MB once, 350 MB kept)`),
+          h("button", { class: "small primary", onclick: () => api("/api/models/roformer", { body: {} }).then(() => { toast("Downloading the RoFormer model"); pollJobs(); loadModels(); }).catch(fail) }, "Download")),
+    rf && !rf.present && state.settings?.stems_engine === "roformer" ? h("span", { class: "muted" }, "Until it is here, stems are made with htdemucs.") : null,
+    h("span", { class: "muted" }, "Needs a GPU with Vulkan (Windows, Linux) or Metal (macOS). About 1 to 2 minutes for a song.")].filter(Boolean));
   $("#system").replaceChildren(h("span", { class: "k" }, "Application"), h("span", {}, `DKPRP ${s.version || ""}`),
     h("span", { class: "k" }, "Player"), playerRow,
     h("span", { class: "k" }, "Device"), h("span", {}, "DECK001"),

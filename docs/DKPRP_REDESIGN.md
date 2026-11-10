@@ -213,3 +213,8 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   last change, and restored when the track opens. The loop (L) is the engine's, so it is seamless at any tempo.
 - **Solo** (the dots and the lane labels) is now the engine's solo over the loaded stems: loading them takes a second
   or two the first time, and the mute you set stays.
+- **RoFormer engine** (Settings, Stems, Engine): Watershed's BS-RoFormer SW as a second separation engine, 6 stems.
+  The model is fetched on request from where its author publishes it (no licence declared, so we never bundle or host
+  it), checked, converted to f16 and kept (350 MB). Whole-track separations then use it; if the GPU can't run it the job
+  falls back to htdemucs and says so. The deck's stems file stays four stems (guitar and piano are added to "other"); the
+  practice mixer gets six when the track has them.

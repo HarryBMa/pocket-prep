@@ -379,13 +379,24 @@ pub fn build_song(track_id: i64, rate: u32, with_stems: bool) -> Result<(Song, b
     let t = db::track(track_id)?.ok_or_else(|| anyhow!("unknown track"))?;
     if with_stems && stems::has_stems(track_id) {
         let audio = stems::read_stems(track_id)?;
-        let tracks: Vec<(String, Vec<f32>)> = stems::STEM_NAMES.iter().enumerate().map(|(k, name)| {
-            let (l, r) = &audio[k];
+        let to_rate = |l: &Vec<f32>, r: &Vec<f32>| -> Vec<f32> {
             let (l, r) = if stems::RATE == rate { (l.clone(), r.clone()) } else {
                 (clubcraft_audio::resample::resample_channel(l, stems::RATE, rate), clubcraft_audio::resample::resample_channel(r, stems::RATE, rate))
             };
-            (name.to_string(), interleave(&l, &r))
-        }).collect();
+            interleave(&l, &r)
+        };
+        // Stems from the RoFormer engine come with other, guitar and piano kept apart: six tracks for the mixer, where the
+        // deck's file has them folded into "other".
+        let mut tracks: Vec<(String, Vec<f32>)> = vec![];
+        let extra = stems::read_extra(track_id).ok().flatten();
+        for (k, name) in stems::STEM_NAMES.iter().enumerate() {
+            let (l, r) = match (&extra, *name) { (Some(e), "other") => (&e[0].0, &e[0].1), _ => (&audio[k].0, &audio[k].1) };
+            tracks.push((name.to_string(), to_rate(l, r)));
+        }
+        if let Some(e) = &extra {
+            tracks.push(("guitar".to_string(), to_rate(&e[1].0, &e[1].1)));
+            tracks.push(("piano".to_string(), to_rate(&e[2].0, &e[2].1)));
+        }
         let song = Song::new(rate, tracks);
         // Drums keep their pitch when the song is transposed; the vocal stem goes on its own bus.
         for tr in &song.tracks {
