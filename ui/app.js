@@ -484,7 +484,9 @@ function renderTracks() {
                          class: (state.selected.has(t.id) ? "sel" : "") + (state.current?.id === t.id ? " playing" : "") },
       h("td", { class: "c-idx num" }, String(i + 1)),
       h("td", { class: "c-art" }, artCell(t)),
-      h("td", { class: "c-title", "data-edit": "title", title: t.path }, t.color ? h("span", { class: "swatch", style: `background:${COLORS[t.color]}`, title: COLOR_NAMES[t.color] }) : null, t.title || ""),
+      h("td", { class: "c-title", "data-edit": "title", title: t.path }, t.color ? h("span", { class: "swatch", style: `background:${COLORS[t.color]}`, title: COLOR_NAMES[t.color] }) : null, t.title || "",
+        // In the Needs-attention view each row says what is wrong, so nobody has to open the track to find out.
+        state.filter === "attention" && issues(t).length ? h("div", { class: "attn-list" }, issues(t).map((s) => h("div", {}, s))) : null),
       h("td", { class: "c-artist", "data-edit": "artist" }, t.artist || h("span", { class: "muted" }, "Unknown")),
       h("td", { class: "num" + (wasEdited(t, "bpm") ? " edited" : ""), "data-edit": "bpm" }, t.bpm ? fmtBpm(t.bpm) : h("span", { class: "muted" }, t.analysed_at ? "?" : "…")),
       h("td", { class: wasEdited(t, "key") ? "edited" : "", "data-edit": "key" }, t.camelot ? h("span", { class: "key", style: `color:${keyColor(t.shifted_camelot || t.camelot)}`,

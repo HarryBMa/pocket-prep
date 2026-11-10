@@ -659,3 +659,8 @@ input[type=range] { accent-color: var(--accent); padding: 0; border: 0; backgrou
 .winbtn.close:hover { background: #e81123; color: #fff; }
 .winbtn svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.2; }
 .winbtn rect { fill: none; }
+
+/* Needs-attention view: the reasons under each track's title. */
+.attn-list { font-size: 12px; color: var(--muted); margin-top: 2px; font-weight: 400; }
+.attn-list div { overflow-wrap: anywhere; }
+.attn-list div::before { content: "• "; color: var(--issue); }
