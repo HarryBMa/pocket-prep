@@ -1074,9 +1074,6 @@ function renderDetail() {
       h("span", { id: "gridReadout", "aria-live": "polite" }, fmtNudge(gridNow(t))),
       h("button", { "aria-label": "Later by 1 ms (], Shift for 10 ms)", title: "Later by 1 ms (], Shift+] for 10 ms)", onclick: (e) => gridNudge(e.shiftKey ? 10 : 1) }, "›"),
       h("button", { class: "tb small", "aria-label": "Move the bar start one beat later", title: "Downbeat +1", onclick: () => gridNudge(0, 1) }, "+1"),
-      h("button", { class: "tb small sig" + (wasEdited(t, "beats_per_bar") ? " edited" : ""), "aria-label": `Time signature ${bpb(t.grid)}/4: click to change`,
-        title: `${bpb(t.grid)} beats per bar${wasEdited(t, "beats_per_bar") ? " (set by you)" : " (analysed)"}. Click: 4 → 3 → 6 → back to the analysis`,
-        onclick: () => { const cur = bpb(t.grid), next = cur === 4 ? 3 : cur === 3 ? 6 : null; saveField("beats_per_bar", next); } }, `${bpb(t.grid)}/4`),
       h("button", { class: "tb small grid-ok", "aria-pressed": String(!!t.grid_ok_at), "aria-label": t.grid_ok_at ? "Beat grid confirmed: click to unconfirm" : "Confirm the beat grid by ear",
         title: t.grid_ok_at ? "Beat grid confirmed by you. Click to take that back" : "I listened: the grid is right", onclick: () => saveField("grid_ok_at", t.grid_ok_at ? null : Date.now() / 1000) }, icon("check", "ic sm")),
       h("button", { class: "tb small", "aria-label": "Back to the analysis grid", title: "Back to the analysis grid", onclick: gridReset }, icon("refresh", "ic sm")))
@@ -1115,7 +1112,16 @@ function renderDetail() {
       t.has_artwork ? h("img", { class: "tp-art", src: `/api/tracks/${t.id}/artwork`, alt: "" }) : h("div", { class: "tp-art", "aria-hidden": "true" }, icon("library")),
       h("div", { class: "tp-id" },
         h("div", { class: "tp-title", title: t.path }, t.title || ""),
-        h("div", { class: "tp-artist" }, t.artist || "Unknown artist")),
+        h("div", { class: "tp-artist" }, t.artist || "Unknown artist"),
+        // Time signature: a drop-down under the artist, not a control in the grid row.
+        t.grid ? (() => {
+          const sig = h("select", { class: "tp-sig" + (wasEdited(t, "beats_per_bar") ? " edited" : ""), "aria-label": "Time signature (beats per bar)",
+            title: wasEdited(t, "beats_per_bar") ? "Set by you. Choose Analysed to go back to the analysis" : "From the analysis. Change it here if the bar count is wrong" },
+            h("option", { value: "", selected: !wasEdited(t, "beats_per_bar") }, `Analysed (${bpb(t.grid)}/4)`),
+            [3, 4, 6].map((n) => h("option", { value: n, selected: wasEdited(t, "beats_per_bar") && bpb(t.grid) === n }, `${n}/4`)));
+          sig.addEventListener("change", () => saveField("beats_per_bar", sig.value === "" ? null : +sig.value));
+          return sig;
+        })() : null),
       h("div", { class: "tp-meta" },
         t.bpm ? h("b", { title: "BPM" }, fmtBpm(t.bpm)) : null, keyEl, moodPicker(t), energyBars(t.energy),
         intentPicker(t),

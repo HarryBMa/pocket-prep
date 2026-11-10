@@ -665,3 +665,5 @@ input[type=range] { accent-color: var(--accent); padding: 0; border: 0; backgrou
 .attn-list { font-size: 12px; color: var(--muted); margin-top: 2px; font-weight: 400; }
 .attn-list div { overflow-wrap: anywhere; }
 .attn-list div::before { content: "• "; color: var(--issue); }
+.tp-sig { margin-top: 4px; font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); }
+.tp-sig.edited { border-color: var(--accent); color: var(--accent-text); }
