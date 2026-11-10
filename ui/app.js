@@ -912,7 +912,8 @@ dz.addEventListener("drop", (e) => {
 });
 
 // ── Track preparation: player, waveform, cues, tags, stems ───────────────────
-const player = $("#player");
+// The practice engine in the server when an output device opens, else the page's own <audio> (player.js).
+const player = new PracticePlayer($("#player"));
 async function openTrack(id, play) {
   if (state.gridPending && state.gridPending.id !== id) await saveGrid().catch(fail);
   const t = await api(`/api/tracks/${id}`);
@@ -921,7 +922,7 @@ async function openTrack(id, play) {
   if (!same) {
     state.stemSolo = null; state.sel = null; state.loop = false;
     state.stemPeaks = null;
-    player.src = `/api/tracks/${id}/audio`;
+    player.open(id);
     state.wave = null;
     if (state.focus) buildWaves(); else destroyWaves();      // the waveforms are built when the track is opened full screen
     api(`/api/tracks/${id}/waveform`).then((w) => { if (state.current?.id === id) { state.wave = decodeWave(w); if (state.focus) buildWaves(); } }).catch(() => {});
@@ -1133,7 +1134,7 @@ function renderDetail() {
         h("button", { class: "tb small", "aria-label": "Save as a loop", title: "Save as a loop (a memory cue with an end: the card carries it as a loop)", onclick: saveLoop }, icon("plus", "ic sm")),
         h("button", { class: "tb small", "aria-label": "Make stems for this section only", title: `Make stems for this section only (${fmtMs(state.sel.start_ms)}–${fmtMs(state.sel.end_ms)}, with context; silence elsewhere)`, onclick: stemsForSel }, icon("deck", "ic sm")),
         h("button", { class: "tb small", "aria-label": "Clear the selection", title: "Clear (Esc)", onclick: () => setSel(null) }, icon("x", "ic sm"))) : null,
-      mixPill, gridPill, keyPill, stemsCtl,
+      mixPill, gridPill, keyPill, stemsCtl, practiceButton(),
       h("span", { class: "spacer" }),
       h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
         h("button", { "aria-label": "Zoom out", title: "Zoom out", onclick: () => zoomWave(0.5) }, "−"),
@@ -1278,13 +1279,17 @@ function snapSel(aMs, bMs) {
 function setSel(sel) {
   state.sel = sel;
   if (!sel) state.loop = false;
+  syncLoop();
   renderDetail();
 }
+// The engine loops the selection itself (seamless, at any tempo); the page's player loops it from timeupdate.
+function syncLoop() { if (player.engine) player.setLoop(state.loop && state.sel ? state.sel : null); }
 function toggleLoop() {
   if (!state.sel) return toast("Select a section first: drag on the waveform or click a chip");
   state.loop = !state.loop;
   if (state.loop && (player.currentTime * 1000 < state.sel.start_ms || player.currentTime * 1000 >= state.sel.end_ms)) player.currentTime = state.sel.start_ms / 1000;
   if (state.loop && player.paused) player.play().catch(() => {});
+  syncLoop();
   renderDetail();
 }
 // Suggested sections: the analysed sections, plus runs of phrases with no singing (instrumental) or with the
@@ -1467,10 +1472,8 @@ async function saveKeyShift() {
 function togglePlay() { player.paused ? player.play().catch(() => {}) : player.pause(); }
 function soloStem(name) {
   const t = state.current;
-  const pos = player.currentTime, playing = !player.paused;
   state.stemSolo = name;
-  player.src = name ? `/api/tracks/${t.id}/stem/${name}` : `/api/tracks/${t.id}/audio`;
-  player.addEventListener("loadedmetadata", () => { player.currentTime = pos; if (playing) player.play(); }, { once: true });
+  player.solo(t.id, name);
   const focused = document.activeElement === waveStack;
   renderDetail();
   markActiveLane();
@@ -1485,7 +1488,7 @@ player.addEventListener("play", setPlayIcon);
 player.addEventListener("pause", setPlayIcon);
 player.addEventListener("timeupdate", () => {
   if (!state.current) return;
-  if (state.loop && state.sel && player.currentTime * 1000 >= state.sel.end_ms - 30) player.currentTime = state.sel.start_ms / 1000;
+  if (!player.engine && state.loop && state.sel && player.currentTime * 1000 >= state.sel.end_ms - 30) player.currentTime = state.sel.start_ms / 1000;
   $("#timeLabel").textContent = fmtTime(player.currentTime);
   const wt = $("#waveTime"); if (wt) wt.textContent = waveTimeText();
   if (!state.seeking) $("#seek").value = player.currentTime;
@@ -2081,7 +2084,15 @@ function renderSystem() {
     : h("span", { class: "row-btns" }, h("span", { class: "muted" }, m.fetchable ? `Not downloaded (${m.bytes ? Math.round(m.bytes / 1e6) + " MB" : "174 MB"}, once)` : "Not found"),
         m.fetchable ? h("button", { class: "small primary", onclick: () => api("/api/models", { body: {} }).then(() => { toast("Downloading the stems model"); pollJobs(); loadModels(); }).catch(fail) }, "Download") : null,
         !m.fetchable ? h("span", { class: "muted" }, `Put htdemucs.onnx in ${m.dir || "the models folder"}`) : null);
+  // The practice engine plays through the server's own audio output (tempo, transpose, stems mixer, click); the browser
+  // player is the fallback when no output opens, or when chosen here.
+  const forced = (() => { try { return localStorage.getItem("player") === "browser"; } catch { return false; } })();
+  const playerRow = h("span", { class: "row-btns" },
+    h("span", { class: player.engine ? "ok-text" : "muted" }, player.engine ? `Practice engine · ${player.deviceName}` : `Browser player${player.error ? ` (${player.error})` : ""}`),
+    h("button", { class: "small", title: forced ? "Use the practice engine again (needs a reload)" : "Use the browser's player instead of the practice engine (needs a reload)",
+      onclick: () => { try { forced ? localStorage.removeItem("player") : localStorage.setItem("player", "browser"); } catch {} location.reload(); } }, forced ? "Use the practice engine" : "Use the browser player"));
   $("#system").replaceChildren(h("span", { class: "k" }, "Application"), h("span", {}, `DKPRP ${s.version || ""}`),
+    h("span", { class: "k" }, "Player"), playerRow,
     h("span", { class: "k" }, "Device"), h("span", {}, "DECK001"),
     h("span", { class: "k" }, "Stems model"), model,
     h("span", { class: "k" }, "Library and stems"), h("span", {}, s.data_dir || ""));

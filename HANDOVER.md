@@ -67,6 +67,12 @@ existing library carries over. Old MP3 stems are marked "not made" and need rema
 
 Stems speed: Windows DirectML ~10 s per 4:38 track (vendored ClubCraft fix, see
 vendor/clubcraft/README-VENDORED.md), Mac CoreML ~29 s, CPU fallback ~41 s (PC) / ~100 s (M-series).
+Practice player: the app plays through Watershed's engine (vendor/watershed, see its README-VENDORED.md) in the
+server process: `src/player.rs` (one thread owns the audio stream), `/api/player/*`, `ui/player.js` (an object that looks
+like an `<audio>` element, so WaveSurfer is unchanged) and `ui/practice.js` (the panel). When no output device opens the
+page's own `<audio>` is used. `POCKET_PREP_NULL_AUDIO=1` runs the engine with no sound card (tests, CI). Needs ALSA dev
+headers (`libasound2-dev`) and libclang to build on Linux. NOT verified with a real sound card or on Windows / macOS:
+the audio path is tested with the null driver only.
 Windows installer: was ~301 MB (215 MB offline WebView2 runtime + 174 MB model); 0.6 ships the 2 MB
 WebView2 bootstrapper and fetches the model on request, with fat LTO and stripped symbols (see
 docs/DECK001_PRODUCT_SPEC.md §6 for the plan and what each step saved).

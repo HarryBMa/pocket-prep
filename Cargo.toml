@@ -36,6 +36,7 @@ claxon = "0.4"                                      # reading stem files back (p
 clubcraft-core = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
 clubcraft-audio = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
 clubcraft-analysis = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
+watershed-audio = { path = "vendor/watershed/crates/audio" }   # the practice player's engine (Watershed, MIT OR Apache-2.0)
 clubcraft-stems = { git = "https://github.com/beneaze/ClubCraft", rev = "d654ccd8710bf132d4587479338290d51632bcfc" }
 
 # Independent rekordbox parser (MPL-2.0): reads the card back after an export (usb::validate) and checks

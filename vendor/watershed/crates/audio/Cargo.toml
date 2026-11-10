@@ -1,0 +1,21 @@
+[package]
+name = "watershed-audio"
+description = "Real-time playback engine: mixes stems in a single cpal callback."
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+cpal = "0.18"
+log = "0.4"
+rtrb = "0.4"
+signalsmith-stretch = "0.1"
+thiserror = "2"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

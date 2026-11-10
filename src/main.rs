@@ -20,6 +20,7 @@ mod jobs;
 mod library;
 mod meter;
 mod models;
+mod player;
 mod mood;
 mod quality;
 mod server;

@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 use crate::db::{self, Row};
 use crate::export::usb;
-use crate::{analysis, config, convert, deck, jobs, library, models, mood, sets, stems, transitions, vocals};
+use crate::{analysis, config, convert, deck, jobs, library, models, mood, player, sets, stems, transitions, vocals};
 
 pub static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -31,7 +31,7 @@ struct Ui;
 pub const TRACK_COLUMNS: &str = "id, path, title, artist, album, genre, year, duration, bpm, musical_key, camelot, energy, \
     rating, color, comment, stems, analysed_at, added_at, artwork IS NOT NULL AS has_artwork, grid_offset_ms, downbeat_shift, key_shift, \
     mood, mood_manual, mood_conf, edited, lufs, lead_s, tail_s, mix_in_ms, mix_out_ms, intent, grid_ok_at, \
-    stems_range, stem_quality, clip_pct, first_vocal_ms, bitrate, sample_rate, beats_per_bar, (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
+    stems_range, stem_quality, clip_pct, first_vocal_ms, bitrate, sample_rate, beats_per_bar, practice, (SELECT COUNT(*) FROM cues WHERE cues.track_id = tracks.id AND slot > 0) AS hot_cues";
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -365,6 +365,95 @@ async fn transitions_from(Json(b): Json<Value>) -> R {
     }).await
 }
 
+// ── The practice player (player.rs) ──────────────────────────────────────────
+
+/// The state of the player: what is loaded, where it is, the tempo, the mixer. Cheap: read from a snapshot.
+async fn player_state() -> R {
+    Ok(Json(json!(player::player().snapshot())))
+}
+
+/// Try to open the output device (the page asks once at start-up): `available` says whether the engine plays.
+async fn player_open() -> R {
+    blocking(|| { let _ = player::player().rate(); Ok(json!(player::player().snapshot())) }).await
+}
+
+async fn player_cmd(c: player::Command) -> R {
+    blocking(move || { player::player().command(c)?; Ok(json!(player::player().snapshot())) }).await
+}
+
+/// Load a track into the player: its original mix, or its four stems with `stems: true` (when it has them), from
+/// `position_ms`, playing when `play` is set. Decoding takes a second or two; the audio thread is not blocked.
+async fn player_load(Json(b): Json<Value>) -> R {
+    blocking(move || {
+        let id = b["track_id"].as_i64().ok_or_else(|| anyhow::anyhow!("track_id is required"))?;
+        let want_stems = b["stems"].as_bool().unwrap_or(false);
+        let position = b["position_ms"].as_f64().unwrap_or(0.0);
+        let p = player::player();
+        let rate = p.rate()?;
+        let (song, stems_loaded) = player::build_song(id, rate, want_stems)?;
+        let beats = player::beats_for(id, song.duration_secs(), rate);
+        let same = p.snapshot().track_id == Some(id);
+        p.load(id, song, beats, position, stems_loaded)?;
+        if !same { p.command(player::Command::Loop(None))?; }
+        if b["play"].as_bool().unwrap_or(false) { p.command(player::Command::Play)?; }
+        Ok(json!(p.snapshot()))
+    }).await
+}
+
+async fn player_seek(Json(b): Json<Value>) -> R {
+    player_cmd(player::Command::SeekMs(b["ms"].as_f64().unwrap_or(0.0))).await
+}
+
+/// Tempo (0.25-2), semitones (-24..24), master gain, loop ({start_ms, end_ms} or null), click, vocal shift.
+async fn player_set(Json(b): Json<Value>) -> R {
+    blocking(move || {
+        let p = player::player();
+        if let Some(v) = b["tempo"].as_f64() { p.command(player::Command::Tempo(v as f32))?; }
+        if let Some(v) = b["semitones"].as_f64() { p.command(player::Command::Semitones(v as f32))?; }
+        if let Some(v) = b["gain"].as_f64() { p.command(player::Command::Gain(v as f32))?; }
+        if let Some(l) = b.get("loop") {
+            let range = match (l["start_ms"].as_f64(), l["end_ms"].as_f64()) { (Some(a), Some(z)) if z > a => Some([a, z]), _ => None };
+            p.command(player::Command::Loop(range))?;
+        }
+        if let Some(c) = b.get("click") {
+            p.command(player::Command::Click { on: c["on"].as_bool(), count_in: c["count_in"].as_bool(), gain: c["gain"].as_f64().map(|g| g as f32),
+                                               sound: c["sound"].as_str().map(str::to_string), channels: c["channels"].as_str().map(str::to_string) })?;
+        }
+        if let Some(v) = b.get("vocal") {
+            p.command(player::Command::VocalShift { formants: v["formants"].as_bool().unwrap_or(false), tonality_limit: v["tonality_limit"].as_bool().unwrap_or(false) })?;
+        }
+        Ok(json!(p.snapshot()))
+    }).await
+}
+
+/// One stem of the mixer: gain (0-4), pan (-1..1), mute, solo, pitch_lock, offset_ms.
+async fn player_stem(Json(b): Json<Value>) -> R {
+    let name = b["name"].as_str().unwrap_or("").to_string();
+    player_cmd(player::Command::Stem { name, gain: b["gain"].as_f64().map(|v| v as f32), pan: b["pan"].as_f64().map(|v| v as f32), mute: b["mute"].as_bool(),
+                                      solo: b["solo"].as_bool(), pitch_lock: b["pitch_lock"].as_bool(), offset_ms: b["offset_ms"].as_f64() }).await
+}
+
+async fn player_devices() -> R {
+    blocking(|| Ok(json!({"devices": player::player().devices(), "current": player::player().snapshot().device}))).await
+}
+
+/// Choose the output device (`id` null = the system default). The loaded track is decoded again at the new device's
+/// rate and put back where it was.
+async fn player_device(Json(b): Json<Value>) -> R {
+    blocking(move || {
+        let p = player::player();
+        let before = p.snapshot();
+        let was = p.set_device(b["id"].as_str().map(str::to_string))?;
+        if let Some(id) = was {
+            let rate = p.rate()?;
+            let (song, stems_loaded) = player::build_song(id, rate, before.stems_loaded)?;
+            let beats = player::beats_for(id, song.duration_secs(), rate);
+            p.load(id, song, beats, before.position_ms, stems_loaded)?;
+        }
+        Ok(json!(p.snapshot()))
+    }).await
+}
+
 /// A playlist as a set: the order, the transition between each pair, energy curve, time and load (sets.rs).
 async fn set_report(P(pid): P<i64>) -> R {
     blocking(move || Ok(sets::report(pid)?)).await
@@ -617,6 +706,18 @@ pub fn router() -> Router {
         .route("/api/stems", post(make_stems))
         .route("/api/prepare", post(prepare))
         .route("/api/transitions", post(transitions_from))
+        .route("/api/player", get(player_state))
+        .route("/api/player/open", post(player_open))
+        .route("/api/player/load", post(player_load))
+        .route("/api/player/play", post(|| async { player_cmd(player::Command::Play).await }))
+        .route("/api/player/pause", post(|| async { player_cmd(player::Command::Pause).await }))
+        .route("/api/player/toggle", post(|| async { player_cmd(player::Command::Toggle).await }))
+        .route("/api/player/stop", post(|| async { player_cmd(player::Command::Stop).await }))
+        .route("/api/player/seek", post(player_seek))
+        .route("/api/player/set", post(player_set))
+        .route("/api/player/stem", post(player_stem))
+        .route("/api/player/devices", get(player_devices))
+        .route("/api/player/device", post(player_device))
         .route("/api/sets/{pid}", get(set_report))
         .route("/api/sets/{pid}/order", post(set_order))
         .route("/api/playlists", get(get_playlists).post(new_playlist))

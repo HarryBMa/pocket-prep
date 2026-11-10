@@ -207,6 +207,16 @@ POCKETDECK/sets/<id>.json carries the set. The rekordbox files don't change.
 
 Nothing needs a network at any point; the models ship with the app or are fetched once (below).
 
+### Practice player (0.8, from Watershed)
+
+The preview used to be the browser's `<audio>`: one file at a time, no tempo or key, loops from a timer. 0.8 plays through
+Watershed's engine (https://github.com/edarbieto/watershed, MIT OR Apache-2.0, vendored) so what a DJ does with a
+track before a gig is closer to what a musician does with a song: slow a hard passage down without changing its pitch,
+transpose a vocal, mute the drums and play over them, loop eight bars seamlessly, count in with a click on the track's
+grid. Per track, saved with it (`tracks.practice`). Transposing here is for listening only: the card still carries the
+deck's key shift and the file as it is. Not ported yet: the RoFormer separation (6 stems, GPU), dynamic tempo maps,
+tempo and meter changes, stem offsets beyond the number box, the egui UI (we have our own).
+
 ## 5. Priorities
 
 | P | Feature | Why now |

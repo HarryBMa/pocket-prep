@@ -198,3 +198,18 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   through re-analysis like an edited tempo). Bars, phrase snapping, downbeat lines, the nudge's +1, the planner's
   windows, the card's PQTZ beat numbers (1..N) and the hints' `beats_per_bar` all follow. ClubCraft's own sections
   and cues still assume 4/4, so on a 3/4 track they are approximate.
+
+## 0.8: the practice player (Watershed's engine)
+
+- **Engine**: `vendor/watershed/crates/audio` (the real-time engine of github.com/edarbieto/watershed) behind
+  `src/player.rs` and `/api/player/*`. One audio thread, the page polls its state every 80 ms and interpolates. Path:
+  stems -> mixer -> tempo and pitch (Signalsmith Stretch) -> master -> limiter -> click.
+- **One player object** (`ui/player.js`) looks like an `<audio>` element, so WaveSurfer, the preview bar, the loop
+  keys and the cue pads work as before. With no output device, or "Use the browser player" in Settings, it forwards to
+  the page's own `<audio>` and the practice button hides.
+- **Practice panel** (the sliders button in the tool row): tempo 25-200 % with the BPM it makes, transpose -12..+12,
+  click with count-in (sound, ears, volume) on the track's grid and time signature, stem mixer (volume, pan, mute,
+  solo, offset; drums keep their pitch; vocal keeps its formants), output device. Saved per track, 0.8 s after the
+  last change, and restored when the track opens. The loop (L) is the engine's, so it is seamless at any tempo.
+- **Solo** (the dots and the lane labels) is now the engine's solo over the loaded stems: loading them takes a second
+  or two the first time, and the mute you set stays.
