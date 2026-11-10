@@ -2210,12 +2210,17 @@ $("#settingsForm").addEventListener("submit", async (e) => {
   } catch (err) { fail(err); }
 });
 
+// The mouse's back button (button 3) leaves the open track, like the back arrow.
+addEventListener("mouseup", (e) => { if (e.button === 3 && state.focus) { e.preventDefault(); setFocus(false); } });
+addEventListener("auxclick", (e) => { if (e.button === 3 && state.focus) e.preventDefault(); });   // no browser history jump
+
 // ── Keyboard ─────────────────────────────────────────────────────────────────
 addEventListener("keydown", (e) => {
   const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
   if (!$("#modal").hidden) return;                   // the prompt handles its own keys
   if ((e.ctrlKey || e.metaKey) && e.key === "z" && !typing && state.lastUndo) { e.preventDefault(); doUndo(state.lastUndo); return; }
   if (e.altKey && e.key >= "1" && e.key <= "4") { e.preventDefault(); showView(["library", "export", "deck", "settings"][+e.key - 1]); return; }
+  if (e.key === "Backspace" && !typing && state.focus) { e.preventDefault(); if (state.sel) return setSel(null); return setFocus(false); }   // back from the open track
   if (e.key === "Escape" && !typing) {
     if (!$("#jobsPanel").hidden) return toggleJobs(false);
     if (!$("#playlistsBox").hidden) return setPlaylistsOpen(false);
