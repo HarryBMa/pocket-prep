@@ -667,3 +667,17 @@ input[type=range] { accent-color: var(--accent); padding: 0; border: 0; backgrou
 .attn-list div::before { content: "• "; color: var(--issue); }
 .tp-sig { margin-top: 4px; font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); }
 .tp-sig.edited { border-color: var(--accent); color: var(--accent-text); }
+
+/* Ready ring popover: each stage and its state. */
+.st { position: relative; display: inline-flex; outline-offset: 2px; }
+.st .ready-tip { display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 240px; max-width: 320px;
+  margin: 0; padding: 8px 10px; list-style: none; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.18); font-size: 12px; text-align: left; font-weight: 400; color: var(--ink-2); }
+.st:hover .ready-tip, .st:focus-visible .ready-tip, .st:focus-within .ready-tip { display: block; }
+.st .ready-tip li { padding: 2px 0 2px 16px; position: relative; }
+.st .ready-tip li::before { content: ""; position: absolute; left: 0; top: 7px; width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); }
+.st .ready-tip .rt-head { padding-left: 0; font-weight: 600; color: var(--ink); }
+.st .ready-tip .rt-head::before { display: none; }
+.st .ready-tip .rt-ok::before { background: var(--ok); }
+.st .ready-tip .rt-bad::before { background: var(--alert); }
+.st .ready-tip .rt-busy::before { background: var(--accent); }

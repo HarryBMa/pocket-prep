@@ -443,7 +443,10 @@ function readinessCell(t) {
     svg.append(p);
   }
   const label = ready ? `Ready (${intentOf(t)[1]})` : segs.filter((s) => s.state !== "ok" && s.state !== "na").map((s) => s.text).join(" · ") || "Ready";
-  return h("span", { class: "st", role: "img", "aria-label": label, title: `${intentOf(t)[1]}: ${label}` }, svg);
+  // A popover listing every stage with its state, shown on hover or focus (the ring is also a keyboard stop).
+  const tip = h("ul", { class: "ready-tip", role: "list", "aria-hidden": "true" }, h("li", { class: "rt-head" }, `${intentOf(t)[1]}: ${ready ? "ready" : "not ready yet"}`),
+    segs.filter((s) => s.state !== "na").map((s) => h("li", { class: "rt-" + s.state }, s.text)));
+  return h("span", { class: "st", tabindex: "0", role: "img", "aria-label": label }, svg, tip);
 }
 function moodPill(t) {
   const m = moodOf(t.mood);
