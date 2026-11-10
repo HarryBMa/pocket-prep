@@ -1511,6 +1511,11 @@ const WAVE_STYLES = {
   contour_frequency: { name: "Contour · frequency", bars: true,  palette: "rainbow" },
   frequency:         { name: "Frequency",           bars: false, palette: "frequency" },
   rainbow:           { name: "Rainbow",             bars: false, palette: "rainbow" },
+  // App-only looks (not on the deck): popular waveform designs, drawn from the same column data.
+  soundcloud:        { name: "SoundCloud · tall rounded bars", bars: false, mode: "soundcloud", colour: "#ff5500" },
+  rekordbox:         { name: "Rekordbox · thin bars on dark",  bars: false, mode: "rekordbox",  colour: "#00e5ff", bg: "#1a1a2e" },
+  alternating:       { name: "Alternating · round-capped lines", bars: false, mode: "alternating", colour: "#f0574c" },
+  squiggle:          { name: "Squiggle · zigzag with round caps", bars: false, mode: "squiggle",    colour: "#f0574c" },
 };
 let waveTheme = "coral_teal", waveStyle = "contour_frequency";
 try {
@@ -1519,7 +1524,7 @@ try {
 } catch {}
 function wavePalette() {
   const th = WAVE_THEMES[waveTheme], st = WAVE_STYLES[waveStyle];
-  return { bars: st.bars, solid: st.palette === "solid" ? th.solid : null, bands: st.palette === "solid" ? null : th[st.palette] };
+  return { bars: st.bars, mode: st.mode, colour: st.colour, bg: st.bg, solid: st.palette === "solid" ? th.solid : null, bands: st.palette === "solid" ? null : th[st.palette] };
 }
 // Stem rows: each stem in its own colour (the DECK001 cue colours), in the chosen style.
 const STEM_ORDER = ["drums", "bass", "other", "vocals"];
@@ -1555,6 +1560,7 @@ function wavePeaks(w) {
 function drawWave(idx, ctx, bands, pal) {
   const W = ctx.canvas.width, H = ctx.canvas.height, c = H / 2, n = idx?.length || 0;
   if (!n || !W || !bands?.[0]?.length) return;
+  if (pal.mode) return drawVariant(idx, ctx, bands, pal);
   const last = bands[0].length - 1, dpr = Math.max(1, Math.round(devicePixelRatio || 1));
   const pitch = pal.bars ? 5 * dpr : 1, bw = pal.bars ? 3 * dpr : 1, scale = pal.bars ? 0.9 : 1;
   const k = bands.length, colors = pal.solid ? [pal.solid] : pal.bands;
@@ -1574,6 +1580,86 @@ function drawWave(idx, ctx, bands, pal) {
   }
   if (pal.solid) { ctx.fillStyle = pal.solid; ctx.fill(paths[0][0]); return; }
   for (let rank = 0; rank < k; rank++) for (let band = 0; band < k; band++) { ctx.fillStyle = colors[band]; ctx.fill(paths[rank][band]); }
+}
+
+// The app-only looks ("soundcloud", "rekordbox", "alternating", "squiggle"). Same input as drawWave: `bands` is [bass, mids, highs],
+// each 0-1 per waveform column. Each canvas column takes the loudest value of every band in its span; the
+// level is the loudest of the three, and each look draws bars from that level in its own shape and colour.
+function roundedBar(p, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  p.moveTo(x + r, y); p.lineTo(x + w - r, y); p.arcTo(x + w, y, x + w, y + r, r);
+  p.lineTo(x + w, y + h - r); p.arcTo(x + w, y + h, x + w - r, y + h, r);
+  p.lineTo(x + r, y + h); p.arcTo(x, y + h, x, y + h - r, r);
+  p.lineTo(x, y + r); p.arcTo(x, y, x + r, y, r); p.closePath();
+}
+function drawVariant(idx, ctx, bands, pal) {
+  const W = ctx.canvas.width, H = ctx.canvas.height, c = H / 2, n = idx.length;
+  const dpr = Math.max(1, Math.round(devicePixelRatio || 1));
+  const last = bands[0].length - 1, k = bands.length, mode = pal.mode;
+  // Bar width and pitch in CSS pixels: SoundCloud 2 + 1 gap, Uniform 4 + 2, Rekordbox 1 + 1 gap.
+  const barW = (mode === "soundcloud" ? 2 : mode === "alternating" ? 2 : 1) * dpr;
+  const pitch = (mode === "soundcloud" ? 3 : mode === "alternating" ? 4 : mode === "squiggle" ? 1 : 2) * dpr;
+  const cols = [];
+  for (let x = 0; x < W; x += pitch) {
+    const a = Math.floor((x * n) / W), b = Math.max(a + 1, Math.floor((Math.min(W, x + pitch) * n) / W));
+    let lv = 0;
+    for (let j = a; j < b && j < n; j++) {
+      const i = Math.round(idx[j] * last);
+      for (let q = 0; q < k; q++) if (bands[q][i] > lv) lv = bands[q][i];
+    }
+    cols.push({ x, lv });
+  }
+  const sm = cols.map((col, i) => {
+    const l = cols[Math.max(0, i - 1)].lv, r = cols[Math.min(cols.length - 1, i + 1)].lv;
+    return (l + 2 * col.lv + r) / 4;
+  });
+  cols.forEach((col, i) => { col.lv = sm[i]; });
+  if (pal.bg) { ctx.fillStyle = pal.bg; ctx.fillRect(0, 0, W, H); }
+  const p = new Path2D();
+  if (mode === "soundcloud") {
+    // Rounded bars, mirrored about the centre line, height from the level.
+    const reach = H * 0.46;
+    for (const { x, lv } of cols) {
+      const h = Math.max(lv * reach, 1.5 * dpr);
+      roundedBar(p, x, c - h, barW, h * 2, barW / 2);   // fully rounded caps
+    }
+  } else if (mode === "rekordbox") {
+    // Thin flat bars, full height, rising from the bottom edge.
+    for (const { x, lv } of cols) {
+      const h = Math.max(lv * H * 0.92, 1 * dpr);
+      p.rect(x, H - h, barW, h);
+    }
+  }
+  if (mode === "squiggle") {
+    // The wavesurfer.js "custom render" example: pairs of bars 10 px apart, one down and one up, each ending in a
+    // semicircular cap, so the stroke reads as a squiggle. Each bar's length is the column level at that x.
+    const st = 10 * dpr, r = st / 2, reach = H * 0.46, p = new Path2D();
+    const at = (x) => cols[Math.min(cols.length - 1, Math.floor(x / dpr))].lv;
+    for (let x = 0; x + 2 * st <= W; x += 2 * st) {
+      for (const [xx, dir] of [[x, 1], [x + st, -1]]) {
+        const y = dir * Math.max(at(xx) * reach, 0.5 * dpr);
+        p.moveTo(xx, c); p.lineTo(xx, c + y);
+        p.arc(xx + r, c + y, r, Math.PI, 0, dir > 0);
+        p.lineTo(xx + st, c);
+      }
+    }
+    ctx.strokeStyle = pal.colour; ctx.lineWidth = 1.5 * dpr;
+    ctx.stroke(p);
+    return;
+  }
+  if (mode === "alternating") {
+    // Lines from the centre line, alternating up and down, each with a round cap (the article's style).
+    const q = new Path2D(), reach = H * 0.46;
+    cols.forEach(({ x, lv }, i) => {
+      const dir = i % 2 ? 1 : -1, len = Math.max(lv * reach, 1 * dpr);
+      q.moveTo(x, c); q.lineTo(x, c + dir * len);
+    });
+    ctx.strokeStyle = pal.colour; ctx.lineWidth = barW; ctx.lineCap = "round";
+    ctx.stroke(q);
+    return;
+  }
+  ctx.fillStyle = pal.colour;
+  ctx.fill(p);
 }
 
 function destroyWaves() {
