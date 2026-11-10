@@ -17,7 +17,17 @@ $release = 'target\release'
 if ($env:TAURI_ENV_TARGET_TRIPLE -and (Test-Path "target\$env:TAURI_ENV_TARGET_TRIPLE\release\DirectML.dll")) {
     $release = "target\$env:TAURI_ENV_TARGET_TRIPLE\release"
 }
-$dml = Get-Item "$release\DirectML.dll"
+$dml = Get-Item "$release\DirectML.dll" -ErrorAction SilentlyContinue
+if (-not $dml) {
+    # ort copies the DLLs next to the exe only in some layouts (a CI build with --target did not): look through the build
+    # tree, then ort's download cache, where the copy it links against always is.
+    $dml = Get-ChildItem 'target' -Recurse -Filter 'DirectML.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $dml -and $env:LOCALAPPDATA) {
+        $dml = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'ort.pyke.io') -Recurse -Filter 'DirectML.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if (-not $dml) { throw "DirectML.dll not found: not in $release, not under target\, not in ort's download cache" }
+    Write-Host "DirectML.dll not in $release; using $($dml.FullName)"
+}
 if ($dml.LinkType) { $dml = Get-Item $dml.Target }
 Copy-Item $dml.FullName (Join-Path $out 'DirectML.dll') -Force
 
