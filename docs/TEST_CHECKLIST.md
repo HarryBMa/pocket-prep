@@ -45,7 +45,7 @@ Ocean Drive were used for tests and may look odd. Anything marked *seeded* was p
 
 ## 5. The open track
 - [ ] **Waveforms** (Both): full mix on top, four stem lanes below. Hover a lane: its name appears top-right. Click a lane label: that stem is soloed.
-- [ ] **Cue pads** (Both): A to H. Click an empty pad: sets a cue at the playhead. Click a set pad: jumps. Keys `A`–`H`? (see the pad hints). **Pencil** edits, names and clears cues.
+- [ ] **Cue pads** (Both): A to H. Click an empty pad: sets a cue at the playhead. Click a set pad: jumps. Keys `1`–`8` do the same. **Pencil** edits, names and clears cues.
 - [ ] **Mix in / out** (Both): `I` and `O` set the points at the playhead (beat-snapped); the pill shows IN / OUT; the circular arrow goes back to the analysed points.
 - [ ] **Beat grid** (Both): the nudge pill moves the grid in 1 ms steps (`[` `]`; Shift for 10 ms); **+1** moves the bar start; ✓ confirms the grid; the circular arrow resets.
 - [ ] **Time signature** (Both): the `4/4` button in the grid pill cycles 4/4, 3/4, 6/4, back to the analysis. The downbeat lines and bar numbers follow. Rising Sun and Parallel Lines were detected as 3/4 (synthetic accents).
