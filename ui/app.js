@@ -1512,10 +1512,11 @@ const WAVE_STYLES = {
   frequency:         { name: "Frequency",           bars: false, palette: "frequency" },
   rainbow:           { name: "Rainbow",             bars: false, palette: "rainbow" },
   // App-only looks (not on the deck): popular waveform designs, drawn from the same column data.
-  soundcloud:        { name: "SoundCloud · tall rounded bars", bars: false, mode: "soundcloud", colour: "#ff5500" },
-  rekordbox:         { name: "Rekordbox · thin bars on dark",  bars: false, mode: "rekordbox",  colour: "#00e5ff", bg: "#1a1a2e" },
-  alternating:       { name: "Alternating · round-capped lines", bars: false, mode: "alternating", colour: "#f0574c" },
-  squiggle:          { name: "Squiggle · zigzag with round caps", bars: false, mode: "squiggle",    colour: "#f0574c" },
+  // Their colour is the chosen theme's solid colour, so they follow the waveform theme like the others.
+  soundcloud:        { name: "SoundCloud · tall rounded bars", bars: false, mode: "soundcloud" },
+  rekordbox:         { name: "Rekordbox · thin bars",          bars: false, mode: "rekordbox" },
+  alternating:       { name: "Alternating · round-capped lines", bars: false, mode: "alternating" },
+  squiggle:          { name: "Squiggle · zigzag with round caps", bars: false, mode: "squiggle" },
 };
 let waveTheme = "coral_teal", waveStyle = "contour_frequency";
 try {
@@ -1524,7 +1525,8 @@ try {
 } catch {}
 function wavePalette() {
   const th = WAVE_THEMES[waveTheme], st = WAVE_STYLES[waveStyle];
-  return { bars: st.bars, mode: st.mode, colour: st.colour, bg: st.bg, solid: st.palette === "solid" ? th.solid : null, bands: st.palette === "solid" ? null : th[st.palette] };
+  if (st.mode) return { bars: false, mode: st.mode, colour: th.solid, solid: th.solid, bands: th.rainbow };   // app-only looks: one theme colour
+  return { bars: st.bars, mode: null, solid: st.palette === "solid" ? th.solid : null, bands: st.palette === "solid" ? null : th[st.palette] };
 }
 // Stem rows: each stem in its own colour (the DECK001 cue colours), in the chosen style.
 const STEM_ORDER = ["drums", "bass", "other", "vocals"];
@@ -1614,7 +1616,6 @@ function drawVariant(idx, ctx, bands, pal) {
     return (l + 2 * col.lv + r) / 4;
   });
   cols.forEach((col, i) => { col.lv = sm[i]; });
-  if (pal.bg) { ctx.fillStyle = pal.bg; ctx.fillRect(0, 0, W, H); }
   const p = new Path2D();
   if (mode === "soundcloud") {
     // Rounded bars, mirrored about the centre line, height from the level.
@@ -1741,7 +1742,8 @@ function buildWaves() {
     const box = h("div", { class: "waves" });
     const label = h("span", { class: "wlabel", "data-lane": name, style: `color:${STEM_COLORS[name]}`, title: `${STEM_LABEL[name][0]}${STEM_LABEL[name].slice(1).toLowerCase()} (click to listen to it alone)`, onclick: () => soloStem(name) }, h("i"));
     waveStack.append(label, box);
-    const sp = { bars: pal.bars, solid: STEM_COLORS[name] };
+    // Stem lanes take the look too: the stem's own colour (the cue colours) in the chosen shape.
+    const sp = { bars: pal.bars, solid: STEM_COLORS[name], mode: pal.mode, colour: STEM_COLORS[name] };
     const reg = WaveSurfer.Regions.create();
     state.stemRegions.push(reg);
     const sws = WaveSurfer.create({ container: box, peaks: [positions(peaks.length)], ...base((ch, ctx) => drawWave(ch[0], ctx, [peaks], sp), 44), plugins: [reg, hoverPlugin()] });
