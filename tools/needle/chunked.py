@@ -105,13 +105,16 @@ def separate_filtered(predict, wav: torch.Tensor, cfg: NeedleConfig, overlap: in
     spec = spectrogram(wav[None], cfg)[0]                    # (C, F, T) complex
     c, f, t = spec.shape
     ext = pad_time(spec[None], cfg)[0]                       # (C, F, T + taps - 1)
-    stems = torch.zeros(cfg.sources, c, f, t, dtype=spec.dtype, device=spec.device)
-    for base, piece in chunked_pieces(predict, network_input(spec[None], cfg)[0], cfg.frames, overlap, batch):
+    stems = torch.zeros(cfg.sources, c, f, t, dtype=spec.dtype)            # on the CPU: a full song does not fit the GPU next to training
+    net_in = network_input(spec[None], cfg)[0].cpu()        # chunks and filter outputs stay on the CPU; torch_predictor moves each batch to the GPU and back
+    for base, piece in chunked_pieces(predict, net_in, cfg.frames, overlap, batch):
         n = min(piece.shape[-1], t - base)
         if n <= 0:
             break
-        stems[..., base:base + n] = apply_filters(piece[None, ..., :n], ext[None, ..., base:base + n + cfg.taps - 1], cfg)[0]
-    return torch.stack([istft(stems[s][None, None], cfg, wav.shape[-1])[0, 0].cpu() for s in range(cfg.sources)])
+        for a in range(0, n, 128):                           # 128 frames at a time on the GPU
+            e = min(n, a + 128)
+            stems[..., base + a:base + e] = apply_filters(piece[None, ..., a:e].to(ext.device), ext[None, ..., base + a:base + e + cfg.taps - 1], cfg)[0].cpu()
+    return torch.stack([istft(stems[s][None, None], cfg, wav.shape[-1])[0, 0] for s in range(cfg.sources)])
 
 
 @torch.no_grad()

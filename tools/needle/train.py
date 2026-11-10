@@ -153,11 +153,12 @@ def change_speed(stems, out_len, max_change, p, gen=None):
 def validate(model, tracks, cfg: NeedleConfig, overlap, device):
     """Separate every validation track with device-style chunking (float) and return the
     per-track SDR (tracks, sources). The mixture is the sum of the stems."""
-    predict = torch_predictor(model)
+    batch = 16 if cfg.taps else 64                               # deep filtering: 4x the outputs per chunk, keep validation small next to training
+    predict = torch_predictor(model, batch)
     scores = []
     for _, stems in tracks:
         ref = torch.from_numpy(np.array(stems)).float() / 32768             # reference stays on the CPU
-        est = separate_chunked(predict, ref.sum(0).to(device), cfg, overlap)
+        est = separate_chunked(predict, ref.sum(0).to(device), cfg, overlap, batch)
         scores.append(nsdr(ref, est))
     model.train()
     torch.cuda.empty_cache()                                      # give validation's memory back before training
