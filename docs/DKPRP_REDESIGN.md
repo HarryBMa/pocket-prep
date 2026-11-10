@@ -218,3 +218,6 @@ DKPRP is for preparing tracks, not for playing or mixing, so the Library became 
   it), checked, converted to f16 and kept (350 MB). Whole-track separations then use it; if the GPU can't run it the job
   falls back to htdemucs and says so. The deck's stems file stays four stems (guitar and piano are added to "other"); the
   practice mixer gets six when the track has them.
+- **Brand**: the wordmark "DKPRP" in Fugaz One sits beside the waveform mark in the top bar again (hidden under 1100 px, where the
+  mark stands alone). The practice panel follows the same language: Fugaz One for its title, uppercase Work Sans section heads,
+  Hot Coral for what is on, the app's greys and radii.
