@@ -267,8 +267,9 @@ main { grid-row: 2; min-height: 0; min-width: 0; }
 .view.active { display: flex; }
 
 /* ── Library ────────────────────────────────────────────────────────────── */
-.lib { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 10px 20px 0; }
-.lib-count { font-size: 12.5px; color: var(--ink-3); white-space: nowrap; margin-right: 6px; }
+.lib { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 10px 20px 0; position: relative; }
+/* An overlay at the bottom of the library, just above the player, so the filter glyphs never move. */
+.lib-count { position: absolute; left: 20px; bottom: 6px; z-index: 2; font-size: 12.5px; color: var(--ink-3); white-space: nowrap; pointer-events: none; background: var(--bg); padding: 2px 8px; border-radius: 6px; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; min-height: 40px; }
 .chips { display: flex; gap: 2px; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 3px; }
 .chips button { position: relative; width: 32px; height: 32px; padding: 0; border-radius: 50%; border: 0; background: transparent; color: var(--ink-3); justify-content: center; }

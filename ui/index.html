@@ -129,7 +129,6 @@
     <section id="view-library" class="view active" role="tabpanel" aria-label="Library">
       <div class="lib">
         <div class="toolbar">
-          <div id="statusLib" class="lib-count">Loading library…</div>
           <div class="chips" id="filters" role="group" aria-label="Filter">
             <button data-filter="all" aria-pressed="true" aria-label="All tracks" title="All tracks"><svg class="ic sm"><use href="#i-library"/></svg></button>
             <button data-filter="analysed" aria-pressed="false" aria-label="Analysed" title="Analysed"><svg class="ic sm"><use href="#i-check"/></svg></button>
@@ -138,6 +137,7 @@
             <button data-filter="mixes" aria-pressed="false" id="mixesChip" aria-label="Mixes with the selected track" title="What follows the selected track: tempo, key, energy, level and clashes scored, best first"><svg class="ic sm"><use href="#i-shuffle"/></svg></button>
             <button data-filter="attention" aria-pressed="false" class="attn" aria-label="Needs attention" title="Needs attention"><svg class="ic sm"><use href="#i-alert"/></svg><span id="attnCount" class="badge"></span></button>
           </div>
+          <div id="statusLib" class="lib-count">Loading library…</div>
           <div id="contextActions" class="context" aria-live="polite"></div>
           <span class="spacer"></span>
           <label class="sort"><span class="sr">Sort</span>
