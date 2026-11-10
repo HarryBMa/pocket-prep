@@ -103,7 +103,26 @@
       <button role="tab" class="tb" data-view="deck" aria-selected="false" aria-controls="view-deck" aria-label="Deck (Alt+3)" title="Deck (Alt+3)" tabindex="-1" hidden></button>
       <button role="tab" class="tb" data-view="settings" aria-selected="false" aria-controls="view-settings" aria-label="Settings (Alt+4)" title="Settings (Alt+4)" tabindex="-1"><svg class="ic"><use href="#i-settings"/></svg></button>
     </div>
+    <!-- Window controls, shown only inside the desktop app (the window has no OS title bar). -->
+    <div class="winctl" id="winctl" hidden>
+      <button type="button" id="win-min" class="winbtn" title="Minimise" aria-label="Minimise"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5h8" /></svg></button>
+      <button type="button" id="win-max" class="winbtn" title="Maximise" aria-label="Maximise"><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" /></svg></button>
+      <button type="button" id="win-close" class="winbtn close" title="Close" aria-label="Close"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg></button>
+    </div>
   </header>
+  <script>
+    // Desktop window controls. Tauri's invoke bridge exists only inside the app window, so this is a no-op in a browser.
+    (function () {
+      const invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+      if (!invoke) return;
+      const ctl = document.getElementById("winctl");
+      ctl.hidden = false;
+      const call = (cmd) => invoke(cmd).catch(() => {});
+      document.getElementById("win-min").addEventListener("click", () => call("plugin:window|minimize"));
+      document.getElementById("win-max").addEventListener("click", () => call("plugin:window|toggle_maximize"));
+      document.getElementById("win-close").addEventListener("click", () => call("plugin:window|close"));
+    })();
+  </script>
 
   <main>
     <!-- LIBRARY: the list, the export card beside it, and the open track over both -->

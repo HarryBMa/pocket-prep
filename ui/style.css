@@ -650,3 +650,12 @@ input[type=range] { accent-color: var(--accent); padding: 0; border: 0; backgrou
 .pr-stem .flag { padding: 0; width: 24px; height: 22px; font-size: 11px; font-weight: 700; }
 .practice .pr-stem .tb.flag[aria-pressed="true"] { background: var(--accent); color: #fff; border-radius: 4px; }
 .pr-off { width: 52px; font: inherit; font-size: 11px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 2px 3px; }
+
+/* Window controls in the top bar (desktop app only). The close button turns red on hover. */
+.winctl { display: flex; align-items: center; gap: 2px; margin-left: 6px; }
+.winctl[hidden] { display: none; }
+.winbtn { width: 34px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--ink-2, inherit); cursor: default; }
+.winbtn:hover { background: var(--chip-bg, rgba(127,127,127,.15)); }
+.winbtn.close:hover { background: #e81123; color: #fff; }
+.winbtn svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+.winbtn rect { fill: none; }
