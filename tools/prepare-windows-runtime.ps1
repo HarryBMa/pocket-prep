@@ -19,17 +19,33 @@ if ($env:TAURI_ENV_TARGET_TRIPLE -and (Test-Path "target\$env:TAURI_ENV_TARGET_T
 }
 $dml = Get-Item "$release\DirectML.dll" -ErrorAction SilentlyContinue
 if (-not $dml) {
-    # ort copies the DLLs next to the exe only in some layouts (a CI build with --target did not): look through the build
-    # tree, then ort's download cache, where the copy it links against always is.
+    # ort's rc.9 Windows build links DirectML statically-by-import and does not always leave a DLL behind (a CI build with
+    # --target did not: nothing under target\ or in ort's cache). Say what is there, then fetch Microsoft's redistributable.
+    Write-Host "DirectML.dll is not in $release. DLLs outside deps\ under target\:"
+    Get-ChildItem 'target' -Recurse -Filter '*.dll' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\deps\\' } |
+        Select-Object -First 30 -ExpandProperty FullName | ForEach-Object { Write-Host "  $_" }
     $dml = Get-ChildItem 'target' -Recurse -Filter 'DirectML.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $dml -and $env:LOCALAPPDATA) {
-        $dml = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'ort.pyke.io') -Recurse -Filter 'DirectML.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $dml) {
+        # The version ONNX Runtime 1.20's DirectML provider is built against (a guess from its documentation, not checked here).
+        $v = '1.15.4'
+        try {
+            $zip = Join-Path $env:TEMP "directml-$v.zip"
+            Invoke-WebRequest "https://www.nuget.org/api/v2/package/Microsoft.AI.DirectML/$v" -OutFile $zip -UseBasicParsing
+            Expand-Archive $zip (Join-Path $env:TEMP "directml-$v") -Force
+            $dml = Get-Item (Join-Path $env:TEMP "directml-$v\bin\x64-win\DirectML.dll")
+            Write-Host "Using DirectML $v from NuGet: $($dml.FullName)"
+        } catch { Write-Warning "Could not fetch DirectML $v from NuGet: $_" }
     }
-    if (-not $dml) { throw "DirectML.dll not found: not in $release, not under target\, not in ort's download cache" }
-    Write-Host "DirectML.dll not in $release; using $($dml.FullName)"
 }
-if ($dml.LinkType) { $dml = Get-Item $dml.Target }
-Copy-Item $dml.FullName (Join-Path $out 'DirectML.dll') -Force
+if ($dml) {
+    if ($dml.LinkType) { $dml = Get-Item $dml.Target }
+    Copy-Item $dml.FullName (Join-Path $out 'DirectML.dll') -Force
+} else {
+    # The installer is still made (windows-installer-hooks.nsh adds the file only if it is there); the app then uses the
+    # system's DirectML.dll, which may be too old for GPU stems, and says so when it falls back.
+    Write-Warning "No DirectML.dll: building the installer without it."
+    Remove-Item (Join-Path $out 'DirectML.dll') -ErrorAction SilentlyContinue
+}
 
 # Visual C++ runtime, from the newest Visual Studio / Build Tools install.
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
