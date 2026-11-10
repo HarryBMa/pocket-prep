@@ -1,0 +1,24 @@
+[package]
+name = "watershed-separation"
+description = "Source separation: the model catalog, downloads and the BS-RoFormer separator (no song or session code)."
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+log = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.11"
+thiserror = "2"
+toml = "1"
+watershed-dsp = { path = "../dsp" }
+watershed-roformer = { path = "../roformer" }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

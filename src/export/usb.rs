@@ -196,7 +196,7 @@ fn free_space(root: &Path) -> u64 {
 }
 
 /// The file that goes on the drive: the converted copy (src/convert.rs) when there is one, else the original.
-fn track_path(t: &Row) -> PathBuf {
+pub fn track_path(t: &Row) -> PathBuf {
     let original = PathBuf::from(t["path"].as_str().unwrap_or(""));
     crate::convert::deck_file(t["id"].as_i64().unwrap_or(0), &original)
 }

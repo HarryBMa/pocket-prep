@@ -207,6 +207,16 @@ POCKETDECK/sets/<id>.json carries the set. The rekordbox files don't change.
 
 Nothing needs a network at any point; the models ship with the app or are fetched once (below).
 
+### Practice player (0.8, from Watershed)
+
+The preview used to be the browser's `<audio>`: one file at a time, no tempo or key, loops from a timer. 0.8 plays through
+Watershed's engine (https://github.com/edarbieto/watershed, MIT OR Apache-2.0, vendored) so what a DJ does with a
+track before a gig is closer to what a musician does with a song: slow a hard passage down without changing its pitch,
+transpose a vocal, mute the drums and play over them, loop eight bars seamlessly, count in with a click on the track's
+grid. Per track, saved with it (`tracks.practice`). Transposing here is for listening only: the card still carries the
+deck's key shift and the file as it is. Ported too: the RoFormer separation (Settings, optional, GPU, 6 stems folded to the deck's four, guitar and piano kept apart for
+the mixer). Not ported: dynamic tempo maps, tempo and meter changes, the egui UI (we have our own).
+
 ## 5. Priorities
 
 | P | Feature | Why now |
@@ -241,7 +251,7 @@ the installer), the UI under 1 MB. Proposed, in order of effect:
    model. Stems and mood work offline after that. Trade-off: first run needs internet once, or the
    user copies `htdemucs.onnx` next to the app. Keep a "full" installer target for air-gapped
    machines (the current one, built on request).
-3. **Binary**: `[profile.release] lto = "fat", codegen-units = 1, strip = true, panic = "abort"`,
+3. **Binary**: `[profile.release] lto = "fat", codegen-units = 1, strip = true` (`panic = "abort"` was dropped in 0.8: the RoFormer engine reports GPU failures as panics that must be catchable),
    `opt-level = 3` kept for DSP. Expect −15-25 % of the binary.
 4. **ONNX Runtime**: one provider per platform (DirectML on Windows, CoreML on Mac, CPU on Linux);
    don't ship the CPU-only duplicate where the accelerated one exists.

@@ -1,0 +1,44 @@
+# Models Watershed can download, embedded in the binary.
+#
+# Each model is a PyTorch checkpoint that `crates/roformer` runs:
+# - id: stable identifier, never reused.
+# - file: the checkpoint's name in the models folder, while installing.
+# - size (bytes) and sha256: checked after every download.
+# - urls: mirrors, tried in order. Pin a commit, not a branch, so the file
+#   behind a URL never changes.
+# - stems: output order of the model; these become the stem file names.
+# - default: the model used for separations (exactly one).
+# - architecture: which model in `crates/roformer` runs it.
+# - config: the checkpoint's .yaml, downloaded with it.
+# - converted: the f16 safetensors file the checkpoint is converted to after
+#   downloading (half the size); the checkpoint is deleted then. The conversion
+#   gives the same bytes every time; `cargo run --release -p watershed-roformer
+#   --example convert` prints the size and sha256.
+
+[[model]]
+id = "bs-roformer-sw"
+name = "BS-RoFormer SW, 6 stems"
+file = "BS-Rofo-SW-Fixed.ckpt"
+size = 699412152
+sha256 = "24e7d35ee9c64415673d3fd33e06a67cac2c103c5df6267ba1576459c775916e"
+urls = [
+    "https://huggingface.co/FractalSurfer/BS-RoFormer-SW-6stem/resolve/2b98254b19bdab07ce225d884ec4aa9dd8aafce1/BS-Rofo-SW-Fixed.ckpt",
+]
+stems = ["bass", "drums", "other", "vocals", "guitar", "piano"]
+# The checkpoint declares no license: download on demand, never bundle it.
+license = "unknown"
+default = true
+architecture = "bs_roformer"
+
+[model.config]
+file = "BS-Rofo-SW-Fixed.yaml"
+size = 4613
+sha256 = "f9fada9f94e5ba2d2e4600196299459294bc5f532b314c209cc156ac63e4329b"
+urls = [
+    "https://huggingface.co/FractalSurfer/BS-RoFormer-SW-6stem/resolve/2b98254b19bdab07ce225d884ec4aa9dd8aafce1/BS-Rofo-SW-Fixed.yaml",
+]
+
+[model.converted]
+file = "BS-RoFormer-SW-6stem-f16.safetensors"
+size = 351666024
+sha256 = "eb6498d81353cbec0b999de1c5a09fc316b3a2e426819c6e75f720c6586e58ee"

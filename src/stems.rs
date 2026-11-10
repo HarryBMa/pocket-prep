@@ -14,7 +14,7 @@
 //! Encoding is flacenc (same crate ClubCraft uses); decoding here is claxon.
 
 use anyhow::{anyhow, Context, Result};
-use serde_json::json;
+use serde_json::{json, Value};
 use clubcraft_stems::{Quality, Separator};
 use flacenc::component::{BitRepr, MetadataBlockData};
 use flacenc::error::Verify;
@@ -40,6 +40,11 @@ static SEPARATOR: Mutex<Option<Separator>> = Mutex::new(None);
 
 pub fn stem_file(track_id: i64) -> PathBuf {
     config::stems_dir().join(format!("{track_id}.flac"))
+}
+
+/// Other, guitar and piano kept apart by the RoFormer engine (6 channels), for the practice player's mixer.
+pub fn extra_file(track_id: i64) -> PathBuf {
+    config::stems_dir().join(format!("{track_id}.extra.flac"))
 }
 
 /// Stems from Pocket Prep 0.2 (8-channel WAV, data at byte 4096), converted by migrate_wav_stems.
@@ -79,9 +84,10 @@ pub fn wav_header(channels: u16, rate: u32, data_bytes: u32) -> Vec<u8> {
 // ── FLAC stem files ──────────────────────────────────────────────────────────
 
 /// VORBIS_COMMENT block content naming the channel order.
-fn vorbis_comment() -> Vec<u8> {
+fn vorbis_comment(names: &str) -> Vec<u8> {
     let vendor = concat!("Pocket Prep ", env!("CARGO_PKG_VERSION"));
-    let tags = ["POCKETDECK_STEMS=drums,bass,other,vocals"];
+    let joined = format!("POCKETDECK_STEMS={names}");
+    let tags = [joined.as_str()];
     let mut b = Vec::new();
     b.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
     b.extend_from_slice(vendor.as_bytes());
@@ -96,11 +102,16 @@ fn vorbis_comment() -> Vec<u8> {
 /// Encode interleaved 16-bit samples (8 channels) as FLAC with fixed 4410-sample blocks
 /// and a SEEKTABLE point at every block. Atomic: temp file, then rename.
 fn write_flac(path: &Path, interleaved: &[i32]) -> Result<()> {
-    let frames = interleaved.len() / CHANNELS;
+    write_flac_n(path, interleaved, CHANNELS, "drums,bass,other,vocals")
+}
+
+/// The same for any channel count up to 8 (the extras file has six), with the stem names in a comment.
+fn write_flac_n(path: &Path, interleaved: &[i32], channels: usize, names: &str) -> Result<()> {
+    let frames = interleaved.len() / channels;
     let mut config = flacenc::config::Encoder::default();
     config.block_size = SEEK_FRAMES;
     let config = config.into_verified().map_err(|e| anyhow!("flac config: {e:?}"))?;
-    let source = flacenc::source::MemSource::from_samples(interleaved, CHANNELS, 16, RATE as usize);
+    let source = flacenc::source::MemSource::from_samples(interleaved, channels, 16, RATE as usize);
     let mut stream = flacenc::encode_with_fixed_block_size(&config, source, SEEK_FRAMES)
         .map_err(|e| anyhow!("flac encode: {e:?}"))?;
     // SEEKTABLE: one point per FLAC frame. Each point is 18 bytes, big-endian: first sample
@@ -116,7 +127,7 @@ fn write_flac(path: &Path, interleaved: &[i32]) -> Result<()> {
         n += 1;
     }
     stream.add_metadata_block(MetadataBlockData::new_unknown(3, &seek).map_err(|e| anyhow!("{e:?}"))?);
-    stream.add_metadata_block(MetadataBlockData::new_unknown(4, &vorbis_comment()).map_err(|e| anyhow!("{e:?}"))?);
+    stream.add_metadata_block(MetadataBlockData::new_unknown(4, &vorbis_comment(names)).map_err(|e| anyhow!("{e:?}"))?);
     let mut sink = flacenc::bitsink::ByteSink::new();
     stream.write(&mut sink).map_err(|e| anyhow!("flac write: {e:?}"))?;
     let mut bytes = sink.into_inner();
@@ -147,6 +158,33 @@ pub(crate) fn write_stems(path: &Path, stems: &StemAudio) -> Result<()> {
         }
     }
     write_flac(path, &pcm)
+}
+
+pub(crate) fn write_extra(path: &Path, extra: &crate::roformer::Extra) -> Result<()> {
+    let frames = extra[0].0.len();
+    let mut pcm = Vec::with_capacity(frames * 6);
+    for i in 0..frames {
+        for (l, r) in extra { for c in [l, r] { pcm.push((c[i] * 32767.0).round().clamp(-32768.0, 32767.0) as i32); } }
+    }
+    write_flac_n(path, &pcm, 6, "other,guitar,piano")
+}
+
+/// The extras of a track (other, guitar, piano), if the RoFormer engine made them.
+pub fn read_extra(track_id: i64) -> Result<Option<crate::roformer::Extra>> {
+    let path = extra_file(track_id);
+    if !path.exists() { return Ok(None); }
+    let mut r = claxon::FlacReader::open(&path).with_context(|| format!("opening {}", path.display()))?;
+    let info = r.streaminfo();
+    if info.channels != 6 || info.bits_per_sample != 16 || info.sample_rate != RATE {
+        return Err(anyhow!("{} isn't a 6-channel 16-bit 44.1 kHz file", path.display()));
+    }
+    let mut out: crate::roformer::Extra = Default::default();
+    let mut frame = [0i32; 6];
+    for (i, s) in r.samples().enumerate() {
+        frame[i % 6] = s.map_err(|e| anyhow!("decoding {}: {e}", path.display()))?;
+        if i % 6 == 5 { for (k, (l, rr)) in out.iter_mut().enumerate() { l.push(frame[2 * k] as f32 / 32768.0); rr.push(frame[2 * k + 1] as f32 / 32768.0); } }
+    }
+    Ok(Some(out))
 }
 
 /// Decode a stem file to interleaved 16-bit samples (8 channels).
@@ -274,32 +312,50 @@ pub fn padded_range(range_ms: (f64, f64), frames: usize, rate: u32) -> (usize, u
     (start, (b + pad).min(frames), a - start)
 }
 
+/// Run the chosen engine on `audio` (44.1 kHz stereo): RoFormer on the GPU when asked for and installed (falling back
+/// to htdemucs, with a note in the job, when it can't start), else htdemucs. Returns the deck's four stems and, from
+/// RoFormer, the three kept apart.
+fn run_engine(audio: &clubcraft_audio::AudioBuffer, roformer: bool, progress: &(dyn Fn(f64, &str) + Sync), cancel: &(dyn Fn() -> bool + Sync))
+              -> Result<(StemAudio, Option<crate::roformer::Extra>)> {
+    if roformer {
+        progress(0.03, "Loading RoFormer");
+        match crate::roformer::separate(audio, &|p| progress(0.05 + 0.9 * p as f64, "Separating (RoFormer, GPU)"), cancel) {
+            Ok(split) => return Ok((split.four, split.extra)),
+            Err(e) if cancel() => return Err(e),
+            Err(e) => progress(0.03, &format!("RoFormer unavailable ({e}); using htdemucs")),
+        }
+    }
+    let mut g = SEPARATOR.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        progress(0.03, "Loading Demucs");
+        *g = Some(Separator::with_models_dir(Quality::Fast, &clubcraft_core::paths::models_dir())?);
+    }
+    let sep = g.as_ref().unwrap();
+    let backend = sep.backend_name();
+    let mut report = |p: f32| { progress(0.05 + 0.9 * p as f64, &format!("Separating ({backend})")); !cancel() };
+    Ok((sep.separate(audio, &mut report)?.stems, None))
+}
+
 /// Separate a whole track, or only `range_ms` of it: the stems file keeps the whole track's length,
 /// with silence outside the range, so the deck reads it like any other (docs/STEMS_FORMAT.md). A range
 /// is separated with [`RANGE_PAD_S`] of context on each side.
-pub fn separate(track_id: i64, range_ms: Option<(f64, f64)>, progress: &dyn Fn(f64, &str), cancel: &dyn Fn() -> bool) -> Result<()> {
+pub fn separate(track_id: i64, range_ms: Option<(f64, f64)>, progress: &(dyn Fn(f64, &str) + Sync), cancel: &(dyn Fn() -> bool + Sync)) -> Result<()> {
     let t = db::track(track_id)?.ok_or_else(|| anyhow!("unknown track"))?;
     db::tx(|c| Ok(c.execute("UPDATE tracks SET stems='running' WHERE id=?", [track_id])?))?;
     let res = (|| -> Result<()> {
         progress(0.01, "Loading audio");
         // Demucs only works at 44.1 kHz; other rates are converted for it (the card keeps the original file).
         let audio = clubcraft_audio::decode_file(Path::new(t["path"].as_str().unwrap_or("")), RATE)?;
-        let mut g = SEPARATOR.lock().unwrap_or_else(|e| e.into_inner());
-        if g.is_none() {
-            progress(0.03, "Loading Demucs");
-            *g = Some(Separator::with_models_dir(Quality::Fast, &clubcraft_core::paths::models_dir())?);
-        }
-        let sep = g.as_ref().unwrap();
-        let backend = sep.backend_name();
-        let mut report = |p: f32| { progress(0.05 + 0.9 * p as f64, &format!("Separating ({backend})")); !cancel() };
+        let roformer = crate::config::load_settings().get("stems_engine").and_then(Value::as_str) == Some("roformer") && crate::roformer::installed();
+        let mut extra = None;
         let out: StemAudio = match range_ms {
-            None => sep.separate(&audio, &mut report)?.stems,
+            None => { let (o, e) = run_engine(&audio, roformer, progress, cancel)?; extra = e; o }
             Some(r) => {
                 let frames = audio.left.len();
                 let (s, e, off) = padded_range(r, frames, RATE);
                 if e <= s { anyhow::bail!("The range is empty"); }
                 let part = clubcraft_audio::AudioBuffer::new(RATE, audio.left[s..e].to_vec(), audio.right[s..e].to_vec());
-                let got = sep.separate(&part, &mut report)?.stems;
+                let (got, _) = run_engine(&part, roformer, progress, cancel)?;
                 // Place the range (without its context) into silence the length of the track.
                 let (ra, rb) = (s + off, (((r.1 / 1000.0) * RATE as f64).round() as usize).min(frames));
                 std::array::from_fn(|k| {
@@ -311,9 +367,12 @@ pub fn separate(track_id: i64, range_ms: Option<(f64, f64)>, progress: &dyn Fn(f
                 })
             }
         };
-        drop(g);
         progress(0.96, "Writing stems");
         write_stems(&stem_file(track_id), &out)?;
+        match &extra {
+            Some(e) => write_extra(&extra_file(track_id), e)?,
+            None => { let _ = std::fs::remove_file(extra_file(track_id)); }
+        }
         progress(0.98, "Checking the stems");
         let q = crate::quality::assess(&audio, &out, crate::quality::grid_for(track_id));
         db::tx(|c| Ok(c.execute("UPDATE tracks SET stem_quality=? WHERE id=?", rusqlite::params![q.to_string(), track_id])?))?;
@@ -333,6 +392,7 @@ pub fn separate(track_id: i64, range_ms: Option<(f64, f64)>, progress: &dyn Fn(f
 
 pub fn remove(track_id: i64) -> Result<()> {
     let _ = std::fs::remove_file(stem_file(track_id));
+    let _ = std::fs::remove_file(extra_file(track_id));
     for name in STEM_NAMES {
         let _ = std::fs::remove_file(preview_file(track_id, name));
     }

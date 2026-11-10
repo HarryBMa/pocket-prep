@@ -912,7 +912,8 @@ dz.addEventListener("drop", (e) => {
 });
 
 // ── Track preparation: player, waveform, cues, tags, stems ───────────────────
-const player = $("#player");
+// The practice engine in the server when an output device opens, else the page's own <audio> (player.js).
+const player = new PracticePlayer($("#player"));
 async function openTrack(id, play) {
   if (state.gridPending && state.gridPending.id !== id) await saveGrid().catch(fail);
   const t = await api(`/api/tracks/${id}`);
@@ -921,7 +922,7 @@ async function openTrack(id, play) {
   if (!same) {
     state.stemSolo = null; state.sel = null; state.loop = false;
     state.stemPeaks = null;
-    player.src = `/api/tracks/${id}/audio`;
+    player.open(id);
     state.wave = null;
     if (state.focus) buildWaves(); else destroyWaves();      // the waveforms are built when the track is opened full screen
     api(`/api/tracks/${id}/waveform`).then((w) => { if (state.current?.id === id) { state.wave = decodeWave(w); if (state.focus) buildWaves(); } }).catch(() => {});
@@ -1133,7 +1134,7 @@ function renderDetail() {
         h("button", { class: "tb small", "aria-label": "Save as a loop", title: "Save as a loop (a memory cue with an end: the card carries it as a loop)", onclick: saveLoop }, icon("plus", "ic sm")),
         h("button", { class: "tb small", "aria-label": "Make stems for this section only", title: `Make stems for this section only (${fmtMs(state.sel.start_ms)}–${fmtMs(state.sel.end_ms)}, with context; silence elsewhere)`, onclick: stemsForSel }, icon("deck", "ic sm")),
         h("button", { class: "tb small", "aria-label": "Clear the selection", title: "Clear (Esc)", onclick: () => setSel(null) }, icon("x", "ic sm"))) : null,
-      mixPill, gridPill, keyPill, stemsCtl,
+      mixPill, gridPill, keyPill, stemsCtl, practiceButton(),
       h("span", { class: "spacer" }),
       h("span", { class: "zoom", role: "group", "aria-label": "Waveform zoom" },
         h("button", { "aria-label": "Zoom out", title: "Zoom out", onclick: () => zoomWave(0.5) }, "−"),
@@ -1278,13 +1279,17 @@ function snapSel(aMs, bMs) {
 function setSel(sel) {
   state.sel = sel;
   if (!sel) state.loop = false;
+  syncLoop();
   renderDetail();
 }
+// The engine loops the selection itself (seamless, at any tempo); the page's player loops it from timeupdate.
+function syncLoop() { if (player.engine) player.setLoop(state.loop && state.sel ? state.sel : null); }
 function toggleLoop() {
   if (!state.sel) return toast("Select a section first: drag on the waveform or click a chip");
   state.loop = !state.loop;
   if (state.loop && (player.currentTime * 1000 < state.sel.start_ms || player.currentTime * 1000 >= state.sel.end_ms)) player.currentTime = state.sel.start_ms / 1000;
   if (state.loop && player.paused) player.play().catch(() => {});
+  syncLoop();
   renderDetail();
 }
 // Suggested sections: the analysed sections, plus runs of phrases with no singing (instrumental) or with the
@@ -1467,10 +1472,8 @@ async function saveKeyShift() {
 function togglePlay() { player.paused ? player.play().catch(() => {}) : player.pause(); }
 function soloStem(name) {
   const t = state.current;
-  const pos = player.currentTime, playing = !player.paused;
   state.stemSolo = name;
-  player.src = name ? `/api/tracks/${t.id}/stem/${name}` : `/api/tracks/${t.id}/audio`;
-  player.addEventListener("loadedmetadata", () => { player.currentTime = pos; if (playing) player.play(); }, { once: true });
+  player.solo(t.id, name);
   const focused = document.activeElement === waveStack;
   renderDetail();
   markActiveLane();
@@ -1485,7 +1488,7 @@ player.addEventListener("play", setPlayIcon);
 player.addEventListener("pause", setPlayIcon);
 player.addEventListener("timeupdate", () => {
   if (!state.current) return;
-  if (state.loop && state.sel && player.currentTime * 1000 >= state.sel.end_ms - 30) player.currentTime = state.sel.start_ms / 1000;
+  if (!player.engine && state.loop && state.sel && player.currentTime * 1000 >= state.sel.end_ms - 30) player.currentTime = state.sel.start_ms / 1000;
   $("#timeLabel").textContent = fmtTime(player.currentTime);
   const wt = $("#waveTime"); if (wt) wt.textContent = waveTimeText();
   if (!state.seeking) $("#seek").value = player.currentTime;
@@ -1508,6 +1511,12 @@ const WAVE_STYLES = {
   contour_frequency: { name: "Contour · frequency", bars: true,  palette: "rainbow" },
   frequency:         { name: "Frequency",           bars: false, palette: "frequency" },
   rainbow:           { name: "Rainbow",             bars: false, palette: "rainbow" },
+  // App-only looks (not on the deck): popular waveform designs, drawn from the same column data.
+  // Their colour is the chosen theme's solid colour, so they follow the waveform theme like the others.
+  soundcloud:        { name: "SoundCloud · tall rounded bars", bars: false, mode: "soundcloud" },
+  rekordbox:         { name: "Rekordbox · thin bars",          bars: false, mode: "rekordbox" },
+  alternating:       { name: "Alternating · round-capped lines", bars: false, mode: "alternating" },
+  squiggle:          { name: "Squiggle · zigzag with round caps", bars: false, mode: "squiggle" },
 };
 let waveTheme = "coral_teal", waveStyle = "contour_frequency";
 try {
@@ -1516,7 +1525,8 @@ try {
 } catch {}
 function wavePalette() {
   const th = WAVE_THEMES[waveTheme], st = WAVE_STYLES[waveStyle];
-  return { bars: st.bars, solid: st.palette === "solid" ? th.solid : null, bands: st.palette === "solid" ? null : th[st.palette] };
+  if (st.mode) return { bars: false, mode: st.mode, colour: th.solid, solid: th.solid, bands: th.rainbow };   // app-only looks: one theme colour
+  return { bars: st.bars, mode: null, solid: st.palette === "solid" ? th.solid : null, bands: st.palette === "solid" ? null : th[st.palette] };
 }
 // Stem rows: each stem in its own colour (the DECK001 cue colours), in the chosen style.
 const STEM_ORDER = ["drums", "bass", "other", "vocals"];
@@ -1552,6 +1562,7 @@ function wavePeaks(w) {
 function drawWave(idx, ctx, bands, pal) {
   const W = ctx.canvas.width, H = ctx.canvas.height, c = H / 2, n = idx?.length || 0;
   if (!n || !W || !bands?.[0]?.length) return;
+  if (pal.mode) return drawVariant(idx, ctx, bands, pal);
   const last = bands[0].length - 1, dpr = Math.max(1, Math.round(devicePixelRatio || 1));
   const pitch = pal.bars ? 5 * dpr : 1, bw = pal.bars ? 3 * dpr : 1, scale = pal.bars ? 0.9 : 1;
   const k = bands.length, colors = pal.solid ? [pal.solid] : pal.bands;
@@ -1571,6 +1582,85 @@ function drawWave(idx, ctx, bands, pal) {
   }
   if (pal.solid) { ctx.fillStyle = pal.solid; ctx.fill(paths[0][0]); return; }
   for (let rank = 0; rank < k; rank++) for (let band = 0; band < k; band++) { ctx.fillStyle = colors[band]; ctx.fill(paths[rank][band]); }
+}
+
+// The app-only looks ("soundcloud", "rekordbox", "alternating", "squiggle"). Same input as drawWave: `bands` is [bass, mids, highs],
+// each 0-1 per waveform column. Each canvas column takes the loudest value of every band in its span; the
+// level is the loudest of the three, and each look draws bars from that level in its own shape and colour.
+function roundedBar(p, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  p.moveTo(x + r, y); p.lineTo(x + w - r, y); p.arcTo(x + w, y, x + w, y + r, r);
+  p.lineTo(x + w, y + h - r); p.arcTo(x + w, y + h, x + w - r, y + h, r);
+  p.lineTo(x + r, y + h); p.arcTo(x, y + h, x, y + h - r, r);
+  p.lineTo(x, y + r); p.arcTo(x, y, x + r, y, r); p.closePath();
+}
+function drawVariant(idx, ctx, bands, pal) {
+  const W = ctx.canvas.width, H = ctx.canvas.height, c = H / 2, n = idx.length;
+  const dpr = Math.max(1, Math.round(devicePixelRatio || 1));
+  const last = bands[0].length - 1, k = bands.length, mode = pal.mode;
+  // Bar width and pitch in CSS pixels: SoundCloud 2 + 1 gap, Uniform 4 + 2, Rekordbox 1 + 1 gap.
+  const barW = (mode === "soundcloud" ? 2 : mode === "alternating" ? 2 : 1) * dpr;
+  const pitch = (mode === "soundcloud" ? 3 : mode === "alternating" ? 4 : mode === "squiggle" ? 1 : 2) * dpr;
+  const cols = [];
+  for (let x = 0; x < W; x += pitch) {
+    const a = Math.floor((x * n) / W), b = Math.max(a + 1, Math.floor((Math.min(W, x + pitch) * n) / W));
+    let lv = 0;
+    for (let j = a; j < b && j < n; j++) {
+      const i = Math.round(idx[j] * last);
+      for (let q = 0; q < k; q++) if (bands[q][i] > lv) lv = bands[q][i];
+    }
+    cols.push({ x, lv });
+  }
+  const sm = cols.map((col, i) => {
+    const l = cols[Math.max(0, i - 1)].lv, r = cols[Math.min(cols.length - 1, i + 1)].lv;
+    return (l + 2 * col.lv + r) / 4;
+  });
+  cols.forEach((col, i) => { col.lv = sm[i]; });
+  const p = new Path2D();
+  if (mode === "soundcloud") {
+    // Rounded bars, mirrored about the centre line, height from the level.
+    const reach = H * 0.46;
+    for (const { x, lv } of cols) {
+      const h = Math.max(lv * reach, 1.5 * dpr);
+      roundedBar(p, x, c - h, barW, h * 2, barW / 2);   // fully rounded caps
+    }
+  } else if (mode === "rekordbox") {
+    // Thin flat bars, full height, rising from the bottom edge.
+    for (const { x, lv } of cols) {
+      const h = Math.max(lv * H * 0.92, 1 * dpr);
+      p.rect(x, H - h, barW, h);
+    }
+  }
+  if (mode === "squiggle") {
+    // The wavesurfer.js "custom render" example: pairs of bars 10 px apart, one down and one up, each ending in a
+    // semicircular cap, so the stroke reads as a squiggle. Each bar's length is the column level at that x.
+    const st = 10 * dpr, r = st / 2, reach = H * 0.46, p = new Path2D();
+    const at = (x) => cols[Math.min(cols.length - 1, Math.floor(x / dpr))].lv;
+    for (let x = 0; x + 2 * st <= W; x += 2 * st) {
+      for (const [xx, dir] of [[x, 1], [x + st, -1]]) {
+        const y = dir * Math.max(at(xx) * reach, 0.5 * dpr);
+        p.moveTo(xx, c); p.lineTo(xx, c + y);
+        p.arc(xx + r, c + y, r, Math.PI, 0, dir > 0);
+        p.lineTo(xx + st, c);
+      }
+    }
+    ctx.strokeStyle = pal.colour; ctx.lineWidth = 1.5 * dpr;
+    ctx.stroke(p);
+    return;
+  }
+  if (mode === "alternating") {
+    // Lines from the centre line, alternating up and down, each with a round cap (the article's style).
+    const q = new Path2D(), reach = H * 0.46;
+    cols.forEach(({ x, lv }, i) => {
+      const dir = i % 2 ? 1 : -1, len = Math.max(lv * reach, 1 * dpr);
+      q.moveTo(x, c); q.lineTo(x, c + dir * len);
+    });
+    ctx.strokeStyle = pal.colour; ctx.lineWidth = barW; ctx.lineCap = "round";
+    ctx.stroke(q);
+    return;
+  }
+  ctx.fillStyle = pal.colour;
+  ctx.fill(p);
 }
 
 function destroyWaves() {
@@ -1652,7 +1742,8 @@ function buildWaves() {
     const box = h("div", { class: "waves" });
     const label = h("span", { class: "wlabel", "data-lane": name, style: `color:${STEM_COLORS[name]}`, title: `${STEM_LABEL[name][0]}${STEM_LABEL[name].slice(1).toLowerCase()} (click to listen to it alone)`, onclick: () => soloStem(name) }, h("i"));
     waveStack.append(label, box);
-    const sp = { bars: pal.bars, solid: STEM_COLORS[name] };
+    // Stem lanes take the look too: the stem's own colour (the cue colours) in the chosen shape.
+    const sp = { bars: pal.bars, solid: STEM_COLORS[name], mode: pal.mode, colour: STEM_COLORS[name] };
     const reg = WaveSurfer.Regions.create();
     state.stemRegions.push(reg);
     const sws = WaveSurfer.create({ container: box, peaks: [positions(peaks.length)], ...base((ch, ctx) => drawWave(ch[0], ctx, [peaks], sp), 44), plugins: [reg, hoverPlugin()] });
@@ -1773,7 +1864,7 @@ async function pollJobs() {
   } else if (state.current && active.some((j) => j.track_id === state.current.id && j.kind === "stems")) {
     renderStemProgress();
   }
-  if (state.models?.stems_model?.job && $("#view-settings").classList.contains("active")) loadModels();
+  if ((state.models?.stems_model?.job || state.models?.roformer?.job) && $("#view-settings").classList.contains("active")) loadModels();
   lastActive = active.length;
   pollTimer = setTimeout(pollJobs, active.length ? 1000 : 4000);
 }
@@ -2081,7 +2172,25 @@ function renderSystem() {
     : h("span", { class: "row-btns" }, h("span", { class: "muted" }, m.fetchable ? `Not downloaded (${m.bytes ? Math.round(m.bytes / 1e6) + " MB" : "174 MB"}, once)` : "Not found"),
         m.fetchable ? h("button", { class: "small primary", onclick: () => api("/api/models", { body: {} }).then(() => { toast("Downloading the stems model"); pollJobs(); loadModels(); }).catch(fail) }, "Download") : null,
         !m.fetchable ? h("span", { class: "muted" }, `Put htdemucs.onnx in ${m.dir || "the models folder"}`) : null);
+  // The practice engine plays through the server's own audio output (tempo, transpose, stems mixer, click); the browser
+  // player is the fallback when no output opens, or when chosen here.
+  const forced = (() => { try { return localStorage.getItem("player") === "browser"; } catch { return false; } })();
+  const playerRow = h("span", { class: "row-btns" },
+    h("span", { class: player.engine ? "ok-text" : "muted" }, player.engine ? `Practice engine · ${player.deviceName}` : `Browser player${player.error ? ` (${player.error})` : ""}`),
+    h("button", { class: "small", title: forced ? "Use the practice engine again (needs a reload)" : "Use the browser's player instead of the practice engine (needs a reload)",
+      onclick: () => { try { forced ? localStorage.removeItem("player") : localStorage.setItem("player", "browser"); } catch {} location.reload(); } }, forced ? "Use the practice engine" : "Use the browser player"));
+  // The RoFormer engine (Watershed's model): optional, GPU, fetched once from its original source.
+  const rf = state.models?.roformer;
+  $("#roformerRow").replaceChildren(...[h("span", { class: "k" }, "RoFormer model"),
+    !rf ? h("span", {}, "…") : !rf.built ? h("span", { class: "muted" }, "Not in this build")
+      : rf.present ? h("span", { class: "ok-text" }, icon("check", "ic sm"), "Ready")
+      : rf.job ? h("span", { class: "muted" }, `Downloading ${Math.round(rf.job.progress * 100)}% · ${rf.job.message}`)
+      : h("span", { class: "row-btns" }, h("span", { class: "muted", title: "The model's author declares no licence, so it is downloaded from where it is published, checked, converted here and never bundled" }, `Not downloaded (${Math.round(rf.bytes / 1e6)} MB once, 350 MB kept)`),
+          h("button", { class: "small primary", onclick: () => api("/api/models/roformer", { body: {} }).then(() => { toast("Downloading the RoFormer model"); pollJobs(); loadModels(); }).catch(fail) }, "Download")),
+    rf && !rf.present && state.settings?.stems_engine === "roformer" ? h("span", { class: "muted" }, "Until it is here, stems are made with htdemucs.") : null,
+    h("span", { class: "muted" }, "Needs a GPU with Vulkan (Windows, Linux) or Metal (macOS). About 1 to 2 minutes for a song.")].filter(Boolean));
   $("#system").replaceChildren(h("span", { class: "k" }, "Application"), h("span", {}, `DKPRP ${s.version || ""}`),
+    h("span", { class: "k" }, "Player"), playerRow,
     h("span", { class: "k" }, "Device"), h("span", {}, "DECK001"),
     h("span", { class: "k" }, "Stems model"), model,
     h("span", { class: "k" }, "Library and stems"), h("span", {}, s.data_dir || ""));

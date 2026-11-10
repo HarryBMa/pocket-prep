@@ -1,0 +1,17 @@
+[package]
+name = "watershed-dsp"
+description = "STFT, chunking and the stereo buffer of Watershed's dsp crate (the part the RoFormer model uses)."
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+realfft = "3.5"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

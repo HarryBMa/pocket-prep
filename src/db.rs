@@ -99,7 +99,9 @@ pub fn conn() -> MutexGuard<'static, Connection> {
                             // first_vocal_ms: where the singing starts (vocal map, needs stems); NULL = unknown or none.
                             ("first_vocal_ms", "REAL"),
                             // beats_per_bar: the time signature's beats (3 or 4 from the analysis, or the DJ's choice, 2-12).
-                            ("beats_per_bar", "INTEGER")] {
+                            ("beats_per_bar", "INTEGER"),
+                            // practice: JSON of what the DJ set in the practice panel (tempo, transpose, click, stem mixer); NULL = defaults.
+                            ("practice", "TEXT")] {
             let has: bool = c.prepare("SELECT 1 FROM pragma_table_info('tracks') WHERE name=?").unwrap()
                 .exists([col]).unwrap();
             if !has {
@@ -200,7 +202,7 @@ pub fn marks(n: usize) -> String {
 
 const TRACK_EDITABLE: &[&str] = &["title", "artist", "album", "genre", "comment", "year", "rating", "color", "bpm", "musical_key",
                                     "grid_offset_ms", "downbeat_shift", "key_shift", "mood", "mood_manual", "camelot", "energy", "edited",
-                                    "mix_in_ms", "mix_out_ms", "intent", "grid_ok_at", "beats_per_bar"];
+                                    "mix_in_ms", "mix_out_ms", "intent", "grid_ok_at", "beats_per_bar", "practice"];
 pub const INTENTS: &[&str] = &["mix", "vocal", "remix", "section", "backup"];
 
 /// The deck's key shift range, semitones either way (deck-stretch DS_MAX_SHIFT).

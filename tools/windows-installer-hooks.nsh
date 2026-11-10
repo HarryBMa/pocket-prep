@@ -8,7 +8,10 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   SetOutPath "$INSTDIR"
-  File "${PP_REDIST}\DirectML.dll"
+  ; Only if the build found one (tools/prepare-windows-runtime.ps1 warns when it did not).
+  !if /FileExists "${PP_REDIST}\DirectML.dll"
+    File "${PP_REDIST}\DirectML.dll"
+  !endif
   File "${PP_REDIST}\msvcp140.dll"
   File "${PP_REDIST}\msvcp140_1.dll"
   File "${PP_REDIST}\vcruntime140.dll"

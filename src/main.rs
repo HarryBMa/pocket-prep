@@ -20,8 +20,10 @@ mod jobs;
 mod library;
 mod meter;
 mod models;
+mod player;
 mod mood;
 mod quality;
+mod roformer;
 mod server;
 mod sets;
 mod stems;
@@ -89,6 +91,7 @@ fn main() {
                 .inner_size(1400.0, 880.0)
                 .min_inner_size(980.0, 640.0)
                 .disable_drag_drop_handler()                // keeps HTML drag and drop (tracks onto playlists)
+                .decorations(false)                         // no OS title bar or border: the app draws its own top bar
                 .build()?;
             Ok(())
         })

@@ -67,6 +67,21 @@ existing library carries over. Old MP3 stems are marked "not made" and need rema
 
 Stems speed: Windows DirectML ~10 s per 4:38 track (vendored ClubCraft fix, see
 vendor/clubcraft/README-VENDORED.md), Mac CoreML ~29 s, CPU fallback ~41 s (PC) / ~100 s (M-series).
+Practice player: the app plays through Watershed's engine (vendor/watershed, see its README-VENDORED.md) in the
+server process: `src/player.rs` (one thread owns the audio stream), `/api/player/*`, `ui/player.js` (an object that looks
+like an `<audio>` element, so WaveSurfer is unchanged) and `ui/practice.js` (the panel). When no output device opens the
+page's own `<audio>` is used. `POCKET_PREP_NULL_AUDIO=1` runs the engine with no sound card (tests, CI). Needs ALSA dev
+headers (`libasound2-dev`) and libclang to build on Linux. NOT verified with a real sound card or on Windows / macOS:
+the audio path is tested with the null driver only.
+RoFormer stems engine (optional, Settings -> Stems -> Engine): Watershed's BS-RoFormer SW on burn + wgpu
+(vendor/watershed `roformer` + `separation`), `src/roformer.rs`, cargo feature `roformer` (default on; `--no-default-features`
+drops it). 6 stems; the deck's file folds guitar and piano into "other" and `<id>.extra.flac` keeps other / guitar / piano apart
+for the practice mixer. Needs a GPU with Vulkan (Windows, Linux) or Metal (macOS); the 700 MB checkpoint (no licence declared,
+never bundled) is fetched from Hugging Face by Settings, hash-checked and converted to a 350 MB f16 file. Cost: the release
+binary is about 87 MB instead of 39 MB (burn + wgpu + unwinding, see Cargo.toml: `panic = "abort"` had to go because GPU
+failures arrive as panics). VERIFIED here: download, SHA-256, conversion, the tiny model through the Vulkan path (software
+device), fallback to htdemucs, the app surviving a GPU failure. NOT verified: a real separation. This machine's software
+Vulkan can't allocate the 139 MB buffers the real model needs, so it was never run on a real GPU or on Windows / macOS.
 Windows installer: was ~301 MB (215 MB offline WebView2 runtime + 174 MB model); 0.6 ships the 2 MB
 WebView2 bootstrapper and fetches the model on request, with fat LTO and stripped symbols (see
 docs/DECK001_PRODUCT_SPEC.md §6 for the plan and what each step saved).

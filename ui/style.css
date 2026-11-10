@@ -231,7 +231,9 @@ main { grid-row: 2; min-height: 0; min-width: 0; }
 .dot.corner:not(.ok):not(.busy):not(.bad) { display: none; }
 .ring { position: absolute; inset: 2px; width: 36px; height: 36px; fill: none; stroke-width: 2; }
 .ring-bg { stroke: var(--line); } .ring-fg { stroke: var(--accent); stroke-linecap: round; stroke-dasharray: 0 56.6; transition: stroke-dasharray .4s; }
-.brand { width: 44px; height: 40px; border-radius: 8px; }
+.brand { height: 40px; border-radius: 8px; width: auto; padding: 0 12px 0 10px; display: inline-flex; align-items: center; gap: 9px; }
+/* The wordmark: Fugaz One (the display face of DKPRP), tight against the mark. */
+.brand-word { font-family: var(--f-display); font-weight: 400; font-size: 21px; line-height: 1; letter-spacing: .045em; color: var(--ink); padding-top: 2px; }
 .brand-mark { width: 30px; height: 19px; fill: var(--accent); }
 .tabs { display: contents; }
 .search { flex: 0 1 340px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--surface); border-radius: 20px; padding: 0 12px 0 14px; color: var(--ink-3); height: 38px; margin-left: 6px; }
@@ -588,6 +590,7 @@ input[type=range] { accent-color: var(--accent); padding: 0; border: 0; backgrou
 /* ── Responsive: 1920, 1600, 1366 wide; smaller windows reflow ──────────── */
 @media (max-width: 1500px) { :root { --panel-w: 360px; } }
 @media (max-width: 1440px) { :root { --panel-w: 340px; } .c-lufs, td.lufs, th.c-lufs { display: none; } }
+@media (max-width: 1100px) { .brand-word { display: none; } .brand { padding: 0; width: 44px; justify-content: center; } }
 @media (max-width: 1280px) {
   :root { --panel-w: 320px; }
   .c-art, td.c-art, .c-idx, td.c-idx { display: none; }
@@ -623,3 +626,36 @@ input[type=range] { accent-color: var(--accent); padding: 0; border: 0; backgrou
 .pill-ctl.sel { border-color: var(--accent); background: var(--accent-soft); gap: 4px; padding: 0 4px 0 12px; }
 .pill-ctl.sel .sel-text { font-size: 12.5px; color: var(--ink); font-variant-numeric: tabular-nums; min-width: 0; padding-right: 4px; }
 .pill-ctl.sel .sel-text b { font-weight: 600; }
+
+/* Practice panel (practice.js): tempo, transpose, click, stem mixer, output. */
+.tb.lit { color: var(--accent-text); }
+.practice { position: absolute; right: 16px; bottom: calc(var(--bar-h) + 78px); z-index: 30; width: min(380px, calc(100vw - 32px)); max-height: calc(100vh - 220px); overflow: auto;
+  background: var(--panel); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow); padding: 10px 12px 12px; font-size: 12.5px; }
+.practice section { padding: 8px 0; border-top: 1px solid var(--line); }
+.practice section:first-of-type { border-top: 0; }
+.practice h4 { margin: 0 0 8px; font-size: 12px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-2); font-weight: 600; }
+.pr-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.pr-head b { font-family: var(--f-display); font-weight: 400; font-size: 18px; letter-spacing: .03em; }
+.pr-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; flex-wrap: wrap; }
+.pr-l { width: 58px; color: var(--ink-2); flex: none; }
+.pr-row:has(input[type=range]) { flex-wrap: nowrap; }
+.pr-row input[type=range], .pr-stem input[type=range] { flex: 1; min-width: 70px; accent-color: var(--accent); }
+.pr-out { min-width: 64px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+.pr-note { color: var(--ink-3); font-size: 11.5px; line-height: 1.4; margin-top: 4px; }
+.pr-chk { display: inline-flex; align-items: center; gap: 4px; color: var(--ink); }
+.pr-row select { font: inherit; background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 4px; padding: 3px 4px; max-width: 100%; }
+.pr-stem { display: grid; grid-template-columns: 10px 52px 24px 24px 1fr 1fr 52px; gap: 6px; align-items: center; margin: 5px 0; }
+.pr-stem i { width: 8px; height: 8px; border-radius: 50%; }
+.pr-stem .pr-sl { display: flex; } .pr-stem .pr-sl input { width: 100%; min-width: 0; }
+.pr-stem .flag { padding: 0; width: 24px; height: 22px; font-size: 11px; font-weight: 700; }
+.practice .pr-stem .tb.flag[aria-pressed="true"] { background: var(--accent); color: #fff; border-radius: 4px; }
+.pr-off { width: 52px; font: inherit; font-size: 11px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 2px 3px; }
+
+/* Window controls in the top bar (desktop app only). The close button turns red on hover. */
+.winctl { display: flex; align-items: center; gap: 2px; margin-left: 6px; }
+.winctl[hidden] { display: none; }
+.winbtn { width: 34px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--ink-2, inherit); cursor: default; }
+.winbtn:hover { background: var(--chip-bg, rgba(127,127,127,.15)); }
+.winbtn.close:hover { background: #e81123; color: #fff; }
+.winbtn svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+.winbtn rect { fill: none; }
