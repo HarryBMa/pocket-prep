@@ -200,7 +200,8 @@ def main():
     ap.add_argument("--teacher-share", type=float, default=0.5, help="fraction of stems drawn from teacher tracks")
     ap.add_argument("--teacher-seconds", type=int, default=0,
                     help="keep only the busiest N seconds of each teacher track (0 = whole tracks); saves RAM on long DJ tracks")
-    ap.add_argument("--cache", help="SSD folder for memory-mapped decoded audio (keeps RAM free; see data.cached)")
+    ap.add_argument("--cache", action="append", help="SSD folder for memory-mapped decoded audio (keeps RAM free; see "
+                    "data.cached). Repeatable: arrays are found in any of them, new ones are written to the last")
     ap.add_argument("--stems", action="append", default=[], help="import_stems.py folder of real stems (repeatable)")
     ap.add_argument("--stems-share", type=float, default=0.25, help="fraction of stems drawn from --stems tracks")
     ap.add_argument("--name", required=True)

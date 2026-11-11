@@ -77,7 +77,7 @@ def musdb_split(root):
 # program needs memory, cached pages are dropped and re-read, instead of an allocation failing.
 # With ~80 GB of data on a 128 GB PC that is the difference between a run finishing or not.
 
-MMAP_DIR = None          # set by train.py --cache; None keeps everything in process memory
+MMAP_DIR = None          # set by train.py --cache (a folder, or a list of folders); None keeps everything in process memory
 
 
 def cached(folder, tag, make):
@@ -85,7 +85,10 @@ def cached(folder, tag, make):
     if MMAP_DIR is None:
         return make()
     folder = Path(folder)
-    path = Path(MMAP_DIR) / f"{folder.parent.name}__{folder.name}{tag}.npy"
+    dirs = MMAP_DIR if isinstance(MMAP_DIR, (list, tuple)) else [MMAP_DIR]
+    name = f"{folder.parent.name}__{folder.name}{tag}.npy"
+    found = [Path(d) / name for d in dirs if (Path(d) / name).exists()]
+    path = found[0] if found else Path(dirs[-1]) / name          # new arrays go to the last folder
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.stem + ".tmp.npy")

@@ -75,6 +75,8 @@ def main():
     ap.add_argument("--limit", type=int)
     ap.add_argument("--shifts", type=int, default=2, help="htdemucs shifts (2 = better, 1 = about twice as fast)")
     ap.add_argument("--max-seconds", type=float, help="only the first N seconds of each track (for testing)")
+    ap.add_argument("--also-done", action="append", default=[], help="skip tracks already finished in this cache too (repeatable)")
+    ap.add_argument("--stop-after-hours", type=float, help="start no new track after this many hours")
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -87,12 +89,16 @@ def main():
         for d in sorted(Path(a.like).glob("*/done")):
             d = d.parent
             jobs.append((d.name, Path((d / "source.txt").read_text(encoding="utf-8").splitlines()[0])))
-    jobs = [(n, p) for n, p in jobs if not (out / n / "done").exists()]
+    jobs = [(n, p) for n, p in jobs if not any((Path(o) / n / "done").exists() for o in [out, *a.also_done])]
     jobs = jobs[:a.limit] if a.limit else jobs
     print(f"{len(jobs)} tracks to do -> {out}", flush=True)
     tmp = Path(tempfile.mkdtemp(prefix="teacher2_"))
     voc_sep, dem_sep = separator(VOCAL_MODEL, tmp, a.models), separator(DEMUCS_MODEL, tmp, a.models, a.shifts)
+    t_start = time.time()
     for i, (name, src) in enumerate(jobs):
+        if a.stop_after_hours and time.time() - t_start > a.stop_after_hours * 3600:
+            print(f"stopping after {a.stop_after_hours} h, {len(jobs) - i} tracks left", flush=True)
+            break
         t = time.time()
         try:
             mix = decode(src)
