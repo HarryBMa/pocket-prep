@@ -74,7 +74,7 @@ def check_alignment(cfg: NeedleConfig, device):
     assert err < 1e-4, f"STFT/iSTFT alignment is off: {err}"
 
 
-def compute_loss(model, stems, cfg: NeedleConfig, wave_weight, amp_dtype, spec_norm, mr_weight=0.0):
+def compute_loss(model, stems, cfg: NeedleConfig, wave_weight, amp_dtype, spec_norm, mr_weight=0.0, env_weight=0.0):
     """stems (B, S, C, L) float on the GPU. Returns (total, spectral L1, waveform L1).
     The crop holds cfg.frames STFT frames plus cfg.context on each side (deep filtering only):
     the network sees the middle ones, the filters use all of them, the loss judges the middle ones."""
@@ -108,7 +108,26 @@ def compute_loss(model, stems, cfg: NeedleConfig, wave_weight, amp_dtype, spec_n
     loss = spec_l1 + wave_weight * wave_l1
     if mr_weight:
         loss = loss + mr_weight * multires_loss(est_wav, tgt_wav)
+    if env_weight:
+        loss = loss + env_weight * drum_envelope_loss(est_wav, tgt_wav)
     return loss, spec_l1, wave_l1
+
+
+DRUMS = SOURCES.index("drums")
+
+
+def drum_envelope_loss(est, tgt, frame=512, hop=256, floor=1e-6, live=1e-5):
+    """Hit-envelope loss on the drum stem: the log energy of the separated drums in short frames
+    (11.6 ms) against the reference's, in bels, wherever the reference drums are audible (above
+    -50 dBFS). L1 on linear magnitudes hardly notices a quiet hit that is pulled 20 dB down (its
+    magnitudes were small to begin with); in log energy that is a large error. Targets the two things
+    the blind test heard: dropped hits and hit-to-hit level changes. Both directions count, so it also
+    penalises drums that come back too loud (bleed on top of a hit)."""
+    e = est[:, DRUMS].mean(1).unfold(-1, frame, hop).pow(2).mean(-1)      # (B, frames)
+    t = tgt[:, DRUMS].mean(1).unfold(-1, frame, hop).pow(2).mean(-1)
+    m = (t > live).float()
+    err = (torch.log10(e + floor) - torch.log10(t + floor)).abs()
+    return (err * m).sum() / m.sum().clamp(min=1.0)
 
 
 MR_WINDOWS = (2048, 1024, 512, 256)
@@ -207,6 +226,8 @@ def main():
     ap.add_argument("--amp", choices=["bf16", "fp16", "none"], default="bf16")
     ap.add_argument("--mr-weight", type=float, default=0.0,
                     help="weight of the multi-resolution complex STFT loss on the separated waveforms (0 = off)")
+    ap.add_argument("--env-weight", type=float, default=0.0,
+                    help="weight of the drum hit-envelope loss (log energy in 11.6-ms frames; 0 = off)")
     ap.add_argument("--p-speed", type=float, default=0.0, help="probability of speed/pitch augmentation (0 = off)")
     ap.add_argument("--speed-change", type=float, default=0.06, help="largest speed change, 0.06 = +-6 %%")
     ap.add_argument("--wave-weight", type=float, default=0.1)
@@ -324,7 +345,7 @@ def main():
         if a.p_speed:
             stems = change_speed(stems, crop, a.speed_change, a.p_speed)
         stems = augment(stems, a.gain_db, a.p_swap, a.p_flip)
-        loss, spec_l1, wave_l1 = compute_loss(model, stems, cfg, a.wave_weight, amp_dtype, spec_norm, a.mr_weight)
+        loss, spec_l1, wave_l1 = compute_loss(model, stems, cfg, a.wave_weight, amp_dtype, spec_norm, a.mr_weight, a.env_weight)
 
         opt.zero_grad(set_to_none=True)
         scaler.scale(loss).backward()
