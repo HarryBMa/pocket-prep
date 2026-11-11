@@ -89,8 +89,11 @@ def wiener_post(mix, est, iterations=1, n_fft=2048, hop=512, segment_s=60.0):
     out = np.zeros_like(est)
     win = torch.hann_window(n_fft)
     seg = int(segment_s * SAMPLE_RATE)
-    for a in range(0, n, seg):
-        b = min(n, a + seg)
+    starts = list(range(0, n, seg))
+    if len(starts) > 1 and n - starts[-1] < 4 * n_fft:            # a few-ms tail: fold it into the segment before
+        starts.pop()
+    for i, a in enumerate(starts):
+        b = starts[i + 1] if i + 1 < len(starts) else n
         x = torch.stft(torch.from_numpy(np.ascontiguousarray(mix[:, a:b])), n_fft, hop, window=win, return_complex=True)
         v = torch.stft(torch.from_numpy(np.ascontiguousarray(est[:, :, a:b]).reshape(s * c, -1)), n_fft, hop,
                        window=win, return_complex=True).abs().reshape(s, c, *x.shape[1:])
