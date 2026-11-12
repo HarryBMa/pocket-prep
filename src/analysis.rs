@@ -27,7 +27,7 @@ use crate::{config, db, stems};
 
 const COLS_PER_S: f64 = 150.0;
 /// Bump when results change; older analyses are redone at startup (3 = ClubCraft + phrase cues).
-pub const VERSION: i64 = 3;
+pub const VERSION: i64 = 4;
 
 pub fn load_analysis(track_id: i64) -> Option<Value> {
     let text = std::fs::read_to_string(config::analysis_dir().join(format!("{track_id}.json"))).ok()?;
@@ -244,9 +244,24 @@ pub fn analyse_audio(audio: &AudioBuffer, stems: Option<&StemsRef>, bpm_range: (
     let duration_ms = mono.len() as f64 / sr as f64 * 1000.0;
     let [peak, lo, mid, hi] = band_envelopes(&mono, sr);
 
-    // Grid: ClubCraft gives a tempo and its anchor downbeat. Ours is the first beat at or
-    // after 0 plus which beat (0-3) of the bar that is, as rekordbox's PQTZ counts.
-    let g = r.grid.unwrap_or(clubcraft_core::BeatGrid::new(120.0, 0.0));
+    // Grid: Pulse (the tracker the DECK001 firmware runs) on the mix, when it finds a steady grid. Otherwise
+    // ClubCraft's grid. Pulse's tempo is folded into the BPM range by halving or doubling, which keeps its bar
+    // line as the bar line. Ours is the first beat at or after 0 plus which beat (0-3) of the bar that is, as
+    // rekordbox's PQTZ counts.
+    let t_pulse = std::time::Instant::now();
+    let pulse = crate::pulse::analyse(&audio.left, &audio.right, sr, 0);
+    let pulse_ms = t_pulse.elapsed().as_secs_f64() * 1000.0;
+    let (g, grid_source) = match pulse {
+        Some(p) if p.bpm > 0.0 => {
+            let mut bpm = p.bpm;
+            while bpm < bpm_range.0 { bpm *= 2.0; }
+            while bpm > bpm_range.1 { bpm /= 2.0; }
+            (clubcraft_core::BeatGrid::new(bpm, p.first_downbeat_s), "pulse")
+        }
+        _ => (r.grid.unwrap_or(clubcraft_core::BeatGrid::new(120.0, 0.0)), "clubcraft"),
+    };
+    let pulse_diag = pulse.map(|p| json!({"bpm": p.bpm, "raw_bpm": p.raw_bpm, "on_grid": p.on_grid,
+        "bar_share": p.bar_share, "beat_peaks": p.beat_peaks, "ms": pulse_ms}));
     let beat = 60.0 / g.bpm;
     let n = (g.downbeat / beat).floor();
     let first = g.downbeat - n * beat;
@@ -268,6 +283,8 @@ pub fn analyse_audio(audio: &AudioBuffer, stems: Option<&StemsRef>, bpm_range: (
         // Auto cues: slot 1-4 = hot cue A-D.
         "auto_cues": auto_cues(&r.sections, &g).iter().map(|&(slot, t, label)| json!({
             "slot": slot, "start_ms": ms(t), "label": label})).collect::<Vec<_>>(),
+        "grid_source": grid_source,
+        "pulse": pulse_diag,
         "waveforms": waveforms(&peak, &lo, &mid, &hi),
     })
 }
