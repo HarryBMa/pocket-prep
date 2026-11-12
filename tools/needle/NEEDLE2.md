@@ -7,8 +7,8 @@ reach 7-9 dB all share three things Needle 1 lacks: a band-split frequency grid,
 at once, and a sequence model over time. Needle 2 (`needle2.py`, `NeedleConfig.arch = "bs"`) adds those, using only
 what the Ethos-U55 runs.
 
-No Needle 2 model has been trained yet. Everything below about speed and memory is measured with Vela 5.2.0 on random
-weights; nothing below is a quality result.
+No Needle 2 model has been trained to the end yet. Everything below about speed and memory is measured with Vela 5.2.0
+on random weights. The only quality evidence so far is the 1,000-step pre-flight comparison further down.
 
 ## What the NPU can run (Vela 5.2.0, RA8P1 configs of `export_vela.py`, arena in SDRAM)
 
@@ -101,6 +101,41 @@ int8 and scores it on MoisesDB. Log: `F:\needle\logs\queue_n2a.log` and `logs\n2
 What would count as success: clearly better than `b20_jam3_frontier_env` in the paired comparison on MoisesDB and on
 the house hold-out set, at an int8 loss under 0.2 dB. The blueprint's estimate for this class of model is 6-7.5 dB on
 MUSDB18-HQ against 4.5 dB today; that is an extrapolation from published models, not a promise.
+
+## Second run: `n2_b` = `n2_a` without the GRU (`queue_n2b.example.ps1`, live copy `F:\needle\queue_n2b.ps1`)
+
+`--rnn 0`, everything else and the number of steps as `n2_a`; starts when `queue_n2a` has finished. The GRU blocks are
+73 ms of the 250 ms per chunk (RTF 0.084 against 0.060 without them), so the deck needs to know what they buy. The
+queue prints the song-by-song difference `n2_a` minus `n2_b`.
+
+## Pre-flight checks (12 Nov 2026, late evening)
+
+Two 1,000-step runs with one small recipe (MUSDB only, the same amount of audio per step, the same schedule, the
+losses of the real runs), each sharing the GPU with the v16 training. Validation is the fast SDR on the 14 MUSDB
+validation tracks.
+
+| | Needle 1 (`b20`, frontier) | Needle 2 |
+|---|---|---|
+| after 500 steps | 1.08 dB | 2.06 dB |
+| after 1,000 steps | 1.49 dB (drums 2.94, bass 2.43, other -0.26, vocals 0.84) | 2.32 dB (4.27, 3.05, 0.56, 1.40) |
+| training speed | 6.4 steps/s at batch 8 x 1.5 s | 6.3 steps/s at batch 4 x 3 s |
+
+This shows that Needle 2 trains, and learns faster at the start. It does not show where it ends up.
+
+The 1,000-step Needle 2 model in int8 against float, on four MoisesDB test tracks: 2.86 dB average for both; drums
+-0.21, bass -0.08, other +0.20, vocals +0.11 dB. So the GRUs do not break in int8; whether the drums lose 0.2 dB
+in a fully trained model is checked on all 30 tracks by the queue.
+
+The first of these test runs ran out of GPU memory at its validation: a whole song's input features were built in
+one piece on the GPU. `chunked.separate_filtered` now builds them 2048 frames at a time (bit-identical stems).
+
+Two more checks before the night run:
+
+- The data really is v16's. A Needle 2 crop is 3.27 s with speed augmentation (1.64 s for Needle 1), and
+  `StemBank` drops every track that is not longer than one crop. No track is that short, so nothing is dropped:
+  545 real-stem tracks (16.7 h), 2,329 teacher excerpts (38.8 h), 86 MUSDB tracks (5.3 h), all already in the cache.
+- `test_needle2.py --speed 4` reports 6.3 steps/s on the shared GPU, the speed the 1,000-step run really had, with
+  1.6 GiB of GPU memory at batch 4. So the queue's speed probe picks a sensible number of steps.
 
 ## Open questions, in the order they should be answered
 
