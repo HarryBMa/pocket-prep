@@ -3494,6 +3494,7 @@ dependencies = [
  "base64 0.22.1",
  "binrw",
  "blake3",
+ "cc",
  "chrono",
  "claxon",
  "clubcraft-analysis",
