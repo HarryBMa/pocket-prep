@@ -195,7 +195,7 @@ def bar_fit(beats, down_logit, bars=8):
 def train(a):
     dev = "cuda"
     torch.cuda.set_per_process_memory_fraction(a.gpu_mem)
-    if a.init:
+    if a.init and a.init.lower() != "none":
         ck = torch.load(a.init, map_location="cpu", weights_only=False)
         model = Pulse(ck["width"], ck.get("levels", 5))
         model.load_state_dict(ck["model"])
@@ -290,7 +290,7 @@ def evaluate(a):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["prep", "train", "eval"])
-    ap.add_argument("--init", default=str(HERE / "runs_pulse" / "p1_w24" / "best.pt"), help="'' = train from scratch")
+    ap.add_argument("--init", default=str(HERE / "runs_pulse" / "p1_w24" / "best.pt"), help="none = train from scratch")
     ap.add_argument("--width", type=int, default=24, help="from scratch only")
     ap.add_argument("--levels", type=int, default=5, help="from scratch only; 6 = ~12 s context instead of ~6 s")
     ap.add_argument("--loops", default=r"F:\needle\beat_loops", help="synthetic loop tracks (pulse_loops.py)")
