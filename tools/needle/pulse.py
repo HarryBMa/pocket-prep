@@ -13,10 +13,15 @@ T = 512 frames (10.24 s) per chunk; the coarsest level sees about 6 s around eac
     python pulse.py mels  --teacher F:\needle\beat_teacher          precompute log-mels (once)
     python pulse.py train --teacher F:\needle\beat_teacher --name p1 [--width 32] [--steps 60000]
     python pulse.py eval  --teacher F:\needle\beat_teacher --checkpoint runs_pulse\p1\best.pt
+
+Device: cuda, then mps (Apple GPU), then cpu; --device or PULSE_DEVICE overrides (cpu while the PC's GPU is busy).
+Data: F:\needle on the PC. Elsewhere PULSE_DATA names the folder with the same layout (the Mac mini:
+~/train/data); the absolute Windows paths stored in index files are mapped to it, the files are not rewritten.
 """
 import argparse
 import json
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -29,6 +34,52 @@ import torch.nn.functional as F
 FPS = 50
 T_CHUNK = 512
 MELS = 128
+PC_DATA = "F:\\needle"
+DATA = Path(os.environ.get("PULSE_DATA", PC_DATA)).expanduser()
+
+
+def local_path(p) -> Path:
+    """A path as stored on the PC (F:\\needle\\...) -> where that file is on this machine (PULSE_DATA)."""
+    s = str(p)
+    if str(DATA) != PC_DATA and s[:len(PC_DATA) + 1].lower() == PC_DATA.lower() + "\\":
+        return DATA.joinpath(*s[len(PC_DATA) + 1:].split("\\"))
+    return Path(s).expanduser()
+
+
+def pick_device(want=None):
+    """cuda, then mps (Apple GPU), then cpu. `want` (--device) or PULSE_DEVICE overrides the choice."""
+    want = want or os.environ.get("PULSE_DEVICE")
+    if want:
+        return want
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def limit_gpu_memory(dev, fraction):
+    if dev == "cuda":                                                       # the only backend that has this call
+        torch.cuda.set_per_process_memory_fraction(fraction)
+
+
+def allow_open_files(n=16384):
+    """Every memory-mapped mel holds a file descriptor on macOS / Linux, and a Mac allows 256 by default:
+    raise the process's own limit as far as the system lets it. Windows has no such limit."""
+    try:
+        import resource
+    except ImportError:
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    for want in (n, 10240, 4096):                                           # 10240 = macOS's OPEN_MAX
+        want = want if hard == resource.RLIM_INFINITY else min(want, hard)
+        if soft >= want:
+            return
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+            return
+        except (ValueError, OSError):
+            continue
 
 
 # ── Network ──────────────────────────────────────────────────────────────────
@@ -76,13 +127,13 @@ def mel_path(teacher: Path, tid: str) -> Path:
     return teacher / "mels" / f"{tid}.npy"
 
 
-def make_mels(teacher: Path):
+def make_mels(teacher: Path, dev):
     """Log-mels with Beat This!'s own front end, float16 (128, T), next to the teacher labels."""
     import soundfile as sf
     import soxr
     from beat_this.preprocessing import LogMelSpect
     index = json.loads((teacher / "index.json").read_text())
-    spect = LogMelSpect(device="cuda")
+    spect = LogMelSpect(device=dev)
     (teacher / "mels").mkdir(exist_ok=True)
     t0 = time.time()
     for i, (tid, v) in enumerate(index.items()):
@@ -93,7 +144,7 @@ def make_mels(teacher: Path):
         if sr != 22050:
             x = soxr.resample(x, sr, 22050)
         with torch.inference_mode():
-            m = spect(torch.from_numpy(x).cuda()).T.half().cpu().numpy()  # (128, T)
+            m = spect(torch.from_numpy(x).to(dev)).T.half().cpu().numpy()  # (128, T)
         np.save(mel_path(teacher, tid), m)
         if i % 200 == 0:
             print(f"mels {i}/{len(index)} {time.time() - t0:.0f} s", flush=True)
@@ -103,15 +154,18 @@ class Tracks:
     def __init__(self, teacher: Path, split: str):
         index = json.loads((teacher / "index.json").read_text())
         hold = set((teacher / "holdout.txt").read_text(encoding="utf-8").split())
-        ids = [t for t, v in index.items() if "error" not in v and Path(v.get("mel", mel_path(teacher, t))).exists()]
+        # an index entry may point at its mel elsewhere ("mel", an absolute path on the PC): the ensemble teacher
+        # reuses round 1's mels
+        where = {t: local_path(v["mel"]) if "mel" in v else mel_path(teacher, t) for t, v in index.items() if "error" not in v}
+        ids = [t for t, p in where.items() if p.exists()]
         rng = random.Random(0)
         rest = sorted(t for t in ids if t not in hold)
         rng.shuffle(rest)
         n_val = 60
         self.ids = {"train": rest[n_val:], "val": rest[:n_val], "holdout": sorted(t for t in ids if t in hold)}[split]
         self.teacher = teacher
-        # an index entry may point at its mel elsewhere ("mel"): the ensemble teacher reuses round 1's mels
-        self.mels = {t: np.load(index[t].get("mel", mel_path(teacher, t)), mmap_mode="r") for t in self.ids}
+        allow_open_files()
+        self.mels = {t: np.load(where[t], mmap_mode="r") for t in self.ids}
         self.lab = {}
         for t in self.ids:
             z = np.load(teacher / f"{t}.npz")
@@ -218,12 +272,12 @@ def evaluate(model, data: Tracks, device):
 # ── Training ─────────────────────────────────────────────────────────────────
 
 def train(a):
-    teacher = Path(a.teacher)
-    dev = "cuda"
-    torch.cuda.set_per_process_memory_fraction(a.gpu_mem)
+    teacher = local_path(a.teacher)
+    dev = pick_device(a.device)
+    limit_gpu_memory(dev, a.gpu_mem)
     tr, va = Tracks(teacher, "train"), Tracks(teacher, "val")
     model = Pulse(a.width).to(dev)
-    print(f"Pulse width {a.width}: {count_params(model):,} parameters; {len(tr.ids)} train, {len(va.ids)} val tracks", flush=True)
+    print(f"Pulse width {a.width} on {dev}: {count_params(model):,} parameters; {len(tr.ids)} train, {len(va.ids)} val tracks", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, a.lr, total_steps=a.steps, pct_start=0.05)
     run = Path("runs_pulse") / a.name
@@ -259,13 +313,14 @@ def train(a):
 
 
 def evaluate_cli(a):
-    teacher = Path(a.teacher)
+    teacher = local_path(a.teacher)
+    dev = pick_device(a.device)
     ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
     model = Pulse(ck["width"], ck.get("levels", 5))
     model.load_state_dict(ck["model"])
-    model.to("cuda")
+    model.to(dev)
     ho = Tracks(teacher, "holdout")
-    fb, fd = evaluate(model, ho, "cuda")
+    fb, fd = evaluate(model, ho, dev)
     print(f"hold-out ({len(ho.ids)} tracks): beat F {fb:.4f}, downbeat F {fd:.4f} vs Beat This! final0; "
           f"{count_params(model):,} parameters")
 
@@ -273,14 +328,16 @@ def evaluate_cli(a):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["mels", "train", "eval"])
-    ap.add_argument("--teacher", default=r"F:\needle\beat_teacher")
+    ap.add_argument("--teacher", default=str(DATA / "beat_teacher"))
     ap.add_argument("--name", default="p1")
     ap.add_argument("--width", type=int, default=32)
     ap.add_argument("--steps", type=int, default=60000)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--val-every", type=int, default=5000)
-    ap.add_argument("--gpu-mem", type=float, default=0.3)
+    ap.add_argument("--gpu-mem", type=float, default=0.3, help="cuda only")
+    ap.add_argument("--device", help="cuda, mps or cpu (default: the first of those that is there)")
     ap.add_argument("--checkpoint")
     a = ap.parse_args()
-    {"mels": lambda: make_mels(Path(a.teacher)), "train": lambda: train(a), "eval": lambda: evaluate_cli(a)}[a.cmd]()
+    {"mels": lambda: make_mels(local_path(a.teacher), pick_device(a.device)), "train": lambda: train(a),
+     "eval": lambda: evaluate_cli(a)}[a.cmd]()

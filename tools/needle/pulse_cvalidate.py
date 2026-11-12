@@ -23,19 +23,20 @@ import torch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from pulse import Pulse, predict_track            # noqa: E402
+from pulse import DATA, Pulse, pick_device, predict_track   # noqa: E402
 from pulse_grid import fit_grid                   # noqa: E402
 from pulse_rave import RAVE, Rave, bar_fit        # noqa: E402
 from pulse_vs_fw import firmware, human_line      # noqa: E402
 
-CLI = Path(r"F:\needle\pulse_c\pulse_cli.exe")
-TMP = Path(r"F:\needle\pulse_c\_tmp.f32")
+CLI = DATA / "pulse_c" / "pulse_cli.exe"
+TMP = DATA / "pulse_c" / "_tmp.f32"
+DEV = pick_device()                                 # PULSE_DEVICE=cpu while the PC's GPU is busy
 
 
 def py_anchor(net, mel):
     """Python reference of what pulse_beat.cpp returns: grid + majority bar position, anchor moved to the start."""
     with torch.inference_mode():
-        y = predict_track(net, mel, "cuda")
+        y = predict_track(net, mel, DEV)
     grid, bpm, steady = fit_grid(y[0], mel.shape[1])
     if not steady or len(grid) < 8:
         return bpm, None
@@ -68,7 +69,7 @@ def main():
     ck = torch.load(run / ("best.pt" if (run / "best.pt").exists() else "last.pt"), map_location="cpu", weights_only=False)
     net = Pulse(ck["width"], ck.get("levels", 5))
     net.load_state_dict(ck["model"])
-    net = net.cuda().eval()
+    net = net.to(DEV).eval()
     index = json.loads((RAVE / "index.json").read_text())
     te = Rave("test")
     rows, times, audio_s = [], [], 0.0

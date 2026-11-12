@@ -23,7 +23,7 @@ import torch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from pulse import Pulse, f_measure, predict_track      # noqa: E402
+from pulse import Pulse, f_measure, pick_device, predict_track      # noqa: E402
 from pulse_grid import fit_grid                        # noqa: E402
 from pulse_rave import RAVE, Rave                      # noqa: E402
 
@@ -68,7 +68,8 @@ def main():
     ck = torch.load(run / ("best.pt" if (run / "best.pt").exists() else "last.pt"), map_location="cpu", weights_only=False)
     net = Pulse(ck["width"], ck.get("levels", 5))
     net.load_state_dict(ck["model"])
-    net = net.cuda().eval()
+    dev = pick_device()
+    net = net.to(dev).eval()
     index = json.loads((RAVE / "index.json").read_text())
     te = Rave("test")
     rows = []
@@ -78,7 +79,7 @@ def main():
         steady = jit < 15
         mel = np.asarray(te.mels[t], dtype=np.float32)
         with torch.inference_mode():
-            y = predict_track(net, mel, "cuda")
+            y = predict_track(net, mel, dev)
         grid, pbpm, _ = fit_grid(y[0], mel.shape[1])
         r = {"id": t, "steady": steady, "human_bpm": hb}
         r["pulse"] = metrics(pbpm, grid[0] if len(grid) else 0.0, grid, b, hb, hphase) if pbpm > 0 else {"tempo_right": False, "beat_F": 0.0}

@@ -16,8 +16,10 @@ bar line, but a real bar shift (a 2-beat fill, a 3/4 break) still shows up withi
 """
 import argparse
 import json
+import queue
 import random
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -28,11 +30,13 @@ import torch.nn.functional as F
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from pulse import FPS, T_CHUNK, Pulse, Tracks, count_params, f_measure, peaks, predict_track   # noqa: E402
-from pulse_raveform import AUDIO, load_annotations, match, tempo_ok               # noqa: E402
+from pulse import (DATA, FPS, T_CHUNK, Pulse, Tracks, allow_open_files, count_params, f_measure,   # noqa: E402
+                   limit_gpu_memory, local_path, peaks, pick_device, predict_track)
 
-RAVE = Path(r"F:\needle\beat_rave")
-TEACHER = Path(r"F:\needle\beat_teacher")
+# pulse_raveform (audio matching: soundfile, soxr) is imported only where prep / eval need it, so training
+# runs on a machine with nothing but torch and numpy (the Mac mini).
+RAVE = DATA / "beat_rave"
+TEACHER = DATA / "beat_teacher"
 N_TEST = 200
 
 
@@ -46,7 +50,7 @@ def match_by_duration(files, ann):
     import io
     import soundfile as sf
     import zipfile
-    from pulse_raveform import ZIP, norm
+    from pulse_raveform import AUDIO, ZIP, norm
     z = zipfile.ZipFile(ZIP)
     dur = {}
     for line in io.TextIOWrapper(z.open("raveform/tracks.jsonl"), encoding="utf-8"):
@@ -72,10 +76,12 @@ def match_by_duration(files, ann):
     return out
 
 
-def prep():
+def prep(a):
     import soundfile as sf
     import soxr
     from beat_this.preprocessing import LogMelSpect
+    from pulse_raveform import AUDIO, load_annotations, match
+    dev = pick_device(a.device)
     (RAVE / "mels").mkdir(parents=True, exist_ok=True)
     ann = load_annotations()
     files = sorted(p for p in AUDIO.rglob("*") if p.suffix.lower() in {".flac", ".wav", ".mp3", ".m4a", ".opus"})
@@ -89,7 +95,7 @@ def prep():
     for t in fixed:                                                     # an old title match the duration disagrees with
         print("dropping old match", index[t]["file"], "->", t)
         index.pop(t)
-    spect = LogMelSpect(device="cuda")
+    spect = LogMelSpect(device=dev)
     for i, (f, tid) in enumerate(pairs.items()):
         if tid in index:
             continue
@@ -101,7 +107,7 @@ def prep():
         x = x.mean(1)
         x = soxr.resample(x, sr, 22050) if sr != 22050 else x
         with torch.inference_mode():
-            m = spect(torch.from_numpy(x).cuda()).T.half().cpu().numpy()
+            m = spect(torch.from_numpy(x).to(dev)).T.half().cpu().numpy()
         np.save(RAVE / "mels" / f"{tid}.npy", m)
         _, b, d = ann[tid]
         np.savez(RAVE / f"{tid}.npz", beats=b.astype(np.float32), downbeats=d.astype(np.float32))
@@ -136,6 +142,7 @@ class Rave:
         index = json.loads((root / "index.json").read_text())
         test = set((root / "test.txt").read_text().split())
         self.ids = sorted(t for t in index if (t in test) == (split == "test"))
+        allow_open_files()
         self.mels = {t: np.load(root / "mels" / f"{t}.npy", mmap_mode="r") for t in self.ids}
         self.lab = {}
         for t in self.ids:
@@ -192,41 +199,75 @@ def bar_fit(beats, down_logit, bars=8):
 
 # ── Train / eval ─────────────────────────────────────────────────────────────
 
+def prefetch(make, n, depth=4):
+    """n batches from make(), built by one background thread, in order (the same random sequence as a plain
+    loop), so the data work overlaps the GPU step."""
+    q = queue.Queue(depth)
+
+    def work():
+        try:
+            for _ in range(n):
+                q.put(make())
+        except BaseException as ex:                                     # noqa: BLE001  (shown by the training loop)
+            q.put(ex)
+
+    threading.Thread(target=work, daemon=True).start()
+    for _ in range(n):
+        item = q.get()
+        if isinstance(item, BaseException):
+            raise item
+        yield item
+
+
 def train(a):
-    dev = "cuda"
-    torch.cuda.set_per_process_memory_fraction(a.gpu_mem)
+    dev = pick_device(a.device)
+    limit_gpu_memory(dev, a.gpu_mem)
+    if a.seed is not None:
+        torch.manual_seed(a.seed)
     if a.init and a.init.lower() != "none":
-        ck = torch.load(a.init, map_location="cpu", weights_only=False)
+        ck = torch.load(local_path(a.init), map_location="cpu", weights_only=False)
         model = Pulse(ck["width"], ck.get("levels", 5))
         model.load_state_dict(ck["model"])
     else:                                                               # from scratch (e.g. a deeper network)
         ck = {"width": a.width, "levels": a.levels}
         model = Pulse(a.width, a.levels)
     model.to(dev)
-    rv, tt = Rave("train"), Tracks(Path(a.teacher), "train")
-    lp = Rave("train", root=Path(a.loops)) if a.loop_frac > 0 else None
-    print(f"init {a.init} (width {ck['width']}, {count_params(model):,} params); {len(rv.ids)} Raveform + "
-          f"{len(tt.ids)} teacher train tracks", flush=True)
+    rv, tt = Rave("train"), Tracks(local_path(a.teacher), "train")
+    lp = Rave("train", root=local_path(a.loops)) if a.loop_frac > 0 else None
+    print(f"init {a.init} (width {ck['width']}, {count_params(model):,} params) on {dev}; {len(rv.ids)} Raveform + "
+          f"{len(tt.ids)} teacher train tracks" + (f" + {len(lp.ids)} loop tracks" if lp else ""), flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, a.lr, total_steps=a.steps, pct_start=0.05)
     run = HERE / "runs_pulse" / a.name
     run.mkdir(parents=True, exist_ok=True)
-    rng = random.Random(2)
+    start = 0
+    if a.resume and (run / "resume.pt").exists():                       # a run that was cut off: carry on from its last check
+        rs = torch.load(run / "resume.pt", map_location="cpu", weights_only=False)
+        model.load_state_dict(rs["model"])
+        opt.load_state_dict(rs["opt"])
+        sched.load_state_dict(rs["sched"])
+        start = rs["step"]
+        print(f"resumed at step {start}", flush=True)
+    rng = random.Random(2 if start == 0 else 2 + start)
     val = Rave("train")                                                     # quick check: 40 train tracks (test stays untouched)
     val.ids = sorted(val.ids)[:40]
-    t0 = time.time()
-    for step in range(1, a.steps + 1):
-        n_loop = int(round(a.batch * a.loop_frac)) if lp else 0
-        n_hum = (a.batch - n_loop) // 2
+    n_loop = int(round(a.batch * a.loop_frac)) if lp else 0
+    n_hum = (a.batch - n_loop) // 2
+    n_exact = n_hum + n_loop                                            # human + synthetic tracks: exact labels
+
+    def make_batch():
         xh, yh = rv.batch(n_hum, rng)
         if n_loop:                                                      # synthetic tracks: exact labels, like human ones
             xl, yl = lp.batch(n_loop, rng)
             xh, yh = torch.cat([xh, xl]), torch.cat([yh, yl])
-        xt, yt = tt.batch(a.batch - n_hum - n_loop, rng)
-        x = torch.cat([xh, xt]).to(dev)
-        p = torch.cat([yh, torch.sigmoid(yt)]).to(dev)
+        xt, yt = tt.batch(a.batch - n_exact, rng)
+        return torch.cat([xh, xt]), torch.cat([yh, torch.sigmoid(yt)])
+
+    t0 = time.time()
+    for step, (x, p) in enumerate(prefetch(make_batch, a.steps - start), start + 1):
+        x, p = x.to(dev), p.to(dev)
         w = 1 + 4 * F.max_pool1d(p, 5, 1, 2)
-        w[: len(xh), 1] *= a.down_weight                                    # human downbeats: the part p1 got wrong
+        w[:n_exact, 1] *= a.down_weight                                     # human downbeats: the part p1 got wrong
         out = model(x)
         loss = (F.binary_cross_entropy_with_logits(out, p, reduction="none") * w).mean()
         opt.zero_grad(set_to_none=True)
@@ -235,8 +276,8 @@ def train(a):
         opt.step()
         sched.step()
         if step % 200 == 0:
-            print(f"step {step:6d} loss {loss.item():.4f} {step / (time.time() - t0):.1f} steps/s", flush=True)
-        if step % 5000 == 0 or step == a.steps:
+            print(f"step {step:6d} loss {loss.item():.4f} {(step - start) / (time.time() - t0):.1f} steps/s", flush=True)
+        if step % a.check_every == 0 or step == a.steps:
             model.eval()
             fb, fd = [], []
             for t in val.ids:
@@ -246,16 +287,21 @@ def train(a):
                 fd.append(f_measure(val.lab[t][1], bar_fit(eb, y[1])))
             model.train()
             print(f"check at step {step}: beat F {np.mean(fb):.4f}, downbeat F (bar fit) {np.mean(fd):.4f}", flush=True)
-            torch.save({"model": model.state_dict(), "width": ck["width"], "levels": ck.get("levels", 5), "step": step},
+            state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+            torch.save({"model": state, "width": ck["width"], "levels": ck.get("levels", 5), "step": step},
                        run / "last.pt")
+            torch.save({"model": state, "opt": opt.state_dict(), "sched": sched.state_dict(), "step": step},
+                       run / "resume.pt")
     print("done")
 
 
 def evaluate(a):
     from beat_this.inference import Spect2Frames
     from beat_this.model.postprocessor import Postprocessor
+    from pulse_raveform import tempo_ok
+    dev = pick_device(a.device)
     te = Rave("test")
-    s2f = Spect2Frames(checkpoint_path=str(Path(r"F:\needle\beat_this\final0.ckpt")), device="cuda", float16=False)
+    s2f = Spect2Frames(checkpoint_path=str(DATA / "beat_this" / "final0.ckpt"), device=dev, float16=False)
     post = Postprocessor(type="minimal")
     models = {}
     for name in a.models:
@@ -263,18 +309,18 @@ def evaluate(a):
                         map_location="cpu", weights_only=False)
         m = Pulse(ck["width"], ck.get("levels", 5))
         m.load_state_dict(ck["model"])
-        models[name] = m.to("cuda").eval()
+        models[name] = m.to(dev).eval()
     rows = {k: [] for k in ["beat_this"] + [f"{n} {v}" for n in models for v in ("peaks", "bar fit")]}
     for t in te.ids:
         b, d = te.lab[t]
         mel = np.asarray(te.mels[t], dtype=np.float32)
         with torch.inference_mode():
-            bl, dl = s2f(torch.from_numpy(mel.T).cuda())
+            bl, dl = s2f(torch.from_numpy(mel.T).to(dev))
             bb, dd = post(bl, dl)
         bb, dd = np.asarray(bb), np.asarray(dd)
         rows["beat_this"].append((f_measure(b, bb), f_measure(d, dd), tempo_ok(b, bb)))
         for n, m in models.items():
-            y = predict_track(m, mel, "cuda")
+            y = predict_track(m, mel, dev)
             eb = peaks(y[0])
             rows[f"{n} peaks"].append((f_measure(b, eb), f_measure(d, peaks(y[1], min_gap=0.3)), tempo_ok(b, eb)))
             rows[f"{n} bar fit"].append((f_measure(b, eb), f_measure(d, bar_fit(eb, y[1])), tempo_ok(b, eb)))
@@ -293,7 +339,7 @@ if __name__ == "__main__":
     ap.add_argument("--init", default=str(HERE / "runs_pulse" / "p1_w24" / "best.pt"), help="none = train from scratch")
     ap.add_argument("--width", type=int, default=24, help="from scratch only")
     ap.add_argument("--levels", type=int, default=5, help="from scratch only; 6 = ~12 s context instead of ~6 s")
-    ap.add_argument("--loops", default=r"F:\needle\beat_loops", help="synthetic loop tracks (pulse_loops.py)")
+    ap.add_argument("--loops", default=str(DATA / "beat_loops"), help="synthetic loop tracks (pulse_loops.py)")
     ap.add_argument("--loop-frac", type=float, default=0.0, help="share of each batch from the loop tracks")
     ap.add_argument("--teacher", default=str(TEACHER), help="teacher label folder (beat_teacher or beat_teacher_ens)")
     ap.add_argument("--name", default="p2_w24")
@@ -301,7 +347,11 @@ if __name__ == "__main__":
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--down-weight", type=float, default=2.0)
-    ap.add_argument("--gpu-mem", type=float, default=0.3)
+    ap.add_argument("--gpu-mem", type=float, default=0.3, help="cuda only")
+    ap.add_argument("--device", help="cuda, mps or cpu (default: the first of those that is there)")
+    ap.add_argument("--seed", type=int, help="seed for the network's initial weights (default: not fixed, as before)")
+    ap.add_argument("--resume", action="store_true", help="continue a run that was cut off, from its resume.pt")
+    ap.add_argument("--check-every", type=int, default=5000, help="steps between checks (each one also saves the run)")
     ap.add_argument("--models", nargs="+", default=["p1_w24", "p2_w24"])
     a = ap.parse_args()
-    {"prep": prep, "train": lambda: train(a), "eval": lambda: evaluate(a)}[a.cmd]()
+    {"prep": lambda: prep(a), "train": lambda: train(a), "eval": lambda: evaluate(a)}[a.cmd]()

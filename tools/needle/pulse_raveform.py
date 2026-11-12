@@ -21,19 +21,17 @@ import zipfile
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
-import soxr
 import torch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from pulse import Pulse, f_measure, peaks, predict_track     # noqa: E402
+from pulse import DATA, Pulse, f_measure, peaks, pick_device, predict_track     # noqa: E402
 
-ZIP = Path(r"F:\needle\datasets\raveform\raveform.zip")
+ZIP = DATA / "datasets" / "raveform" / "raveform.zip"
 AUDIO = Path(r"I:\datasets\raveform\downloads")
-CKPT = Path(r"F:\needle\beat_this\final0.ckpt")
+CKPT = DATA / "beat_this" / "final0.ckpt"
 RUNS = {"pulse_w32": HERE / "runs_pulse" / "p1_w32" / "best.pt", "pulse_w24": HERE / "runs_pulse" / "p1_w24" / "best.pt"}
-OUT = Path(r"F:\needle\pulse_raveform.json")
+OUT = DATA / "pulse_raveform.json"
 
 
 def norm(s):
@@ -83,22 +81,25 @@ def tempo_ok(ref, est):
 
 
 def main():
+    import soundfile as sf
+    import soxr
     from beat_this.inference import Audio2Frames
     from beat_this.model.postprocessor import Postprocessor
     from beat_this.preprocessing import LogMelSpect
+    dev = pick_device()
     ann = load_annotations()
     files = sorted(p for p in AUDIO.rglob("*") if p.suffix.lower() in {".flac", ".wav", ".mp3", ".m4a", ".opus"})
     pairs = match(files, ann)
     print(f"{len(ann)} annotated tracks, {len(files)} audio files, {len(pairs)} matched", flush=True)
-    spect = LogMelSpect(device="cuda")
-    a2f = Audio2Frames(checkpoint_path=str(CKPT), device="cuda", float16=False)
+    spect = LogMelSpect(device=dev)
+    a2f = Audio2Frames(checkpoint_path=str(CKPT), device=dev, float16=False)
     post = Postprocessor(type="minimal")
     models = {}
     for k, p in RUNS.items():
         ck = torch.load(p, map_location="cpu", weights_only=False)
         m = Pulse(ck["width"], ck.get("levels", 5))
         m.load_state_dict(ck["model"])
-        models[k] = m.to("cuda").eval()
+        models[k] = m.to(dev).eval()
     res = {}
     for i, (f, tid) in enumerate(pairs.items()):
         title, rb, rd = ann[tid]
@@ -114,9 +115,9 @@ def main():
             bb, dd = post(bl, dl)
             row["beat_this"] = [f_measure(rb, np.asarray(bb)), f_measure(rd, np.asarray(dd)), tempo_ok(rb, np.asarray(bb))]
             x22 = soxr.resample(x, sr, 22050) if sr != 22050 else x
-            mel = spect(torch.from_numpy(x22).cuda()).T.float().cpu().numpy()
+            mel = spect(torch.from_numpy(x22).to(dev)).T.float().cpu().numpy()
             for k, m in models.items():
-                y = predict_track(m, mel, "cuda")
+                y = predict_track(m, mel, dev)
                 eb, ed = peaks(y[0]), peaks(y[1], min_gap=0.3)
                 row[k] = [f_measure(rb, eb), f_measure(rd, ed), tempo_ok(rb, eb)]
         res[str(f)] = row

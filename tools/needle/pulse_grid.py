@@ -25,7 +25,7 @@ import torch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from pulse import FPS, Pulse, f_measure, peaks, predict_track      # noqa: E402
+from pulse import DATA, FPS, Pulse, f_measure, peaks, pick_device, predict_track      # noqa: E402
 from pulse_rave import Rave, bar_fit                                # noqa: E402
 from pulse_raveform import tempo_ok                                 # noqa: E402
 
@@ -73,22 +73,24 @@ def bar_share(ref_d, est_d, tol=0.07):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="p2_w24", help="a runs_pulse name, or beat_this (the teacher, same grid fit)")
+    ap.add_argument("--device", help="cuda, mps or cpu (default: the first of those that is there)")
     a = ap.parse_args()
+    dev = pick_device(a.device)
     if a.model == "beat_this":
         from beat_this.inference import Spect2Frames
-        s2f = Spect2Frames(checkpoint_path=r"F:\needle\beat_this\final0.ckpt", device="cuda", float16=False)
+        s2f = Spect2Frames(checkpoint_path=str(DATA / "beat_this" / "final0.ckpt"), device=dev, float16=False)
 
         def m(x):                                                   # same interface as Pulse on a (1, 1, 128, T) batch
             b, d = s2f(x[0, 0].T)
             return torch.stack([b, d])[None]
-        predict = lambda mel: m(torch.from_numpy(mel)[None, None].cuda()).float().cpu()[0]   # noqa: E731
+        predict = lambda mel: m(torch.from_numpy(mel)[None, None].to(dev)).float().cpu()[0]   # noqa: E731
     else:
         run = HERE / "runs_pulse" / a.model
         ck = torch.load(run / ("best.pt" if (run / "best.pt").exists() else "last.pt"), map_location="cpu", weights_only=False)
         net = Pulse(ck["width"], ck.get("levels", 5))
         net.load_state_dict(ck["model"])
-        net = net.cuda().eval()
-        predict = lambda mel: predict_track(net, mel, "cuda")                                # noqa: E731
+        net = net.to(dev).eval()
+        predict = lambda mel: predict_track(net, mel, dev)                                   # noqa: E731
     te = Rave("test")
     rows = {k: [] for k in ("peaks + bar fit", "grid + bar fit (16)", "grid + bar fit (32)", "grid, one bar phase")}
     steady = 0
