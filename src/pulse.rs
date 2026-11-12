@@ -137,6 +137,45 @@ mod tests {
         assert!(off <= 0.020, "first downbeat {} s is {} s off a bar line", g.first_downbeat_s, off);
     }
 
+    /// Real library tracks for the comparison with the firmware's `pulse_cli` (not in git: copyright). Writes
+    /// each track as interleaved float32 (what `pulse_cli` reads) and prints DKPRP's Pulse result:
+    ///   PULSE_DUMP_DIR=<folder> [PULSE_DUMP_N=5] cargo test --release -- --ignored dump_library_for_pulse_cli --nocapture
+    #[test]
+    #[ignore]
+    fn dump_library_for_pulse_cli() {
+        let dir = std::path::PathBuf::from(std::env::var("PULSE_DUMP_DIR").expect("set PULSE_DUMP_DIR"));
+        eprintln!("dump dir: {:?}", dir);
+        let n: i64 = std::env::var("PULSE_DUMP_N").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rows = crate::db::query(
+            "SELECT id, title, path FROM tracks WHERE deleted=0 AND analysed_at IS NOT NULL AND path LIKE '%\\source\\%' AND path NOT LIKE '%.venv%' ORDER BY id LIMIT ?",
+            &[serde_json::json!(n)],
+        )
+        .unwrap();
+        for r in rows {
+            let id = r["id"].as_i64().unwrap();
+            let path = r["path"].as_str().unwrap();
+            let audio = match clubcraft_audio::decode::decode_native(std::path::Path::new(path)) {
+                Ok(a) => a,
+                Err(e) => {
+                    println!("{id}\tSKIP\t{path}\t{e:?}");
+                    continue;
+                }
+            };
+            let mut bytes = Vec::with_capacity(audio.left.len() * 8);
+            for (l, rr) in audio.left.iter().zip(&audio.right) {
+                bytes.extend_from_slice(&l.to_le_bytes());
+                bytes.extend_from_slice(&rr.to_le_bytes());
+            }
+            let file = dir.join(format!("{id}.f32"));
+            std::fs::write(&file, &bytes).unwrap_or_else(|e| panic!("write {}: {e}", file.display()));
+            let t = std::time::Instant::now();
+            let g = analyse(&audio.left, &audio.right, audio.sample_rate, 0);
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            println!("{id}\t{}\t{}\t{}\t{:?}\t{ms:.1}", audio.sample_rate, file.display(), r["title"].as_str().unwrap_or(""), g);
+        }
+    }
+
     #[test]
     fn rejects_empty_and_mismatched_input() {
         assert!(analyse(&[], &[], 22050, 1).is_none());
