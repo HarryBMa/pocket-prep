@@ -72,13 +72,23 @@ def bar_share(ref_d, est_d, tol=0.07):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="p2_w24")
+    ap.add_argument("--model", default="p2_w24", help="a runs_pulse name, or beat_this (the teacher, same grid fit)")
     a = ap.parse_args()
-    run = HERE / "runs_pulse" / a.model
-    ck = torch.load(run / ("best.pt" if (run / "best.pt").exists() else "last.pt"), map_location="cpu", weights_only=False)
-    m = Pulse(ck["width"])
-    m.load_state_dict(ck["model"])
-    m = m.cuda().eval()
+    if a.model == "beat_this":
+        from beat_this.inference import Spect2Frames
+        s2f = Spect2Frames(checkpoint_path=r"F:\needle\beat_this\final0.ckpt", device="cuda", float16=False)
+
+        def m(x):                                                   # same interface as Pulse on a (1, 1, 128, T) batch
+            b, d = s2f(x[0, 0].T)
+            return torch.stack([b, d])[None]
+        predict = lambda mel: m(torch.from_numpy(mel)[None, None].cuda()).float().cpu()[0]   # noqa: E731
+    else:
+        run = HERE / "runs_pulse" / a.model
+        ck = torch.load(run / ("best.pt" if (run / "best.pt").exists() else "last.pt"), map_location="cpu", weights_only=False)
+        net = Pulse(ck["width"])
+        net.load_state_dict(ck["model"])
+        net = net.cuda().eval()
+        predict = lambda mel: predict_track(net, mel, "cuda")                                # noqa: E731
     te = Rave("test")
     rows = {k: [] for k in ("peaks + bar fit", "grid + bar fit (16)", "grid + bar fit (32)", "grid, one bar phase")}
     steady = 0
@@ -86,7 +96,7 @@ def main():
         b, d = te.lab[t]
         mel = np.asarray(te.mels[t], dtype=np.float32)
         with torch.inference_mode():
-            y = predict_track(m, mel, "cuda")
+            y = predict(mel)
         pk = peaks(y[0])
         grid, bpm, ok = fit_grid(y[0], mel.shape[1])
         steady += ok
