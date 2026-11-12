@@ -25,16 +25,25 @@ struct Result {
     double barPhaseShare = 0;      // share of detected downbeats on the chosen bar position (0..1)
     double onGridShare = 0;        // share of beat peaks within 35 ms of the grid
     int beatPeaks = 0;
+    double analysedSeconds = 0;    // audio actually run through the network
     std::vector<float> beatLogit, downLogit;   // per 20-ms frame (diagnostics / tests)
+};
+
+struct Options {
+    int threads = 0;          // worker threads; 0 = cores - 1, at most 3 (each at nice +10 on Linux)
+    double maxSeconds = 0;    // > 0: analyse three windows of maxSeconds / 3 (at 20 / 50 / 80 %) instead of
+                              // the whole track; tracks shorter than maxSeconds + 30 s are analysed whole
 };
 
 // Whole-track analysis of interleaved float stereo (or mono with channels = 1). integerSnapBpm > 0: a fitted
 // tempo within that distance of a whole BPM becomes the whole BPM, with the phase refitted to it.
-Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRate, double integerSnapBpm = 0.0);
+Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRate, double integerSnapBpm = 0.0,
+               Options options = Options());
 
 // Building blocks (exposed for tests).
-std::vector<float> resampleTo22050(const std::vector<float>& mono, int sampleRate);
-std::vector<float> logMel(const std::vector<float>& mono22k, int& outFrames);   // [mel][frame], kMels x frames
-void network(const std::vector<float>& mel, int frames, std::vector<float>& beatLogit, std::vector<float>& downLogit);
+std::vector<float> resampleTo22050(const std::vector<float>& mono, int sampleRate, int threads = 1);
+std::vector<float> logMel(const std::vector<float>& mono22k, int& outFrames, int threads = 1);   // [mel][frame]
+void network(const std::vector<float>& mel, int frames, std::vector<float>& beatLogit, std::vector<float>& downLogit,
+             int threads = 1);
 
 }  // namespace PulseBeat

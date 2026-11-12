@@ -4,10 +4,17 @@
 #include "pulse_weights.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <complex>
 #include <cstdint>
 #include <numeric>
+#include <thread>
+#if defined(__linux__)
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace PulseBeat {
 namespace {
@@ -18,8 +25,28 @@ constexpr int kHop = 441;
 constexpr int kChunk = 512;       // frames per network pass (10.24 s)
 constexpr int kChunkHop = 448;    // 64 frames of crossfade between passes
 
+// Worker threads for the heavy loops. On Linux each worker drops to nice +10 first, so a track being
+// analysed never takes CPU from the audio worker or the UI of a track that is playing.
+template <class F>
+void parallelFor(int n, int threads, F&& f) {
+    if (threads <= 1 || n < 2) {
+        for (int i = 0; i < n; ++i) f(i);
+        return;
+    }
+    std::atomic<int> next{0};
+    auto work = [&] {
+#if defined(__linux__)
+        setpriority(PRIO_PROCESS, pid_t(syscall(SYS_gettid)), 10);
+#endif
+        for (int i; (i = next.fetch_add(1)) < n;) f(i);
+    };
+    std::vector<std::thread> pool;
+    for (int t = 0; t < std::min(threads, n); ++t) pool.emplace_back(work);
+    for (auto& t : pool) t.join();
+}
+
 // ── Resampling: windowed-sinc (Blackman), cutoff just below the lower Nyquist ─────────────────────────────
-std::vector<float> resample(const std::vector<float>& x, int inRate, int outRate) {
+std::vector<float> resample(const std::vector<float>& x, int inRate, int outRate, int threads) {
     if (inRate == outRate) return x;
     const double ratio = double(inRate) / outRate;            // input samples per output sample
     const double cutoff = 0.97 * 0.5 * std::min(1.0, 1.0 / ratio);   // in cycles per input sample
@@ -38,20 +65,23 @@ std::vector<float> resample(const std::vector<float>& x, int inRate, int outRate
     const std::size_t n = std::size_t(std::floor(double(x.size()) / ratio));
     std::vector<float> y(n);
     const long len = long(x.size());
-    for (std::size_t j = 0; j < n; ++j) {
-        const double t = j * ratio;
-        const long c = long(std::floor(t));
-        float acc = 0, wsum = 0;
-        for (long k = c - half + 1; k <= c + half; ++k) {
-            const double pos = (t - k + half) * kSub;         // table index of d = t - k
-            const int i0 = int(pos);
-            const float f = float(pos - i0);
-            const float h = tab[i0] + f * (tab[i0 + 1] - tab[i0]);
-            wsum += h;
-            if (k >= 0 && k < len) acc += h * x[std::size_t(k)];
+    constexpr std::size_t kBlock = 1 << 14;
+    parallelFor(int((n + kBlock - 1) / kBlock), threads, [&](int blk) {
+        for (std::size_t j = std::size_t(blk) * kBlock; j < std::min(n, std::size_t(blk + 1) * kBlock); ++j) {
+            const double t = j * ratio;
+            const long c = long(std::floor(t));
+            float acc = 0, wsum = 0;
+            for (long k = c - half + 1; k <= c + half; ++k) {
+                const double pos = (t - k + half) * kSub;     // table index of d = t - k
+                const int i0 = int(pos);
+                const float f = float(pos - i0);
+                const float h = tab[i0] + f * (tab[i0 + 1] - tab[i0]);
+                wsum += h;
+                if (k >= 0 && k < len) acc += h * x[std::size_t(k)];
+            }
+            y[j] = wsum > 0 ? acc / wsum : 0.f;
         }
-        y[j] = wsum > 0 ? acc / wsum : 0.f;
-    }
+    });
     return y;
 }
 
@@ -207,9 +237,11 @@ void lineFit(const std::vector<double>& k, const std::vector<double>& t, double&
 
 }  // namespace
 
-std::vector<float> resampleTo22050(const std::vector<float>& mono, int sampleRate) { return resample(mono, sampleRate, kSampleRate); }
+std::vector<float> resampleTo22050(const std::vector<float>& mono, int sampleRate, int threads) {
+    return resample(mono, sampleRate, kSampleRate, threads);
+}
 
-std::vector<float> logMel(const std::vector<float>& x, int& frames) {
+std::vector<float> logMel(const std::vector<float>& x, int& frames, int threads) {
     static const std::vector<float> fb = melBank();
     static const Fft fft(kNfft);
     const int nf = kNfft / 2 + 1, pad = kNfft / 2;
@@ -223,42 +255,51 @@ std::vector<float> logMel(const std::vector<float>& x, int& frames) {
         return x[std::size_t(i)];
     };
     std::vector<float> mel(std::size_t(kMels) * frames);
-    std::vector<std::complex<double>> buf(kNfft);
-    std::vector<double> mag(nf);
     const double norm = 1.0 / std::sqrt(double(kNfft));   // normalized="frame_length"
-    for (int f = 0; f < frames; ++f) {
-        const long s = long(f) * kHop - pad;
-        for (int i = 0; i < kNfft; ++i) buf[i] = at(s + i) * win[i];
-        fft.run(buf);
-        for (int i = 0; i < nf; ++i) mag[i] = std::abs(buf[i]) * norm;
-        for (int m = 0; m < kMels; ++m) {
-            const float* row = fb.data() + std::size_t(m) * nf;
-            double acc = 0;
-            for (int i = 0; i < nf; ++i) if (row[i] != 0.f) acc += row[i] * mag[i];
-            mel[std::size_t(m) * frames + f] = float(std::log1p(1000.0 * acc));
+    constexpr int kBlock = 256;
+    const int nFrames = frames;
+    parallelFor((nFrames + kBlock - 1) / kBlock, threads, [&](int blk) {
+        std::vector<std::complex<double>> buf(kNfft);
+        std::vector<double> mag(nf);
+        for (int f = blk * kBlock; f < std::min(nFrames, (blk + 1) * kBlock); ++f) {
+            const long s = long(f) * kHop - pad;
+            for (int i = 0; i < kNfft; ++i) buf[i] = at(s + i) * win[i];
+            fft.run(buf);
+            for (int i = 0; i < nf; ++i) mag[i] = std::abs(buf[i]) * norm;
+            for (int m = 0; m < kMels; ++m) {
+                const float* row = fb.data() + std::size_t(m) * nf;
+                double acc = 0;
+                for (int i = 0; i < nf; ++i) if (row[i] != 0.f) acc += row[i] * mag[i];
+                mel[std::size_t(m) * nFrames + f] = float(std::log1p(1000.0 * acc));
+            }
         }
-    }
+    });
     return mel;
 }
 
-void network(const std::vector<float>& mel, int n, std::vector<float>& beat, std::vector<float>& down) {
+void network(const std::vector<float>& mel, int n, std::vector<float>& beat, std::vector<float>& down, int threads) {
     // pulse.predict_track: 32 frames of zero padding in front, chunks of 512 every 448 frames, linear
     // 64-frame crossfades, then the padding removed.
     const int padR = ((64 - n % 64) % 64) + kChunk;
     const int W = 32 + n + padR;
     std::vector<float> x(std::size_t(kMels) * W, 0.f);
     for (int m = 0; m < kMels; ++m) std::copy(mel.begin() + std::size_t(m) * n, mel.begin() + std::size_t(m) * (n + 0) + n, x.begin() + std::size_t(m) * W + 32);
-    std::vector<float> acc(std::size_t(2) * W, 0.f), wsum(W, 0.f), w(kChunk, 1.f), y;
+    std::vector<float> acc(std::size_t(2) * W, 0.f), wsum(W, 0.f), w(kChunk, 1.f);
     const int ov = kChunk - kChunkHop;
     for (int i = 0; i < ov; ++i) {
         w[i] = float(double(i + 1) / (ov + 1));
         w[kChunk - ov + i] = float(1.0 - double(i + 1) / (ov + 1));
     }
-    for (int a = 0; a + kChunk <= W; a += kChunkHop) {
-        pass(x.data() + a, W, y);
+    std::vector<int> starts;
+    for (int a = 0; a + kChunk <= W; a += kChunkHop) starts.push_back(a);
+    std::vector<std::vector<float>> ys(starts.size());            // the passes are independent: in parallel
+    parallelFor(int(starts.size()), threads, [&](int i) { pass(x.data() + starts[std::size_t(i)], W, ys[std::size_t(i)]); });
+    for (std::size_t i = 0; i < starts.size(); ++i) {
+        const int a = starts[i];
+        const auto& yy = ys[i];
         for (int t = 0; t < kChunk; ++t) {
-            acc[a + t] += y[t] * w[t];
-            acc[std::size_t(W) + a + t] += y[kChunk + t] * w[t];
+            acc[a + t] += yy[t] * w[t];
+            acc[std::size_t(W) + a + t] += yy[kChunk + t] * w[t];
             wsum[a + t] += w[t];
         }
     }
@@ -271,19 +312,57 @@ void network(const std::vector<float>& mel, int n, std::vector<float>& beat, std
     }
 }
 
-Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRate, double integerSnapBpm) {
+Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRate, double integerSnapBpm,
+               Options opt) {
     Result r;
     if (!pcm || frames == 0 || channels < 1 || sampleRate <= 0) return r;
-    std::vector<float> mono(frames);
-    for (std::size_t i = 0; i < frames; ++i) {
-        double s = 0;
-        for (int c = 0; c < channels; ++c) s += pcm[i * channels + c];
-        mono[i] = float(s / channels);
+    int threads = opt.threads;
+    if (threads <= 0) threads = std::clamp(int(std::thread::hardware_concurrency()) - 1, 1, 3);
+    const double seconds = double(frames) / sampleRate;
+    const int n = int(std::floor(seconds * kSampleRate) / kHop) + 1;   // frames of the whole track at 50 fps
+    r.beatLogit.assign(std::size_t(n), -20.f);                         // no beat outside the analysed windows
+    r.downLogit.assign(std::size_t(n), -20.f);
+    // Windows to analyse: the whole track, or (opt.maxSeconds) three equal windows centred at 20 / 50 / 80 %
+    // of the track. A tempo + phase line fitted across windows minutes apart is as precise as one through
+    // the whole track; the bar line is voted over the beats in all three.
+    std::vector<std::pair<double, double>> win;
+    if (opt.maxSeconds > 0 && seconds > opt.maxSeconds + 30) {
+        const double len = opt.maxSeconds / 3;
+        for (double c : {0.2, 0.5, 0.8}) {
+            const double a = std::clamp(c * seconds - len / 2, 0.0, seconds - len);
+            win.push_back({a, a + len});
+        }
+    } else {
+        win.push_back({0.0, seconds});
     }
-    const auto x = resampleTo22050(mono, sampleRate);
-    int n = 0;
-    const auto mel = logMel(x, n);
-    network(mel, n, r.beatLogit, r.downLogit);
+    r.analysedSeconds = 0;
+    for (const auto& [a, b] : win) {
+        // whole 441-sample frames at 22.05 kHz, so the window's frames land exactly on the track's frame grid
+        const long f0 = long(std::floor(a * kFps)), f1 = std::min<long>(n, long(std::ceil(b * kFps)));
+        if (f1 - f0 < 64) continue;
+        const std::size_t s0 = std::size_t(std::llround(double(f0) * kHop / kSampleRate * sampleRate));
+        const std::size_t s1 = std::min(frames, std::size_t(std::llround(double(f1) * kHop / kSampleRate * sampleRate)));
+        std::vector<float> mono(s1 - s0);
+        for (std::size_t i = s0; i < s1; ++i) {
+            double v = 0;
+            for (int c = 0; c < channels; ++c) v += pcm[i * channels + c];
+            mono[i - s0] = float(v / channels);
+        }
+        const auto x = resampleTo22050(mono, sampleRate, threads);
+        int m = 0;
+        const auto mel = logMel(x, m, threads);
+        std::vector<float> bl, dl;
+        network(mel, m, bl, dl, threads);
+        // the first / last 2 s of a cut window have no context on one side: keep only its inner part
+        // (except at the track's own start and end)
+        const int edge = 2 * kFps;
+        for (int t = 0; t < m && f0 + t < n; ++t) {
+            if ((f0 > 0 && t < edge) || (f0 + m < n - 1 && t >= m - edge)) continue;
+            r.beatLogit[std::size_t(f0 + t)] = bl[std::size_t(t)];
+            r.downLogit[std::size_t(f0 + t)] = dl[std::size_t(t)];
+        }
+        r.analysedSeconds += double(m) / kFps;
+    }
 
     // grid: tempo hint from the peaks, fine phasor search +-4 % in 0.005-BPM steps, line fit on the peaks
     const auto pk = peaks(r.beatLogit, 0.07);
