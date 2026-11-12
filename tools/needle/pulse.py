@@ -103,14 +103,15 @@ class Tracks:
     def __init__(self, teacher: Path, split: str):
         index = json.loads((teacher / "index.json").read_text())
         hold = set((teacher / "holdout.txt").read_text(encoding="utf-8").split())
-        ids = [t for t, v in index.items() if "error" not in v and mel_path(teacher, t).exists()]
+        ids = [t for t, v in index.items() if "error" not in v and Path(v.get("mel", mel_path(teacher, t))).exists()]
         rng = random.Random(0)
         rest = sorted(t for t in ids if t not in hold)
         rng.shuffle(rest)
         n_val = 60
         self.ids = {"train": rest[n_val:], "val": rest[:n_val], "holdout": sorted(t for t in ids if t in hold)}[split]
         self.teacher = teacher
-        self.mels = {t: np.load(mel_path(teacher, t), mmap_mode="r") for t in self.ids}
+        # an index entry may point at its mel elsewhere ("mel"): the ensemble teacher reuses round 1's mels
+        self.mels = {t: np.load(index[t].get("mel", mel_path(teacher, t)), mmap_mode="r") for t in self.ids}
         self.lab = {}
         for t in self.ids:
             z = np.load(teacher / f"{t}.npz")
@@ -260,7 +261,7 @@ def train(a):
 def evaluate_cli(a):
     teacher = Path(a.teacher)
     ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
-    model = Pulse(ck["width"])
+    model = Pulse(ck["width"], ck.get("levels", 5))
     model.load_state_dict(ck["model"])
     model.to("cuda")
     ho = Tracks(teacher, "holdout")

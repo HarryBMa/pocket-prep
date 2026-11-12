@@ -66,7 +66,7 @@ def main():
     a = ap.parse_args()
     run = HERE / "runs_pulse" / a.model
     ck = torch.load(run / ("best.pt" if (run / "best.pt").exists() else "last.pt"), map_location="cpu", weights_only=False)
-    net = Pulse(ck["width"])
+    net = Pulse(ck["width"], ck.get("levels", 5))
     net.load_state_dict(ck["model"])
     net = net.cuda().eval()
     index = json.loads((RAVE / "index.json").read_text())

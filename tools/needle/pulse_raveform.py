@@ -96,7 +96,7 @@ def main():
     models = {}
     for k, p in RUNS.items():
         ck = torch.load(p, map_location="cpu", weights_only=False)
-        m = Pulse(ck["width"])
+        m = Pulse(ck["width"], ck.get("levels", 5))
         m.load_state_dict(ck["model"])
         models[k] = m.to("cuda").eval()
     res = {}

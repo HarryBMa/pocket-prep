@@ -85,7 +85,7 @@ def main():
     else:
         run = HERE / "runs_pulse" / a.model
         ck = torch.load(run / ("best.pt" if (run / "best.pt").exists() else "last.pt"), map_location="cpu", weights_only=False)
-        net = Pulse(ck["width"])
+        net = Pulse(ck["width"], ck.get("levels", 5))
         net.load_state_dict(ck["model"])
         net = net.cuda().eval()
         predict = lambda mel: predict_track(net, mel, "cuda")                                # noqa: E731

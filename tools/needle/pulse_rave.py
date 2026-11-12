@@ -131,14 +131,15 @@ def targets(times, n, width=1):
 
 
 class Rave:
-    def __init__(self, split):
-        index = json.loads((RAVE / "index.json").read_text())
-        test = set((RAVE / "test.txt").read_text().split())
+    """Tracks with exact beat labels: Raveform (human) by default, or root=beat_loops (synthetic)."""
+    def __init__(self, split, root=RAVE):
+        index = json.loads((root / "index.json").read_text())
+        test = set((root / "test.txt").read_text().split())
         self.ids = sorted(t for t in index if (t in test) == (split == "test"))
-        self.mels = {t: np.load(RAVE / "mels" / f"{t}.npy", mmap_mode="r") for t in self.ids}
+        self.mels = {t: np.load(root / "mels" / f"{t}.npy", mmap_mode="r") for t in self.ids}
         self.lab = {}
         for t in self.ids:
-            z = np.load(RAVE / f"{t}.npz")
+            z = np.load(root / f"{t}.npz")
             self.lab[t] = (z["beats"], z["downbeats"])
 
     def batch(self, n, rng):
@@ -194,11 +195,16 @@ def bar_fit(beats, down_logit, bars=8):
 def train(a):
     dev = "cuda"
     torch.cuda.set_per_process_memory_fraction(a.gpu_mem)
-    ck = torch.load(a.init, map_location="cpu", weights_only=False)
-    model = Pulse(ck["width"])
-    model.load_state_dict(ck["model"])
+    if a.init:
+        ck = torch.load(a.init, map_location="cpu", weights_only=False)
+        model = Pulse(ck["width"], ck.get("levels", 5))
+        model.load_state_dict(ck["model"])
+    else:                                                               # from scratch (e.g. a deeper network)
+        ck = {"width": a.width, "levels": a.levels}
+        model = Pulse(a.width, a.levels)
     model.to(dev)
-    rv, tt = Rave("train"), Tracks(TEACHER, "train")
+    rv, tt = Rave("train"), Tracks(Path(a.teacher), "train")
+    lp = Rave("train", root=Path(a.loops)) if a.loop_frac > 0 else None
     print(f"init {a.init} (width {ck['width']}, {count_params(model):,} params); {len(rv.ids)} Raveform + "
           f"{len(tt.ids)} teacher train tracks", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
@@ -210,8 +216,13 @@ def train(a):
     val.ids = sorted(val.ids)[:40]
     t0 = time.time()
     for step in range(1, a.steps + 1):
-        xh, yh = rv.batch(a.batch // 2, rng)
-        xt, yt = tt.batch(a.batch - a.batch // 2, rng)
+        n_loop = int(round(a.batch * a.loop_frac)) if lp else 0
+        n_hum = (a.batch - n_loop) // 2
+        xh, yh = rv.batch(n_hum, rng)
+        if n_loop:                                                      # synthetic tracks: exact labels, like human ones
+            xl, yl = lp.batch(n_loop, rng)
+            xh, yh = torch.cat([xh, xl]), torch.cat([yh, yl])
+        xt, yt = tt.batch(a.batch - n_hum - n_loop, rng)
         x = torch.cat([xh, xt]).to(dev)
         p = torch.cat([yh, torch.sigmoid(yt)]).to(dev)
         w = 1 + 4 * F.max_pool1d(p, 5, 1, 2)
@@ -235,7 +246,8 @@ def train(a):
                 fd.append(f_measure(val.lab[t][1], bar_fit(eb, y[1])))
             model.train()
             print(f"check at step {step}: beat F {np.mean(fb):.4f}, downbeat F (bar fit) {np.mean(fd):.4f}", flush=True)
-            torch.save({"model": model.state_dict(), "width": ck["width"], "step": step}, run / "last.pt")
+            torch.save({"model": model.state_dict(), "width": ck["width"], "levels": ck.get("levels", 5), "step": step},
+                       run / "last.pt")
     print("done")
 
 
@@ -249,7 +261,7 @@ def evaluate(a):
     for name in a.models:
         ck = torch.load(HERE / "runs_pulse" / name / ("best.pt" if (HERE / "runs_pulse" / name / "best.pt").exists() else "last.pt"),
                         map_location="cpu", weights_only=False)
-        m = Pulse(ck["width"])
+        m = Pulse(ck["width"], ck.get("levels", 5))
         m.load_state_dict(ck["model"])
         models[name] = m.to("cuda").eval()
     rows = {k: [] for k in ["beat_this"] + [f"{n} {v}" for n in models for v in ("peaks", "bar fit")]}
@@ -278,7 +290,12 @@ def evaluate(a):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["prep", "train", "eval"])
-    ap.add_argument("--init", default=str(HERE / "runs_pulse" / "p1_w24" / "best.pt"))
+    ap.add_argument("--init", default=str(HERE / "runs_pulse" / "p1_w24" / "best.pt"), help="'' = train from scratch")
+    ap.add_argument("--width", type=int, default=24, help="from scratch only")
+    ap.add_argument("--levels", type=int, default=5, help="from scratch only; 6 = ~12 s context instead of ~6 s")
+    ap.add_argument("--loops", default=r"F:\needle\beat_loops", help="synthetic loop tracks (pulse_loops.py)")
+    ap.add_argument("--loop-frac", type=float, default=0.0, help="share of each batch from the loop tracks")
+    ap.add_argument("--teacher", default=str(TEACHER), help="teacher label folder (beat_teacher or beat_teacher_ens)")
     ap.add_argument("--name", default="p2_w24")
     ap.add_argument("--steps", type=int, default=20000)
     ap.add_argument("--batch", type=int, default=32)

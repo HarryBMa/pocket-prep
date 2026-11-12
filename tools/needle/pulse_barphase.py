@@ -17,7 +17,7 @@ def bar_share(ref_d, est_d, tol=0.07):
 
 te = Rave("test")
 ck = torch.load(HERE / "runs_pulse" / "p2_w24" / "last.pt", map_location="cpu", weights_only=False)
-m = Pulse(ck["width"]); m.load_state_dict(ck["model"]); m = m.cuda().eval()
+m = Pulse(ck["width"], ck.get("levels", 5)); m.load_state_dict(ck["model"]); m = m.cuda().eval()
 from beat_this.inference import Spect2Frames
 from beat_this.model.postprocessor import Postprocessor
 s2f = Spect2Frames(checkpoint_path=r"F:\needle\beat_this\final0.ckpt", device="cuda", float16=False)

@@ -140,7 +140,7 @@ def main():
     a = ap.parse_args()
     run = HERE / "runs_pulse" / a.model
     ck = torch.load(run / ("best.pt" if (run / "best.pt").exists() else "last.pt"), map_location="cpu", weights_only=False)
-    model = Pulse(ck["width"])
+    model = Pulse(ck["width"], ck.get("levels", 5))
     model.load_state_dict(ck["model"])
     model.eval()
     out = HERE / "build" / f"pulse_{a.model}"
