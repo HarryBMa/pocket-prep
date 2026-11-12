@@ -45,6 +45,7 @@ binrw = "0.15"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cc = "1"                                     # compiles native/pulse (Pulse beat tracker) with the C++ compiler
 
 [profile.dev.package."*"]
 opt-level = 3                     # DSP and FFT code is far too slow unoptimised
