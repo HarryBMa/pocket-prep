@@ -148,7 +148,7 @@ mod tests {
         let n: i64 = std::env::var("PULSE_DUMP_N").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
         std::fs::create_dir_all(&dir).unwrap();
         let rows = crate::db::query(
-            "SELECT id, title, path FROM tracks WHERE deleted=0 AND analysed_at IS NOT NULL AND path LIKE '%\\source\\%' AND path NOT LIKE '%.venv%' ORDER BY id LIMIT ?",
+            "SELECT id, title, path FROM tracks WHERE deleted=0 AND analysed_at IS NOT NULL AND path NOT LIKE '%.venv%' ORDER BY id LIMIT ?",
             &[serde_json::json!(n)],
         )
         .unwrap();
