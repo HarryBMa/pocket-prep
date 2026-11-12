@@ -251,13 +251,28 @@ pub fn analyse_audio(audio: &AudioBuffer, stems: Option<&StemsRef>, bpm_range: (
     let t_pulse = std::time::Instant::now();
     let pulse = crate::pulse::analyse(&audio.left, &audio.right, sr, 0);
     let pulse_ms = t_pulse.elapsed().as_secs_f64() * 1000.0;
-    let (g, grid_source) = match pulse {
-        Some(p) if p.bpm > 0.0 => {
-            let mut bpm = p.bpm;
-            while bpm < bpm_range.0 { bpm *= 2.0; }
-            while bpm > bpm_range.1 { bpm /= 2.0; }
-            (clubcraft_core::BeatGrid::new(bpm, p.first_downbeat_s), "pulse")
+    // Cross-check: Pulse's grid is used only when its tempo agrees with ClubCraft's, within 1.5 % of the same
+    // tempo, half time or double time. Otherwise (3:2, 3:4, 2:3 or unrelated) ClubCraft's grid is kept and the
+    // disagreement is recorded. With no ClubCraft grid, Pulse's is used.
+    let fold = |bpm: f64, first: f64| {
+        let mut b = bpm;
+        while b < bpm_range.0 { b *= 2.0; }
+        while b > bpm_range.1 { b /= 2.0; }
+        clubcraft_core::BeatGrid::new(b, first)
+    };
+    let mut grid_disagreement: Option<Value> = None;
+    let (g, grid_source) = match (pulse, r.grid.as_ref()) {
+        (Some(p), Some(cg)) if p.bpm > 0.0 && cg.bpm > 0.0 => {
+            let ratio = p.bpm / cg.bpm;
+            let agree = [1.0, 2.0, 0.5].iter().any(|k| (ratio / k - 1.0).abs() <= 0.015);
+            if agree {
+                (fold(p.bpm, p.first_downbeat_s), "pulse")
+            } else {
+                grid_disagreement = Some(json!({"pulse_bpm": p.bpm, "clubcraft_bpm": cg.bpm, "ratio": ratio}));
+                (clubcraft_core::BeatGrid::new(cg.bpm, cg.downbeat), "clubcraft")
+            }
         }
+        (Some(p), None) if p.bpm > 0.0 => (fold(p.bpm, p.first_downbeat_s), "pulse"),
         _ => (r.grid.unwrap_or(clubcraft_core::BeatGrid::new(120.0, 0.0)), "clubcraft"),
     };
     let pulse_diag = pulse.map(|p| json!({"bpm": p.bpm, "raw_bpm": p.raw_bpm, "on_grid": p.on_grid,
@@ -284,6 +299,7 @@ pub fn analyse_audio(audio: &AudioBuffer, stems: Option<&StemsRef>, bpm_range: (
         "auto_cues": auto_cues(&r.sections, &g).iter().map(|&(slot, t, label)| json!({
             "slot": slot, "start_ms": ms(t), "label": label})).collect::<Vec<_>>(),
         "grid_source": grid_source,
+        "grid_disagreement": grid_disagreement,
         "pulse": pulse_diag,
         "waveforms": waveforms(&peak, &lo, &mid, &hi),
     })
@@ -303,6 +319,9 @@ pub fn analyse(track_id: i64, progress: &dyn Fn(f64, &str)) -> Result<Value> {
     let range = (config::setting_f64("bpm_min").max(40.0), config::setting_f64("bpm_max").max(60.0));
     let before = load_analysis(track_id);
     let mut a = analyse_audio(&audio, stems_ref.as_ref(), range);
+    if a["grid_source"] == "clubcraft" && !a["grid_disagreement"].is_null() {
+        eprintln!("track {track_id}: Pulse and ClubCraft disagree on the tempo ({}); kept ClubCraft's grid", a["grid_disagreement"]);
+    }
     // A grid nudge is relative to the grid it was made on. If the new analysis moved the grid
     // (anchor or tempo), the old nudge would now be wrong, so it is cleared and that is logged.
     let grid_moved = before.as_ref().is_some_and(|b| {
@@ -403,6 +422,27 @@ mod tests {
             let a = analyse_audio(&AudioBuffer::new(sr, y.clone(), y), None, (85.0, 175.0));
             assert!((a["bpm"].as_f64().unwrap() - bpm).abs() < 0.05, "{bpm}@{sr}: bpm {}", a["bpm"]);
             assert_eq!((a["key"].as_str(), a["camelot"].as_str()), (Some("Am"), Some("8A")), "{bpm}@{sr}");
+        }
+    }
+
+    /// The Pulse cross-check: where Pulse and ClubCraft agree (here 124 BPM) Pulse's grid is used; where they
+    /// disagree by a non-octave ratio (174 BPM: Pulse says 130.7) ClubCraft's grid is kept and the disagreement
+    /// is recorded.
+    #[test]
+    fn pulse_cross_check_chooses_the_grid() {
+        let cases = [(124.0, 44100u32, "pulse"), (174.0, 44100, "clubcraft")];
+        for (bpm, sr, want) in cases {
+            let y = crate::testaudio::music(sr, 60.0, bpm, 0.1, crate::testaudio::A_MINOR);
+            let a = analyse_audio(&AudioBuffer::new(sr, y.clone(), y), None, (85.0, 175.0));
+            assert_eq!(a["grid_source"].as_str(), Some(want), "{bpm}@{sr}: pulse {}", a["pulse"]);
+            assert!(a["pulse"]["on_grid"].is_number(), "{bpm}@{sr}: pulse diagnostics missing");
+            if want == "clubcraft" {
+                let d = &a["grid_disagreement"];
+                assert!(d["pulse_bpm"].is_number() && d["clubcraft_bpm"].is_number() && d["ratio"].is_number(), "{bpm}@{sr}: {d}");
+                assert!((a["bpm"].as_f64().unwrap() - bpm).abs() < 0.05, "{bpm}@{sr}: kept ClubCraft's tempo, got {}", a["bpm"]);
+            } else {
+                assert!(a["grid_disagreement"].is_null(), "{bpm}@{sr}: unexpected disagreement {}", a["grid_disagreement"]);
+            }
         }
     }
 
