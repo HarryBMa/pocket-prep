@@ -38,6 +38,40 @@ N_TEST = 200
 
 # ── Data ─────────────────────────────────────────────────────────────────────
 
+def match_by_duration(files, ann):
+    r"""Every file came from the annotated YouTube list (I:\datasets\raveform\downloaded.txt holds the ids), but
+    the files are named after the YouTube title, not the Raveform title. The video's duration (in tracks.jsonl)
+    is the key: candidates = downloaded annotated ids within 1.5 s of the file's length; several -> best title."""
+    import difflib
+    import io
+    import soundfile as sf
+    import zipfile
+    from pulse_raveform import ZIP, norm
+    z = zipfile.ZipFile(ZIP)
+    dur = {}
+    for line in io.TextIOWrapper(z.open("raveform/tracks.jsonl"), encoding="utf-8"):
+        t = json.loads(line)
+        dur[t["id"]] = t["duration"]
+    got = {ln.split()[1] for ln in (AUDIO.parent / "downloaded.txt").read_text().splitlines() if len(ln.split()) >= 2}
+    allowed = [t for t in ann if t in got and t in dur]
+    ad = np.array([dur[t] for t in allowed])
+    out, used = {}, {}
+    for f in files:
+        try:
+            d = sf.info(str(f)).duration
+        except Exception:                                               # noqa: BLE001
+            continue
+        c = [allowed[i] for i in np.where(np.abs(ad - d) < 1.5)[0]]
+        if not c:
+            continue
+        best = max(c, key=lambda t: difflib.SequenceMatcher(None, norm(f.stem), norm(ann[t][0])).ratio())
+        if best in used:                                                # two files claim one id: keep neither
+            out.pop(used[best], None)
+            continue
+        out[f], used[best] = best, f
+    return out
+
+
 def prep():
     import soundfile as sf
     import soxr
@@ -45,10 +79,17 @@ def prep():
     (RAVE / "mels").mkdir(parents=True, exist_ok=True)
     ann = load_annotations()
     files = sorted(p for p in AUDIO.rglob("*") if p.suffix.lower() in {".flac", ".wav", ".mp3", ".m4a", ".opus"})
-    pairs = match(files, ann)
-    print(f"{len(files)} files, {len(pairs)} matched to annotations", flush=True)
-    spect = LogMelSpect(device="cuda")
+    pairs = match_by_duration(files, ann)
+    old = match(files, ann)                                             # the title-only match used for round 2
+    agree = sum(pairs.get(f) == t for f, t in old.items())
+    print(f"{len(files)} files, {len(pairs)} matched by duration (title-only match: {len(old)}, "
+          f"{agree} of those agree)", flush=True)
     index = json.loads((RAVE / "index.json").read_text()) if (RAVE / "index.json").exists() else {}
+    fixed = {t for t, v in index.items() if Path(v["file"]) in pairs and pairs[Path(v["file"])] != t}
+    for t in fixed:                                                     # an old title match the duration disagrees with
+        print("dropping old match", index[t]["file"], "->", t)
+        index.pop(t)
+    spect = LogMelSpect(device="cuda")
     for i, (f, tid) in enumerate(pairs.items()):
         if tid in index:
             continue
