@@ -16,6 +16,7 @@ mod deck;
 mod export;
 mod jobs;
 mod library;
+mod pulse;
 mod server;
 mod stems;
 #[cfg(test)]
