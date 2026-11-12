@@ -106,7 +106,10 @@ def separate_filtered(predict, wav: torch.Tensor, cfg: NeedleConfig, overlap: in
     c, f, t = spec.shape
     ext = pad_time(spec[None], cfg)[0]                       # (C, F, T + taps - 1)
     stems = torch.zeros(cfg.sources, c, f, t, dtype=spec.dtype)            # on the CPU: a full song does not fit the GPU next to training
-    net_in = network_input(spec[None], cfg)[0].cpu()        # chunks and filter outputs stay on the CPU; torch_predictor moves each batch to the GPU and back
+    # Chunks and filter outputs stay on the CPU; torch_predictor moves each batch to the GPU and back. The network
+    # input is made 2048 frames at a time: for a long song it is several GB in one piece, which the GPU may not
+    # have free during a training run's validation. Every value depends on its own frame only, so nothing changes.
+    net_in = torch.cat([network_input(spec[None, ..., a:a + 2048], cfg)[0].cpu() for a in range(0, t, 2048)], -1)
     for base, piece in chunked_pieces(predict, net_in, cfg.frames, overlap, batch):
         n = min(piece.shape[-1], t - base)
         if n <= 0:
