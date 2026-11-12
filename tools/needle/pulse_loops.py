@@ -7,16 +7,28 @@ path: drums (kick / hat / perc / drum / beat / top / loop), bass (bass / sub), m
 lead / stab / arp / keys / piano / organ / guitar / fx), vocals (vocal / vox / voz / adlib).
 
 One track: tempo T (half from the loops' own tempos, half 70-200 BPM), 64 bars in 8-bar sections; drums,
-bass, music, vocal loops each sped up / slowed to T (only within 0.8-1.25x, half / double time allowed),
-switched on and off per section (one or two breakdowns without drums), mixed at random levels, soft-clipped.
-Written as Beat This! log-mels + labels, the same layout as beat_rave (Rave(root=...) reads it).
+bass, music, vocal loops each sped up / slowed to T, switched on and off per section (one or two breakdowns
+without drums), mixed at random levels, soft-clipped. Written as Beat This! log-mels + labels, the same layout
+as beat_rave (Rave(root=...) reads it).
+
+One tempo per track (v2, 12 Nov 2026). A loop is used only at its own tempo, changed by at most 0.8-1.25x:
+the track's beats are the beats its loops were made with. That is the rule the hand-annotated Raveform labels
+follow: the tempo the producer set and a DJ's software shows (Raveform's beats were drafted from rekordbox's
+grid and corrected by hand; its drum & bass is counted at 170-175 BPM, not at half of it). A sample pack's
+"170 bpm" or "90 bpm" in the loop's path is that same tempo.
+v1 also used a loop at half or double time when its own tempo did not fit. Then a 95-BPM hip-hop loop sat in
+a "190 BPM" track with a beat marked on every half beat, and a 140-BPM techno loop in a "70 BPM" track with a
+beat on every other kick. In the tracks labelled under 100 or from 160 BPM (35 % of the 1,500) 54 % of the
+drum layers played at double or half the label tempo (22 % over all tracks), and Pulse learned to double slow
+music. Every track now has drums (a tempo no drum loop fits is drawn again), and index.json lists the loops
+each track was made from.
 
     .venv\Scripts\python.exe pulse_loops.py --n 1500         -> F:\needle\beat_loops
 """
 import argparse
 import json
-import random
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -25,9 +37,13 @@ import soundfile as sf
 import soxr
 import torch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pulse import DATA, pick_device          # noqa: E402
+
 ROOTS = [Path("D:/"), Path(r"I:\datasets\bandcamp")]
-OUT = Path(r"F:\needle\beat_loops")
+OUT = DATA / "beat_loops"
 SR = 22050
+SPEED = (0.8, 1.25)                           # how far a loop may be sped up / slowed down from its own tempo
 ROLE = [("vocals", r"vocal|vox|voz|adlib|acapella"),
         ("bass", r"bass|sub\b|sub[ _-]"),
         ("drums", r"kick|hat|perc|drum|beat|top|groove|clap|snare|ride|shaker|loop"),
@@ -65,24 +81,31 @@ def scan():
     return loops
 
 
+def fits(bpm, tempo):
+    """A loop goes into a track only at its own tempo (never at half or double time): see the module docstring."""
+    return SPEED[0] <= tempo / bpm <= SPEED[1]
+
+
 def load_loop(path, bpm, bars, tempo):
     """-> mono float32 at SR, exactly `bars` bars long at `tempo`, or None if the speed change is too large."""
-    for mult in (1, 2, 0.5):                                            # half / double time
-        s = tempo / (bpm * mult)
-        if 0.8 <= s <= 1.25:
-            break
-    else:
+    if not fits(bpm, tempo):
         return None
+    s = tempo / bpm
     x, sr = sf.read(path, dtype="float32", always_2d=True)
     x = x.mean(1)
     n_src = int(round(bars * 4 * 60 / bpm * sr))                       # trim to whole bars at the native tempo
     x = x[:n_src] if len(x) >= n_src else np.pad(x, (0, n_src - len(x)))
     y = soxr.resample(x, sr, SR / s)                                    # played at SR: s times faster
-    n = int(round(len(x) / sr / s * SR))                               # bars x 4 x (beats at tempo / mult)
+    n = int(round(len(x) / sr / s * SR))                               # bars x 4 beats at `tempo`
     return y[:n] if len(y) >= n else np.pad(y, (0, n - len(y)))
 
 
 def make_track(loops, rng, tempo):
+    """-> (audio, beat times, downbeat times, [(role, path, loop bpm)]), or None when no drum loop fits `tempo`."""
+    usable = {role: [lp for lp in v if fits(lp[1], tempo)] for role, v in loops.items()}
+    if not usable.get("drums"):
+        return None
+    used = []
     bar = 4 * 60 / tempo
     n_bars = 64
     total = int(round(n_bars * bar * SR)) + SR
@@ -91,20 +114,15 @@ def make_track(loops, rng, tempo):
     plan = {"drums": np.ones(sections, bool), "bass": rng.random(sections) < 0.75,
             "music": rng.random(sections) < 0.7, "vocals": rng.random(sections) < 0.3}
     plan["drums"][rng.choice(np.arange(1, sections - 1), size=rng.integers(1, 3), replace=False)] = False   # breakdowns
-    if not plan["vocals"].any() or not loops.get("vocals"):
+    if not plan["vocals"].any() or not usable.get("vocals"):
         plan["vocals"][:] = False
     for role, on in plan.items():
-        if not on.any() or not loops.get(role):
+        if not on.any() or not usable.get(role):
             continue
         for _ in range(2 if role == "drums" else 1):                   # drums: two layers (e.g. kick loop + top loop)
-            seg = None
-            for _try in range(8):
-                p, bpm, bars = loops[role][rng.integers(len(loops[role]))]
-                seg = load_loop(p, bpm, bars, tempo)
-                if seg is not None:
-                    break
-            if seg is None:
-                continue
+            p, bpm, bars = usable[role][rng.integers(len(usable[role]))]
+            seg = load_loop(p, bpm, bars, tempo)
+            used.append((role, p, bpm))
             seg = seg / (np.abs(seg).max() + 1e-6) * 10 ** (rng.uniform(-14, -3) / 20)
             for s in range(sections):
                 if not on[s]:
@@ -117,39 +135,54 @@ def make_track(loops, rng, tempo):
                     mix[a:e] += seg[: e - a]
     mix = np.tanh(mix * rng.uniform(1.0, 3.0)) * 0.7                   # crude glue / master
     beats = np.arange(0, n_bars * 4) * 60 / tempo
-    return mix[: int(round(n_bars * bar * SR))], beats, beats[::4]
+    return mix[: int(round(n_bars * bar * SR))], beats, beats[::4], used
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=1500)
+    ap.add_argument("--out", default=str(OUT))
+    ap.add_argument("--device", help="for the log-mels: cuda, mps or cpu (default: the first of those that is there)")
+    ap.add_argument("--loops-json", help="reuse this scan of the sample packs (loops.json) instead of scanning again")
     a = ap.parse_args()
     from beat_this.preprocessing import LogMelSpect
-    loops = scan()
-    print({k: len(v) for k, v in loops.items()}, flush=True)
+    out = Path(a.out)
+    dev = pick_device(a.device)
+    if a.loops_json:
+        loops = {k: [tuple(lp) for lp in v] for k, v in json.loads(Path(a.loops_json).read_text()).items()}
+    else:
+        loops = scan()
+    print({k: len(v) for k, v in loops.items()}, f"mels on {dev}", flush=True)
     if len(loops.get("drums", [])) < 20:
         raise SystemExit("too few drum loops with a tempo in the name")
-    (OUT / "mels").mkdir(parents=True, exist_ok=True)
-    (OUT / "loops.json").write_text(json.dumps(loops, indent=1))
-    spect = LogMelSpect(device="cuda")
+    (out / "mels").mkdir(parents=True, exist_ok=True)
+    (out / "loops.json").write_text(json.dumps(loops, indent=1))
+    spect = LogMelSpect(device=dev)
     rng = np.random.default_rng(0)
     native = [bpm for v in loops.values() for _, bpm, _ in v]
     index = {}
     for i in range(a.n):
-        tempo = float(rng.choice(native)) if rng.random() < 0.5 else float(rng.uniform(70, 200))
-        tempo = round(tempo, 2)
-        x, beats, downs = make_track(loops, rng, tempo)
+        track = None
+        while track is None:                                            # a tempo no drum loop fits: draw again
+            tempo = float(rng.choice(native)) if rng.random() < 0.5 else float(rng.uniform(70, 200))
+            tempo = round(tempo, 2)
+            track = make_track(loops, rng, tempo)
+        x, beats, downs, used = track
         with torch.inference_mode():
-            m = spect(torch.from_numpy(x).cuda()).T.half().cpu().numpy()
+            m = spect(torch.from_numpy(x).to(dev)).T.half().cpu().numpy()
         tid = f"loop{i:05d}"
-        np.save(OUT / "mels" / f"{tid}.npy", m)
-        np.savez(OUT / f"{tid}.npz", beats=beats.astype(np.float32), downbeats=downs.astype(np.float32))
-        index[tid] = {"tempo": tempo, "frames": int(m.shape[1])}
+        np.save(out / "mels" / f"{tid}.npy", m)
+        np.savez(out / f"{tid}.npz", beats=beats.astype(np.float32), downbeats=downs.astype(np.float32))
+        index[tid] = {"tempo": tempo, "frames": int(m.shape[1]),
+                      "loops": [{"role": r, "bpm": b, "speed": round(tempo / b, 4), "file": p} for r, p, b in used]}
         if i % 100 == 0:
             print(f"[{i + 1}/{a.n}] {tempo} BPM", flush=True)
-    (OUT / "index.json").write_text(json.dumps(index, indent=1))
-    (OUT / "test.txt").write_text("")
-    print(len(index), "synthetic tracks")
+    (out / "index.json").write_text(json.dumps(index, indent=1))
+    (out / "test.txt").write_text("")
+    speeds = [lp["speed"] for v in index.values() for lp in v["loops"]]
+    print(len(index), f"synthetic tracks; loop speed changes {min(speeds):.3f}-{max(speeds):.3f}x "
+          f"(allowed {SPEED[0]}-{SPEED[1]}); every track has drums: "
+          f"{all(any(lp['role'] == 'drums' for lp in v['loops']) for v in index.values())}")
 
 
 if __name__ == "__main__":
