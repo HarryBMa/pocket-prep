@@ -12,6 +12,10 @@
     # continue a run that was stopped (time limit, reboot, Ctrl+C)
     python train.py --musdb ... --name b16_f32 --resume
 
+    # Needle 2 (band-split grid, TDF, dual-path GRU; needle2.py): 4096 / 1024 STFT, 128-frame (3 s) chunks,
+    # complex input and 3-tap deep filtering are its defaults
+    python train.py --musdb ... --arch bs --batch 8 --name n2_a
+
 Writes runs/<name>/:
   best.pt   best validation SDR so far: {"model", "config", ...}, what export_vela.py --checkpoint reads
   last.pt   everything needed to resume (model, optimiser, schedule, step)
@@ -210,12 +214,27 @@ def main():
     # model (only these may change; the layer types are fixed for the NPU)
     ap.add_argument("--base", type=int, default=16)
     ap.add_argument("--mult", type=int, nargs="+", default=list(NeedleConfig.mult))
-    ap.add_argument("--frames", type=int, default=32)
+    ap.add_argument("--frames", type=int, help="STFT frames per chunk (default 32; 128 for --arch bs)")
     ap.add_argument("--coord", action="store_true", help="extra input channel: bin index / bins (CoordConv)")
     ap.add_argument("--harmonics", type=int, nargs="*", default=[],
                     help="extra input channels: mono log-magnitude at bin h*k for each h given, e.g. 2 3 4")
-    ap.add_argument("--taps", type=int, default=0,
-                    help="0 = sigmoid magnitude masks; odd N >= 1 = deep filtering over N STFT frames (1 = complex mask)")
+    ap.add_argument("--taps", type=int,
+                    help="0 = sigmoid magnitude masks; odd N >= 1 = deep filtering over N STFT frames (1 = complex mask). "
+                         "Default 0; 3 for --arch bs")
+    # Needle 2 (needle2.py). --arch bs also changes the defaults above: 128 frames, 3 taps, and the STFT below.
+    ap.add_argument("--arch", choices=["unet", "bs"], default="unet",
+                    help="unet = Needle 1; bs = Needle 2: band-split grid, TDF blocks, dual-path GRU")
+    ap.add_argument("--n-fft", type=int, help="STFT size (default 2048; 4096 for --arch bs)")
+    ap.add_argument("--hop", type=int, help="STFT hop (default 512; 1024 for --arch bs)")
+    ap.add_argument("--bins", type=int, help="STFT bins the network sees (default 1024; 2048 for --arch bs)")
+    ap.add_argument("--cplx", action="store_true",
+                    help="extra input channels: the log-compressed complex STFT (always on for --arch bs unless --no-cplx)")
+    ap.add_argument("--no-cplx", action="store_true", help="bs: magnitudes only at the input (an ablation)")
+    ap.add_argument("--widths", type=int, nargs="+", help="bs: channels per level (default 32 64 96 128 160)")
+    ap.add_argument("--tdf", type=int, nargs="+", help="bs: TDF bottleneck factor per level, 0 = none (default 0 0 4 2 2)")
+    ap.add_argument("--tsteps", type=int, help="bs: how many of the down-samplings also halve time (default 2)")
+    ap.add_argument("--rnn", type=int, help="bs: dual-path GRU blocks at the deepest level (default 2; 0 = none)")
+    ap.add_argument("--rnn-hidden", type=int, help="bs: GRU state size per direction (default 96)")
     # optimisation
     ap.add_argument("--steps", type=int, default=200_000)
     ap.add_argument("--batch", type=int, default=64)
@@ -256,13 +275,22 @@ def main():
     run = Path(a.runs) / a.name
     run.mkdir(parents=True, exist_ok=True)
 
-    cfg = NeedleConfig(base=a.base, mult=tuple(a.mult), frames=a.frames, coord=a.coord,
-                       harmonics=tuple(a.harmonics), taps=a.taps)
+    bs = a.arch == "bs"
+    kw = dict(arch=a.arch, base=a.base, mult=tuple(a.mult), frames=a.frames or (128 if bs else 32), coord=a.coord,
+              harmonics=tuple(a.harmonics), taps=(3 if bs else 0) if a.taps is None else a.taps,
+              cplx=(bs and not a.no_cplx) or a.cplx, n_fft=a.n_fft or (4096 if bs else 2048),
+              hop=a.hop or (1024 if bs else 512), bins=a.bins or (2048 if bs else 1024))
+    for k in ("widths", "tdf", "tsteps", "rnn", "rnn_hidden"):          # Needle 2's sizes: only what was given, the rest are NeedleConfig's defaults
+        if getattr(a, k) is not None:
+            kw[k] = getattr(a, k)
+    cfg = NeedleConfig(**kw)
     cfg.check()
     check_alignment(cfg, device)
     model = Needle(cfg).to(device)
     info = count_macs(cfg)
-    print(f"Needle base {cfg.base} mult {cfg.mult} frames {cfg.frames} coord {cfg.coord} harmonics {cfg.harmonics} "
+    what = (f"Needle 2 widths {cfg.widths} tdf {cfg.tdf} gru {cfg.rnn} x {cfg.rnn_hidden}, STFT {cfg.n_fft}/{cfg.hop}, {cfg.rows} rows"
+            if bs else f"Needle base {cfg.base} mult {cfg.mult}")
+    print(f"{what}, frames {cfg.frames} coord {cfg.coord} harmonics {cfg.harmonics} cplx {cfg.cplx} "
           f"taps {cfg.taps}: {info['params']:,} parameters, "
           f"{info['gmac_per_audio_s']:.2f} GMAC per second of audio")
 

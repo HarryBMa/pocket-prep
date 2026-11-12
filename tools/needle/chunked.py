@@ -169,15 +169,24 @@ def torch_predictor(model, batch: int = 64):
     chunks of a track is padded to the full batch, so the GPU only ever sees one input shape.
     Chunks are moved to the model's device and the masks back to the chunks' device, so a track
     can be handled on the CPU (STFT, masks, iSTFT: several GB for a long song) while only the
-    network runs on the GPU."""
+    network runs on the GPU.
+    A model that sets `eval_batch` (Needle 2, whose chunks and outputs are several times larger) is run
+    in slices of that many chunks, each moved back before the next one runs, so a whole batch of
+    outputs never sits on the GPU at once."""
     model.eval()
     device = next(model.parameters()).device
+    step = min(batch, getattr(model, "eval_batch", batch))
 
     def predict(xb):
         n, home = xb.shape[0], xb.device
-        if n < batch:
-            xb = F.pad(xb, (0, 0, 0, 0, 0, 0, 0, batch - n))
-        return model(xb.to(device))[:n].to(home)
+        if step == batch:
+            if n < batch:
+                xb = F.pad(xb, (0, 0, 0, 0, 0, 0, 0, batch - n))
+            return model(xb.to(device))[:n].to(home)
+        m = -(-n // step) * step                             # the last slice is padded to a full one
+        if n < m:
+            xb = F.pad(xb, (0, 0, 0, 0, 0, 0, 0, m - n))
+        return torch.cat([model(xb[i:i + step].to(device)).to(home) for i in range(0, m, step)])[:n]
     return predict
 
 

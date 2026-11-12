@@ -56,11 +56,16 @@ def _init(tflite, cfg, overlap, reference):
         resolver.BUILTIN_REF if reference else resolver.AUTO))
     it.allocate_tensors()
     i, o = it.get_input_details()[0], it.get_output_details()[0]
-    _W.update(it=it, i=i, o=o, cfg=cfg, overlap=overlap)
+    _W.update(it=it, i=i, o=o, cfg=cfg, overlap=overlap, inputs=it.get_input_details())
+    if cfg.arch == "bs":
+        from needle2 import row_of_bin
+        _W["row_of_bin"] = row_of_bin(cfg)
 
 
 def _predict(xb):
     """(N, C, bins, frames) float -> (N, S*C, bins, frames) float masks, one chunk at a time."""
+    if _W["cfg"].arch == "bs":
+        return _predict_bands(xb)
     it, i, o = _W["it"], _W["i"], _W["o"]
     (si, zi), (so, zo) = i["quantization"], o["quantization"]
     lo, hi = np.iinfo(i["dtype"]).min, np.iinfo(i["dtype"]).max
@@ -71,6 +76,25 @@ def _predict(xb):
         it.invoke()
         y = (it.get_tensor(o["index"]).astype(np.float32) - zo) * so
         out.append(torch.from_numpy(y[0]).permute(2, 0, 1))
+    return torch.stack(out)
+
+
+def _predict_bands(xb):
+    """Needle 2 (export_vela2.py): the band tensors go in, matched to the model's inputs by shape; the filters
+    come out on the band grid, and every bin takes its row's filter, as the M85 does on the deck."""
+    from needle2 import to_bands
+    it, o, cfg = _W["it"], _W["o"], _W["cfg"]
+    so, zo = o["quantization"]
+    out = []
+    for x in xb:
+        bands = {tuple(b.shape[1:]): b for b in (b.permute(0, 2, 3, 1).numpy() for b in to_bands(x[None], cfg))}
+        for i in _W["inputs"]:
+            s, z = i["quantization"]
+            lo, hi = np.iinfo(i["dtype"]).min, np.iinfo(i["dtype"]).max
+            it.set_tensor(i["index"], np.clip(np.round(bands[tuple(i["shape"][1:])] / s + z), lo, hi).astype(i["dtype"]))
+        it.invoke()
+        y = (it.get_tensor(o["index"]).astype(np.float32) - zo) * so          # (1, rows, frames, K)
+        out.append(torch.from_numpy(y[0]).permute(2, 0, 1)[:, _W["row_of_bin"]])
     return torch.stack(out)
 
 

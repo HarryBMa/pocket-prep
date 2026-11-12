@@ -1,5 +1,9 @@
 """Needle: a tiny all-convolution stem separator meant for an Arm Ethos-U55 NPU (Renesas RA8P1).
 
+This file is Needle 1 plus everything the two models share: the config, the front end (STFT, network input) and
+the back end (masks / deep filters, iSTFT). Needle 2, the band-split model (NeedleConfig.arch = "bs"), is in
+needle2.py; Needle(cfg) builds whichever the config asks for.
+
 Why it looks like this (every choice comes from what the U55 can run, see tools/needle/README.md):
 - Only CONV_2D (3x3, stride 1 or 2x2), RELU, CONCATENATION, nearest 2x2 upsampling and LOGISTIC.
   All of these run on the NPU; no attention, no LSTM, no normalisation layers at inference
@@ -47,13 +51,35 @@ class NeedleConfig:
     # (except "other"), channel and bin a complex FIR over `taps` frames (1 = complex mask);
     # "other" is the residual, so the stems still add up to the mix.
     taps: int = 0
+    # ── Needle 2 (arch = "bs", see needle2.py). The defaults leave Needle 1 and its checkpoints unchanged. ──
+    arch: str = "unet"                            # "unet" = Needle 1 (this file); "bs" = Needle 2, the band-split model
+    cplx: bool = False                            # + 2 input channels per audio channel: the STFT's real and imaginary
+                                                  # part, log-compressed like the magnitudes (lets the filters use phase)
+    bands: tuple = ((128, 1), (384, 2), (512, 4), (1024, 16))   # bs: (bins, bins per row), from the bottom of the spectrum up
+    widths: tuple = (32, 64, 96, 128, 160)        # bs: channels per level (level 0 = the band grid)
+    tsteps: int = 2                               # bs: the first `tsteps` down-samplings halve time too, the rest frequency only
+    tdf: tuple = (0, 0, 4, 2, 2)                  # bs: TDF bottleneck factor per level (0 = no TDF at that level)
+    rnn: int = 2                                  # bs: dual-path GRU blocks at the deepest level
+    rnn_hidden: int = 96                          # bs: GRU state size per direction
 
     def __post_init__(self):
         self.mult, self.harmonics = tuple(self.mult), tuple(self.harmonics)
+        self.bands = tuple(tuple(b) for b in self.bands)
+        self.widths, self.tdf = tuple(self.widths), tuple(self.tdf)
 
     @property
     def levels(self):
         return len(self.mult)
+
+    @property
+    def time_multiple(self):
+        """A chunk's frame count must be a multiple of this (how far the network down-samples time)."""
+        return 2 ** (self.tsteps if self.arch == "bs" else self.levels)
+
+    @property
+    def rows(self):
+        """bs: rows of the band grid (one bin per row at the bottom of the spectrum, several further up)."""
+        return sum(b // s for b, s in self.bands)
 
     @property
     def context(self):
@@ -62,7 +88,7 @@ class NeedleConfig:
 
     @property
     def in_channels(self):
-        return self.audio_channels + int(self.coord) + len(self.harmonics)
+        return self.audio_channels + int(self.coord) + len(self.harmonics) + (2 * self.audio_channels if self.cplx else 0)
 
     @property
     def out_channels(self):
@@ -71,15 +97,24 @@ class NeedleConfig:
         return (self.sources - 1) * self.audio_channels * 2 * self.taps
 
     def check(self):
-        assert self.bins % 2 ** self.levels == 0 and self.frames % 2 ** self.levels == 0, \
-            f"bins and frames must be divisible by {2 ** self.levels}"
+        assert self.arch in ("unet", "bs"), self.arch
+        if self.arch == "bs":
+            down = 2 ** (len(self.widths) - 1)
+            assert sum(b for b, _ in self.bands) == self.bins, "the bands must add up to `bins`"
+            assert all(b % s == 0 and (b // s) % down == 0 for b, s in self.bands), \
+                f"every band's row count must be divisible by {down}"
+            assert self.frames % self.time_multiple == 0, f"frames must be divisible by {self.time_multiple}"
+            assert len(self.tdf) == len(self.widths) and 0 <= self.tsteps < len(self.widths)
+        else:
+            assert self.bins % 2 ** self.levels == 0 and self.frames % 2 ** self.levels == 0, \
+                f"bins and frames must be divisible by {2 ** self.levels}"
         assert self.bins <= self.n_fft // 2
         assert self.taps == 0 or self.taps % 2 == 1, "taps must be 0 (masks) or odd (a centre frame and equal sides)"
 
     def tag(self):
         """Short name of the non-default features, for folder and file names ('' for the plain model)."""
         return (("_c" if self.coord else "") + (("_h" + "".join(map(str, self.harmonics))) if self.harmonics else "")
-                + (f"_t{self.taps}" if self.taps else ""))
+                + (f"_t{self.taps}" if self.taps else "") + ("_x" if self.cplx else ""))
 
 
 class Block(nn.Module):
@@ -96,6 +131,14 @@ class Block(nn.Module):
 
 
 class Needle(nn.Module):
+    def __new__(cls, cfg: NeedleConfig = None, *args, **kwargs):
+        # Needle(cfg) builds the model the config asks for, so everything that says Needle(cfg) (training,
+        # evaluation, export, the scans) also works for Needle 2 without knowing about it.
+        if cls is Needle and cfg is not None and cfg.arch == "bs":
+            from needle2 import Needle2
+            return Needle2(cfg)                    # not a Needle instance, so Python skips Needle.__init__
+        return super().__new__(cls)
+
     def __init__(self, cfg: NeedleConfig = NeedleConfig()):
         super().__init__()
         cfg.check()
@@ -165,6 +208,14 @@ def network_input(spec, cfg: NeedleConfig):
         k = torch.arange(cfg.bins, device=spec.device)
         for h in cfg.harmonics:
             chans.append(mono[:, (h * k).clamp(max=f - 1)][:, None])
+    if cfg.cplx:
+        # The complex STFT with its magnitude log-compressed and its phase kept: real and imaginary part of
+        # exp(j phase) * log1p|X| per audio channel, [L re, L im, R re, R im]. With only magnitudes the network
+        # cannot know how neighbouring frames relate in phase, which a deep filter needs. Same range as the
+        # log-magnitudes on purpose: in int8 all channels of the input tensor share one scale.
+        m = mag[:, :, : cfg.bins]
+        z = spec[:, :, : cfg.bins] * (torch.log1p(m) / m.clamp(min=1e-8))
+        chans.append(torch.view_as_real(z).permute(0, 1, 4, 2, 3).reshape(b, 2 * c, cfg.bins, t))
     return torch.cat(chans, 1)
 
 
@@ -243,7 +294,7 @@ def separate(model: Needle, wav):
     cfg = model.cfg
     spec = spectrogram(wav, cfg)
     t = spec.shape[-1]
-    pad = (-t) % (2 ** cfg.levels)
+    pad = (-t) % cfg.time_multiple
     x = F.pad(network_input(spec, cfg), (0, pad))
     out = model(x)[..., :t]
     return istft(apply_output(out, spec, cfg), cfg, wav.shape[-1])
@@ -274,9 +325,14 @@ def count_macs(cfg: NeedleConfig):
     total = 0
     def hook(mod, inp, outp):
         nonlocal total
-        k = mod.kernel_size[0] * mod.kernel_size[1] * mod.in_channels
-        total += outp.numel() * k
-    hs = [mod.register_forward_hook(hook) for mod in m.modules() if isinstance(mod, nn.Conv2d)]
+        if isinstance(mod, nn.Conv2d):
+            total += outp.numel() * mod.kernel_size[0] * mod.kernel_size[1] * mod.in_channels // mod.groups
+        elif isinstance(mod, nn.Linear):
+            total += outp.numel() * mod.in_features
+        else:                                       # GRU: three gates, each fed by the input and the state, per step and direction
+            y = outp[0]
+            total += y.shape[0] * y.shape[1] * (2 if mod.bidirectional else 1) * 3 * mod.hidden_size * (mod.input_size + mod.hidden_size)
+    hs = [mod.register_forward_hook(hook) for mod in m.modules() if isinstance(mod, (nn.Conv2d, nn.Linear, nn.GRU))]
     with torch.no_grad():
         m(torch.zeros(1, cfg.in_channels, cfg.bins, cfg.frames))
     for h in hs:
