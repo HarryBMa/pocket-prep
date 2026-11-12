@@ -39,9 +39,12 @@ while ($idle -lt 2) {                       # two checks a minute apart: a queue
   if (Busy) { $idle = 0 } else { $idle++ }
   Start-Sleep -Seconds 60
 }
-$free = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
-"$(Get-Date -Format s) nothing else is running; free RAM $([math]::Round($free)) GB"
-if ($free -lt 90) { "less than 90 GB of RAM is free and the run needs about 87 GB: not starting"; exit }
+# Memory: the training data is memory-mapped (--cache), so "free RAM" says little: Windows fills RAM with those
+# pages and drops them when something else needs room. What must fit is committed memory (about 12 GB for a run).
+$m = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
+$room = ($m.CommitLimit - $m.CommittedBytes) / 1GB
+"$(Get-Date -Format s) nothing else is running; room for $([math]::Round($room)) GB more committed memory"
+if ($room -lt 30) { "less than 30 GB of commit room: something else is using the memory, not starting"; exit }
 
 # Steps: as many as fit one night at the speed this GPU really trains Needle 2 (12 steps on random audio), at most
 # 150,000. A full, shorter schedule is better than one cut off by --max-hours. Kept in steps.txt for --resume.
