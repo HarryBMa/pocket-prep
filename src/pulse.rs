@@ -63,6 +63,11 @@ pub struct PulseGrid {
 /// Returns `None` unless Pulse found a grid and the tempo is steady, so the caller can fall back to the
 /// previous grid.
 pub fn analyse(left: &[f32], right: &[f32], rate: u32, threads: i32) -> Option<PulseGrid> {
+    analyse_with_snap(left, right, rate, threads, INTEGER_SNAP_BPM)
+}
+
+/// As `analyse`, with the integer-tempo snap window given explicitly (0.0 turns snapping off).
+pub fn analyse_with_snap(left: &[f32], right: &[f32], rate: u32, threads: i32, snap: f64) -> Option<PulseGrid> {
     if left.is_empty() || left.len() != right.len() || rate == 0 {
         return None;
     }
@@ -80,7 +85,7 @@ pub fn analyse(left: &[f32], right: &[f32], rate: u32, threads: i32) -> Option<P
             left.len(),
             2,
             rate as c_int,
-            INTEGER_SNAP_BPM,
+            snap,
             threads,
             &mut out,
         )
@@ -145,6 +150,7 @@ mod tests {
     fn dump_library_for_pulse_cli() {
         let dir = std::path::PathBuf::from(std::env::var("PULSE_DUMP_DIR").expect("set PULSE_DUMP_DIR"));
         eprintln!("dump dir: {:?}", dir);
+        let snap: f64 = std::env::var("PULSE_DUMP_SNAP").ok().and_then(|v| v.parse().ok()).unwrap_or(INTEGER_SNAP_BPM);
         let n: i64 = std::env::var("PULSE_DUMP_N").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
         std::fs::create_dir_all(&dir).unwrap();
         let rows = crate::db::query(
@@ -170,7 +176,7 @@ mod tests {
             let file = dir.join(format!("{id}.f32"));
             std::fs::write(&file, &bytes).unwrap_or_else(|e| panic!("write {}: {e}", file.display()));
             let t = std::time::Instant::now();
-            let g = analyse(&audio.left, &audio.right, audio.sample_rate, 0);
+            let g = analyse_with_snap(&audio.left, &audio.right, audio.sample_rate, 0, snap);
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             println!("{id}\t{}\t{}\t{}\t{:?}\t{ms:.1}", audio.sample_rate, file.display(), r["title"].as_str().unwrap_or(""), g);
         }
