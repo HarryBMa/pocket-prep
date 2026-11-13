@@ -22,7 +22,8 @@ param(
   [int]$Steps = 150000,
   [string]$Init = '',                                # train on from runs\<Init>\best.pt (train.py --init)
   [string]$Against = 'n2_a',                         # the run to compare with, song by song
-  [string[]]$After = @()                             # names of other queue_n2x runs that must have finished first
+  [string[]]$After = @(),                            # names of other queue_n2x runs that must have finished first
+  [switch]$DryRun                                    # print the training command and what it waits for, then stop
 )
 $ErrorActionPreference = 'Continue'
 Set-Location F:\needle\pocket-prep\tools\needle
@@ -51,7 +52,10 @@ function Paired($a, $b) {
   } else { "   (no paired comparison: results\$a or results\$b is missing)" }
 }
 
+$stems = @('--stems','F:\needle\data\stems\moisesdb','--stems','F:\needle\data\stems\mshoxx','--stems','F:\needle\data\stems\ni','--stems','F:\needle\data\stems\packs','--stems','F:\needle\data\stems\wavgrind')
+$a = @('--arch','bs') + $Extra + @('--batch','8','--steps',"$Steps",'--patience','100','--stems-share','0.4','--teacher','E:\needle-teacher\luke_v2','--teacher','E:\needle-teacher\plainset2\jamendo_v2','--teacher','B:\needle-teacher\jamendo_v3','--teacher-share','0.4','--teacher-seconds','60','--p-speed','0.3','--speed-change','0.06','--mr-weight','0.5','--env-weight','0.005','--cache','H:\needle-cache','--cache','F:\needle-cache2','--gpu-mem','0.75') + $stems
 "$(Get-Date -Format s) $n : extra arguments [$($Extra -join ' ')], $Steps steps$(if ($Init) { ", on from $Init" }), compared with $Against; waiting for the older queues$(if ($After) { ', ' + ($After -join ', ') }) and every other Needle job"
+if ($DryRun) { "train.py --name $n $($a -join ' ')$(if ($Init) { " --init runs\$Init\best.pt" })"; "waits for command lines matching: $waitFor"; "busy now: $(Busy)"; exit }
 $idle = 0
 while ($idle -lt 2) {
   if (Stopped) { "STOP file found, ending"; exit }
@@ -65,8 +69,6 @@ $room = ($m.CommitLimit - $m.CommittedBytes) / 1GB
 if ($room -lt 30) { "less than 30 GB of commit room: something else is using the memory, not starting"; exit }
 
 if (Stopped) { "STOP file found, ending"; exit }
-$stems = @('--stems','F:\needle\data\stems\moisesdb','--stems','F:\needle\data\stems\mshoxx','--stems','F:\needle\data\stems\ni','--stems','F:\needle\data\stems\packs','--stems','F:\needle\data\stems\wavgrind')
-$a = @('--arch','bs') + $Extra + @('--batch','8','--steps',"$Steps",'--patience','100','--stems-share','0.4','--teacher','E:\needle-teacher\luke_v2','--teacher','E:\needle-teacher\plainset2\jamendo_v2','--teacher','B:\needle-teacher\jamendo_v3','--teacher-share','0.4','--teacher-seconds','60','--p-speed','0.3','--speed-change','0.06','--mr-weight','0.5','--env-weight','0.005','--cache','H:\needle-cache','--cache','F:\needle-cache2','--gpu-mem','0.75') + $stems
 if (Test-Path "runs\$n\last.pt") { $a += '--resume' } elseif ($Init) { $a += @('--init',"runs\$Init\best.pt") }
 & F:\needle\run_train.ps1 -Name $n -TrainArgs $a *>&1 | Out-File -Append -Encoding utf8 "F:\needle\logs\$n.log"
 if (-not (Test-Path "runs\$n\best.pt")) { "no checkpoint: the training failed, see F:\needle\logs\$n.log"; exit }
