@@ -190,6 +190,29 @@ what `n2_d` tests. If `n2_b` (no GRU) does not dull them, the cause is the GRU's
 73 ms of the 250 ms per chunk (RTF 0.084 against 0.060 without them), so the deck needs to know what they buy. The
 queue prints the song-by-song difference `n2_a` minus `n2_b`. Started 13 Nov 09:02 (1.53 M parameters, 10.5 steps/s).
 
+### Result (13 Nov 2026)
+
+Validation: best 5.40 dB (`n2_a`: 5.56). SDR in dB, `n2_a` minus `n2_b` song by song:
+
+| Test set | `n2_a` (GRU) | `n2_b` (no GRU) | What the GRU buys |
+|---|---|---|---|
+| MUSDB18-HQ test | 5.19 | 5.30 | +0.03 [-0.03, +0.10], 32/50 |
+| MoisesDB test | 6.46 | 6.43 | +0.13 [+0.06, +0.21], 25/30 (drums +0.25) |
+| NI stems | 4.63 | 4.65 | +0.05 [-0.42, +0.51] |
+| House hold-out, teacher stems | 7.00 | 6.92 | +0.13 [+0.02, +0.23], 32/50 |
+| Ibiza, teacher stems | 9.07 | 9.23 | +0.10 [-0.12, +0.32] |
+| MoisesDB in int8 | 6.38 (loss 0.09) | 4.81 (loss 1.63) | |
+| NPU time per chunk, SDRAM | 250 ms | 177 ms | |
+
+In float the GRU blocks buy 0.0-0.15 dB for 73 ms. In int8 the model without them breaks: drums -0.51, bass
+-1.36, other -2.78, vocals -1.85 dB (mean output error 0.0233 against 0.0084 for `n2_a`). Why is open; until it is
+understood `n2_a`'s layout stays. If the cause can be fixed (calibration, a layer whose range explodes), the
+no-GRU model is 30 % faster at the same float quality.
+
+**Hats.** `n2_b` loses them too, so the GRU is not the cause: attack more than 6 dB down on 2.7 % of the house
+hits (Needle 1 1.2 %, `n2_a` 3.8 %) and on 8.1 % of the MoisesDB hits (4.9 %, 6.0 %). `n2_d` (`--sub 4`) is the
+right next test.
+
 ## Runs queued on 13 Nov: `n2_d` and `n2_c` (`queue_n2x.example.ps1`)
 
 | Run | What changes against `n2_a` | Question |
