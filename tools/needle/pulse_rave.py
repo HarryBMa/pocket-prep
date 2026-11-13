@@ -233,9 +233,21 @@ def train(a):
         model = Pulse(a.width, a.levels)
     model.to(dev)
     rv, tt = Rave("train"), Tracks(local_path(a.teacher), "train")
+    note = ""
+    if a.teacher_holdout:                                               # experiments only; the recipes do not use these
+        out = set(local_path(a.teacher_holdout).read_text(encoding="utf-8").split())
+        n_all = len(tt.ids)
+        tt.ids = [t for t in tt.ids if t not in out]
+        note += f" ({n_all - len(tt.ids)} more held out)"
+    if a.teacher_tempo:
+        tt.keep_tempo(*a.teacher_tempo)
+        note += f" at {a.teacher_tempo[0]:g}-{a.teacher_tempo[1]:g} BPM"
+    if a.teacher_balance:
+        tt.balance_tempo(a.teacher_balance)
+        note += f", {a.teacher_balance:.0%} of them drawn evenly over tempo"
     lp = Rave("train", root=local_path(a.loops)) if a.loop_frac > 0 else None
     print(f"init {a.init} (width {ck['width']}, {count_params(model):,} params) on {dev}; {len(rv.ids)} Raveform + "
-          f"{len(tt.ids)} teacher train tracks" + (f" + {len(lp.ids)} loop tracks" if lp else ""), flush=True)
+          f"{len(tt.ids)} teacher train tracks{note}" + (f" + {len(lp.ids)} loop tracks" if lp else ""), flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, a.lr, total_steps=a.steps, pct_start=0.05)
     run = HERE / "runs_pulse" / a.name
@@ -352,6 +364,11 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, help="seed for the network's initial weights (default: not fixed, as before)")
     ap.add_argument("--resume", action="store_true", help="continue a run that was cut off, from its resume.pt")
     ap.add_argument("--check-every", type=int, default=5000, help="steps between checks (each one also saves the run)")
+    ap.add_argument("--teacher-holdout", help="experiment: a file of teacher track ids to keep out of training as well")
+    ap.add_argument("--teacher-tempo", type=float, nargs=2, metavar=("LO", "HI"),
+                    help="experiment: teacher tracks only from this tempo range (BPM by the teacher's beats)")
+    ap.add_argument("--teacher-balance", type=float, default=0.0,
+                    help="experiment: this share of the teacher crops drawn evenly over tempo (0 = by track, as the recipes do)")
     ap.add_argument("--models", nargs="+", default=["p1_w24", "p2_w24"])
     a = ap.parse_args()
     {"prep": lambda: prep(a), "train": lambda: train(a), "eval": lambda: evaluate(a)}[a.cmd]()

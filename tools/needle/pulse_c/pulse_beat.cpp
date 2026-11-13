@@ -7,7 +7,8 @@
 #include <atomic>
 #include <cmath>
 #include <complex>
-#include <cstdint>
+#include <exception>
+#include <mutex>
 #include <numeric>
 #include <thread>
 #if defined(__linux__)
@@ -24,9 +25,13 @@ constexpr int kNfft = 1024;
 constexpr int kHop = 441;
 constexpr int kChunk = 512;       // frames per network pass (10.24 s)
 constexpr int kChunkHop = 448;    // 64 frames of crossfade between passes
+constexpr double kDoubleTimeParity = 0.75;   // see fitGrid
 
 // Worker threads for the heavy loops. On Linux each worker drops to nice +10 first, so a track being
 // analysed never takes CPU from the audio worker or the UI of a track that is playing.
+// An exception in a worker (e.g. std::bad_alloc) stops the remaining work and is rethrown on the calling
+// thread after the join, so the caller's try / catch sees it (an exception leaving a std::thread would
+// terminate the firmware instead).
 template <class F>
 void parallelFor(int n, int threads, F&& f) {
     if (threads <= 1 || n < 2) {
@@ -34,15 +39,30 @@ void parallelFor(int n, int threads, F&& f) {
         return;
     }
     std::atomic<int> next{0};
+    std::exception_ptr failure;
+    std::mutex failureMutex;
     auto work = [&] {
 #if defined(__linux__)
         setpriority(PRIO_PROCESS, pid_t(syscall(SYS_gettid)), 10);
 #endif
-        for (int i; (i = next.fetch_add(1)) < n;) f(i);
+        try {
+            for (int i; (i = next.fetch_add(1)) < n;) f(i);
+        } catch (...) {
+            next.store(n);
+            std::lock_guard<std::mutex> lock(failureMutex);
+            if (!failure) failure = std::current_exception();
+        }
     };
     std::vector<std::thread> pool;
-    for (int t = 0; t < std::min(threads, n); ++t) pool.emplace_back(work);
+    pool.reserve(std::size_t(std::min(threads, n)));
+    try {
+        for (int t = 0; t < std::min(threads, n); ++t) pool.emplace_back(work);
+    } catch (...) {                       // no more threads available: the ones started finish the work,
+        if (pool.empty())                 // or this thread does (at its own priority)
+            for (int i; (i = next.fetch_add(1)) < n;) f(i);
+    }
     for (auto& t : pool) t.join();
+    if (failure) std::rethrow_exception(failure);
 }
 
 // ── Resampling: windowed-sinc (Blackman), cutoff just below the lower Nyquist ─────────────────────────────
@@ -66,16 +86,49 @@ std::vector<float> resample(const std::vector<float>& x, int inRate, int outRate
     std::vector<float> y(n);
     const long len = long(x.size());
     constexpr std::size_t kBlock = 1 << 14;
-    parallelFor(int((n + kBlock - 1) / kBlock), threads, [&](int blk) {
+    const auto tap = [&](double d) {                              // h(d), d = output time - input sample
+        const double pos = (d + half) * kSub;
+        const int i0 = int(pos);
+        const float f = float(pos - i0);
+        return tab[i0] + f * (tab[i0 + 1] - tab[i0]);
+    };
+    // The deck's rates (44.1 and 48 kHz) are simple fractions of 22.05 kHz (2/1 and 320/147), so the output
+    // samples fall on 1 or 147 different positions between input samples: the 2 x half filter taps of each
+    // position are worked out once, and every output sample is one dot product.
+    const long g = std::gcd(long(inRate), long(outRate)), up = outRate / g, down = inRate / g;
+    if (up <= 512) {
+        const int taps = 2 * half;
+        std::vector<float> h(std::size_t(up) * taps), norm(up);
+        for (long ph = 0; ph < up; ++ph) {
+            float wsum = 0;
+            for (int m = 0; m < taps; ++m) wsum += h[std::size_t(ph) * taps + m] = tap(double(ph) / up + half - 1 - m);
+            norm[ph] = wsum > 0 ? 1.f / wsum : 0.f;
+        }
+        parallelFor(int((n + kBlock - 1) / kBlock), threads, [&](int blk) {
+            for (std::size_t j = std::size_t(blk) * kBlock; j < std::min(n, std::size_t(blk + 1) * kBlock); ++j) {
+                const long long num = (long long)j * down;
+                const long c = long(num / up), first = c - half + 1;
+                const float* hp = h.data() + std::size_t(num % up) * taps;
+                float acc = 0;
+                if (first >= 0 && first + taps <= len) {
+                    const float* xp = x.data() + first;
+                    for (int m = 0; m < taps; ++m) acc += hp[m] * xp[m];
+                } else {
+                    for (int m = 0; m < taps; ++m)
+                        if (first + m >= 0 && first + m < len) acc += hp[m] * x[std::size_t(first + m)];
+                }
+                y[j] = acc * norm[num % up];
+            }
+        });
+        return y;
+    }
+    parallelFor(int((n + kBlock - 1) / kBlock), threads, [&](int blk) {   // any other rate: taps per sample
         for (std::size_t j = std::size_t(blk) * kBlock; j < std::min(n, std::size_t(blk + 1) * kBlock); ++j) {
             const double t = j * ratio;
             const long c = long(std::floor(t));
             float acc = 0, wsum = 0;
             for (long k = c - half + 1; k <= c + half; ++k) {
-                const double pos = (t - k + half) * kSub;     // table index of d = t - k
-                const int i0 = int(pos);
-                const float f = float(pos - i0);
-                const float h = tab[i0] + f * (tab[i0 + 1] - tab[i0]);
+                const float h = tap(t - k);
                 wsum += h;
                 if (k >= 0 && k < len) acc += h * x[std::size_t(k)];
             }
@@ -114,14 +167,14 @@ struct Fft {
     }
 };
 
-// Slaney mel scale (torchaudio mel_scale="slaney")
+// Slaney mel scale (torchaudio mel_scale="slaney"): linear below 1 kHz, logarithmic above
+constexpr double kMelLinearHz = 200.0 / 3, kMelLogFromHz = 1000.0, kMelLogFromMel = kMelLogFromHz / kMelLinearHz;
+double melLogStep() { return std::log(6.4) / 27.0; }
 double hzToMel(double f) {
-    const double fsp = 200.0 / 3, minLogHz = 1000.0, minLogMel = minLogHz / fsp, logStep = std::log(6.4) / 27.0;
-    return f < minLogHz ? f / fsp : minLogMel + std::log(f / minLogHz) / logStep;
+    return f < kMelLogFromHz ? f / kMelLinearHz : kMelLogFromMel + std::log(f / kMelLogFromHz) / melLogStep();
 }
 double melToHz(double m) {
-    const double fsp = 200.0 / 3, minLogHz = 1000.0, minLogMel = minLogHz / fsp, logStep = std::log(6.4) / 27.0;
-    return m < minLogMel ? m * fsp : minLogHz * std::exp(logStep * (m - minLogMel));
+    return m < kMelLogFromMel ? m * kMelLinearHz : kMelLogFromHz * std::exp(melLogStep() * (m - kMelLogFromMel));
 }
 
 // torchaudio.functional.melscale_fbanks(n_freqs=513, f_min=30, f_max=11000, n_mels=128, sr=22050, norm=None, slaney)
@@ -155,34 +208,40 @@ Tensor conv(const Tensor& x, const PulseWeights::Conv& L) {
     const int oh = (x.h + 2 * L.ph - L.kh) / L.sh + 1;
     const int ow = (x.w + 2 * L.pw - L.kw) / L.sw + 1;
     Tensor y(L.cout, oh, ow);
+    // valid output columns [c0, c1) for each horizontal tap
+    int c0[8], c1[8];
+    for (int kx = 0; kx < L.kw && kx < 8; ++kx) {
+        c0[kx] = 0;
+        c1[kx] = ow;
+        while (c0[kx] < ow && c0[kx] * L.sw + kx - L.pw < 0) ++c0[kx];
+        while (c1[kx] > c0[kx] && (c1[kx] - 1) * L.sw + kx - L.pw >= x.w) --c1[kx];
+    }
+    // One output row at a time: the row being summed (ow floats) stays in the L1 cache while every input
+    // channel and tap is added to it. (Tap by tap over the whole plane is the same sum in the same order,
+    // but streams the plane through the cache cin x kh x kw times.)
     for (int o = 0; o < L.cout; ++o) {
-        float* out = y.ch(o);
-        std::fill(out, out + std::size_t(oh) * ow, L.b[o]);
-        for (int i = 0; i < L.cin; ++i) {
-            const float* in = x.ch(i);
-            for (int ky = 0; ky < L.kh; ++ky)
-                for (int kx = 0; kx < L.kw; ++kx) {
-                    const float wv = L.w[((std::size_t(o) * L.cin + i) * L.kh + ky) * L.kw + kx];
-                    if (wv == 0.f) continue;
-                    for (int r = 0; r < oh; ++r) {
-                        const int iy = r * L.sh + ky - L.ph;
-                        if (iy < 0 || iy >= x.h) continue;
-                        const float* row = in + std::size_t(iy) * x.w;
-                        float* orow = out + std::size_t(r) * ow;
-                        // valid output columns for this tap
-                        int c0 = 0, c1 = ow;
-                        while (c0 < ow && c0 * L.sw + kx - L.pw < 0) ++c0;
-                        while (c1 > c0 && (c1 - 1) * L.sw + kx - L.pw >= x.w) --c1;
+        const float* wo = L.w + std::size_t(o) * L.cin * L.kh * L.kw;
+        for (int r = 0; r < oh; ++r) {
+            float* orow = y.ch(o) + std::size_t(r) * ow;
+            std::fill(orow, orow + ow, L.b[o]);
+            for (int i = 0; i < L.cin; ++i)
+                for (int ky = 0; ky < L.kh; ++ky) {
+                    const int iy = r * L.sh + ky - L.ph;
+                    if (iy < 0 || iy >= x.h) continue;
+                    const float* row = x.ch(i) + std::size_t(iy) * x.w;
+                    for (int kx = 0; kx < L.kw; ++kx) {
+                        const float wv = wo[(std::size_t(i) * L.kh + ky) * L.kw + kx];
+                        if (wv == 0.f) continue;
                         if (L.sw == 1) {
-                            const float* src = row + (c0 + kx - L.pw);
-                            for (int c = c0; c < c1; ++c) orow[c] += wv * src[c - c0];
+                            const float* src = row + (c0[kx] + kx - L.pw);
+                            for (int c = c0[kx]; c < c1[kx]; ++c) orow[c] += wv * src[c - c0[kx]];
                         } else {
-                            for (int c = c0; c < c1; ++c) orow[c] += wv * row[c * L.sw + kx - L.pw];
+                            for (int c = c0[kx]; c < c1[kx]; ++c) orow[c] += wv * row[c * L.sw + kx - L.pw];
                         }
                     }
                 }
+            if (L.relu) for (int c = 0; c < ow; ++c) orow[c] = std::max(orow[c], 0.f);
         }
-        if (L.relu) for (std::size_t k = 0; k < std::size_t(oh) * ow; ++k) out[k] = std::max(out[k], 0.f);
     }
     return y;
 }
@@ -244,7 +303,21 @@ std::vector<float> resampleTo22050(const std::vector<float>& mono, int sampleRat
 std::vector<float> logMel(const std::vector<float>& x, int& frames, int threads) {
     static const std::vector<float> fb = melBank();
     static const Fft fft(kNfft);
+    // each mel band is a triangle over a few FFT bins: [first, last) per band instead of all 513
+    static const std::vector<int> band = [] {
+        const int bins = kNfft / 2 + 1;
+        std::vector<int> b(std::size_t(kMels) * 2, 0);
+        for (int m = 0; m < kMels; ++m) {
+            int first = bins, last = 0;
+            for (int i = 0; i < bins; ++i)
+                if (fb[std::size_t(m) * bins + i] != 0.f) { first = std::min(first, i); last = i + 1; }
+            b[std::size_t(m) * 2] = std::min(first, last);
+            b[std::size_t(m) * 2 + 1] = last;
+        }
+        return b;
+    }();
     const int nf = kNfft / 2 + 1, pad = kNfft / 2;
+    if (x.empty()) { frames = 0; return {}; }          // nothing to reflect-pad
     frames = int(x.size() / kHop) + 1;                 // torch.stft, center=True
     std::vector<double> win(kNfft);
     for (int i = 0; i < kNfft; ++i) win[i] = 0.5 - 0.5 * std::cos(2 * kPi * i / kNfft);   // periodic Hann
@@ -269,7 +342,7 @@ std::vector<float> logMel(const std::vector<float>& x, int& frames, int threads)
             for (int m = 0; m < kMels; ++m) {
                 const float* row = fb.data() + std::size_t(m) * nf;
                 double acc = 0;
-                for (int i = 0; i < nf; ++i) if (row[i] != 0.f) acc += row[i] * mag[i];
+                for (int i = band[std::size_t(m) * 2]; i < band[std::size_t(m) * 2 + 1]; ++i) acc += row[i] * mag[i];
                 mel[std::size_t(m) * nFrames + f] = float(std::log1p(1000.0 * acc));
             }
         }
@@ -283,7 +356,7 @@ void network(const std::vector<float>& mel, int n, std::vector<float>& beat, std
     const int padR = ((64 - n % 64) % 64) + kChunk;
     const int W = 32 + n + padR;
     std::vector<float> x(std::size_t(kMels) * W, 0.f);
-    for (int m = 0; m < kMels; ++m) std::copy(mel.begin() + std::size_t(m) * n, mel.begin() + std::size_t(m) * (n + 0) + n, x.begin() + std::size_t(m) * W + 32);
+    for (int m = 0; m < kMels; ++m) std::copy(mel.begin() + std::size_t(m) * n, mel.begin() + std::size_t(m + 1) * n, x.begin() + std::size_t(m) * W + 32);
     std::vector<float> acc(std::size_t(2) * W, 0.f), wsum(W, 0.f), w(kChunk, 1.f);
     const int ov = kChunk - kChunkHop;
     for (int i = 0; i < ov; ++i) {
@@ -335,7 +408,6 @@ Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRat
     } else {
         win.push_back({0.0, seconds});
     }
-    r.analysedSeconds = 0;
     for (const auto& [a, b] : win) {
         // whole 441-sample frames at 22.05 kHz, so the window's frames land exactly on the track's frame grid
         const long f0 = long(std::floor(a * kFps)), f1 = std::min<long>(n, long(std::ceil(b * kFps)));
@@ -364,10 +436,16 @@ Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRat
         r.analysedSeconds += double(m) / kFps;
     }
 
+    fitGrid(r, integerSnapBpm, opt.doubleTimeRule);
+    return r;
+}
+
+void fitGrid(Result& r, double integerSnapBpm, bool doubleTimeRule) {
+    const int n = int(r.beatLogit.size());
     // grid: tempo hint from the peaks, fine phasor search +-4 % in 0.005-BPM steps, line fit on the peaks
     const auto pk = peaks(r.beatLogit, 0.07);
     r.beatPeaks = int(pk.size());
-    if (pk.size() < 16) return r;
+    if (pk.size() < 16) return;
     std::vector<double> iv(pk.size() - 1);
     for (std::size_t i = 1; i < pk.size(); ++i) iv[i - 1] = pk[i] - pk[i - 1];
     std::nth_element(iv.begin(), iv.begin() + iv.size() / 2, iv.end());
@@ -399,24 +477,29 @@ Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRat
     double period = 60.0 / bestBpm;
     double phase = std::fmod(bestAng / (2 * kPi) * period, period);
     if (phase < 0) phase += period;
+    // a peak is "on the grid" when it is within 35 ms of the line; k = its beat number on that line
+    const auto onGrid = [&](double t, double& k) {
+        k = std::round((t - phase) / period);
+        return std::abs(t - (phase + k * period)) < 0.035;
+    };
     for (int it = 0; it < 3; ++it) {
         std::vector<double> ks, ts;
         for (double t : pk) {
-            const double k = std::round((t - phase) / period);
-            if (std::abs(t - (phase + k * period)) < 0.035) { ks.push_back(k); ts.push_back(t); }
+            double k;
+            if (onGrid(t, k)) { ks.push_back(k); ts.push_back(t); }
         }
         if (ks.size() < 16) break;
         lineFit(ks, ts, period, phase);
     }
     std::size_t on = 0;
     for (double t : pk) {
-        const double k = std::round((t - phase) / period);
-        if (std::abs(t - (phase + k * period)) < 0.035) ++on;
+        double k;
+        if (onGrid(t, k)) ++on;
     }
     r.onGridShare = double(on) / pk.size();
     r.bpm = r.rawBpm = 60.0 / period;
     r.steady = r.onGridShare >= 0.6;
-    if (!r.steady || !(period > 0)) return r;
+    if (!r.steady || !(period > 0)) return;
     const double whole = std::round(r.rawBpm);
     if (integerSnapBpm > 0 && whole > 0 && std::abs(whole - r.rawBpm) <= integerSnapBpm) {
         // a whole-BPM grid: keep the period exact and refit only the phase on the peaks near the line
@@ -424,8 +507,8 @@ Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRat
         double sum = 0;
         int cnt = 0;
         for (double t : pk) {
-            const double k = std::round((t - phase) / period);
-            if (std::abs(t - (phase + k * period)) < 0.035) { sum += t - k * p2; ++cnt; }
+            double k;
+            if (onGrid(t, k)) { sum += t - k * p2; ++cnt; }
         }
         if (cnt >= 16) {
             period = p2;
@@ -440,7 +523,38 @@ Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRat
     const double first = phase - std::floor(phase / period) * period;
     for (double t = first; t <= double(n) / kFps; t += period)
         if (t >= pk.front() - period / 2 && t <= pk.back() + period / 2) grid.push_back(t);
-    if (grid.size() < 8) return r;
+    if (grid.size() < 8) return;
+
+    // Double time. On slow tracks (below about 105 BPM) the network often marks the off-beats as beats too,
+    // and the grid comes out at twice the tempo. Then every other grid beat is weaker: when one half of the
+    // grid beats averages under 75 % of the other half's activation, the weaker half is dropped. Measured
+    // (PATCH_NOTE): of the 194 gridded DJ test tracks one changes, 240 -> 120 BPM, the human tempo; on 459
+    // mixed-genre tracks 40 of 115 double-time grids are corrected and 3 fast tracks are wrongly halved.
+    {
+        double sum[2] = {0, 0};
+        int cnt[2] = {0, 0};
+        for (std::size_t i = 0; i < grid.size(); ++i) {
+            const long f = std::lround(grid[i] * kFps);
+            float top = -100.f;
+            for (long k = std::max(0L, f - 1); k <= std::min<long>(n - 1, f + 1); ++k) top = std::max(top, r.beatLogit[std::size_t(k)]);
+            sum[i % 2] += sigmoid(top);
+            ++cnt[i % 2];
+        }
+        const double even = sum[0] / std::max(1, cnt[0]), odd = sum[1] / std::max(1, cnt[1]);
+        r.beatParity = std::max(even, odd) > 0 ? std::min(even, odd) / std::max(even, odd) : 1.0;
+        r.gridActivation = (sum[0] + sum[1]) / std::max(1, cnt[0] + cnt[1]);
+        if (doubleTimeRule && r.beatParity < kDoubleTimeParity && grid.size() >= 32) {
+            std::vector<double> half;
+            for (std::size_t i = even >= odd ? 0 : 1; i < grid.size(); i += 2) half.push_back(grid[i]);
+            grid.swap(half);
+            period *= 2;
+            r.bpm *= 0.5;
+            r.rawBpm *= 0.5;
+            r.integerTempo = r.integerTempo && r.bpm == std::round(r.bpm);
+            r.halved = true;
+            r.gridActivation = std::max(even, odd);          // of the beats that stay
+        }
+    }
 
     // bar line: downbeat activation at each grid beat, same bar position summed over 32 bars either side
     const int bars = 32;
@@ -466,13 +580,16 @@ Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRat
     }
     const int barPos = int(std::max_element(votes, votes + 4) - votes);
     r.barPhaseShare = total ? double(votes[barPos]) / total : 0.0;
+    int runnerUp = 0;
+    for (int i = 0; i < 4; ++i)
+        if (i != barPos) runnerUp = std::max(runnerUp, votes[i]);
+    r.barVoteMargin = total ? double(votes[barPos] - runnerUp) / total : 0.0;
     // anchor: the first grid beat on the majority bar position, moved back by whole bars to the track start
     const double bar = 4 * period;
     double anchor = grid[std::size_t(barPos)];
     anchor -= std::floor(anchor / bar) * bar;
     r.firstBeatSeconds = anchor;
     r.ok = true;
-    return r;
 }
 
 }  // namespace PulseBeat

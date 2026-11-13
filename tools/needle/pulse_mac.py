@@ -6,6 +6,8 @@ The PC's GPU and RAM belong to the Needle training, so Pulse trains on the Mac m
     .venv\Scripts\python.exe pulse_mac.py verify beat_teacher beat_teacher_ens beat_rave beat_loops_1t
     .venv\Scripts\python.exe pulse_mac.py code                 pulse*.py -> brain:~/train/pulse
     .venv\Scripts\python.exe pulse_mac.py pull p5_w24_l6       brain:~/train/pulse/runs_pulse/<run> -> runs_pulse\<run>
+    .venv\Scripts\python.exe pulse_mac.py fetch pulse_passfail  brain:~/train/data/<folder> -> F:\needle\<folder>: the files
+                                                               the PC lacks (--overwrite: also those of another size)
 
 push: F:\needle\<folder> -> brain:~/train/data/<folder>, only files that are missing there or have another
 size (so it resumes), as one tar stream over ssh, then the same check as verify (names and sizes).
@@ -36,7 +38,9 @@ DATA = Path(r"F:\needle")
 HOST = "brain"
 REMOTE_DATA = "~/train/data"
 REMOTE_CODE = "~/train/pulse"
-CODE = ["pulse.py", "pulse_rave.py", "pulse_raveform.py", "pulse_grid.py", "pulse_run_mac.sh"]
+CODE = ["pulse.py", "pulse_rave.py", "pulse_raveform.py", "pulse_grid.py", "pulse_run_mac.sh", "pulse_passfail.py",
+        "pulse_c/pulse_beat.cpp", "pulse_c/pulse_beat.h", "pulse_c/pulse_cli.cpp", "pulse_c/pulse_logits.cpp",
+        "pulse_c/test_pulse_beat.cpp"]
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", HOST]
 
 
@@ -178,25 +182,54 @@ def push(folder, content=False):
     return not verify(folder, content)[0]
 
 
-def code():
+def code(to=REMOTE_CODE):
     files = [HERE / n for n in CODE if (HERE / n).exists()]
-    p = subprocess.Popen(SSH + [f"mkdir -p {REMOTE_CODE} && tar -xf - -C {REMOTE_CODE}"], stdin=subprocess.PIPE)
+    p = subprocess.Popen(SSH + [f"mkdir -p {to} && tar -xf - -C {to}"], stdin=subprocess.PIPE)
     with tarfile.open(fileobj=p.stdin, mode="w|", format=tarfile.PAX_FORMAT) as tf:
         for f in files:
-            info = tf.gettarinfo(str(f), arcname=f.name)
+            info = tf.gettarinfo(str(f), arcname=f.relative_to(HERE).as_posix())
             info.mode = 0o755 if f.suffix == ".sh" else 0o644
             data = f.read_bytes().replace(b"\r\n", b"\n")       # the shell script must not carry CRLF
             info.size = len(data)
             import io
             tf.addfile(info, io.BytesIO(data))
     p.stdin.close()
-    print("code:", ", ".join(f.name for f in files), "-> exit", p.wait(), flush=True)
+    print("code:", ", ".join(f.name for f in files), "->", to, "exit", p.wait(), flush=True)
 
 
-def pull(run):
+def fetch(folder, overwrite=False):
+    """The other way: files of ~/train/data/<folder> that the PC lacks -> F:\\needle\\<folder>. A file the PC has at
+    another size stays as it is unless overwrite: it may be the newer one (an executable rebuilt on the PC after
+    the folder was pushed, a result.json with the audio run added), and the Mac's copy would replace it."""
+    loc, rem = local_files(DATA / folder) if (DATA / folder).exists() else {}, remote_files(folder)
+    missing = sorted(k for k in rem if k not in loc)
+    differ = sorted(k for k in rem if k in loc and loc[k][1] != rem[k])
+    todo = missing + (differ if overwrite else [])
+    print(f"{folder}: {len(rem)} files on the Mac, {len(missing)} the PC lacks, {len(differ)} it has at another size"
+          + (" (taken from the Mac)" if overwrite and differ else " (left as they are; --overwrite takes the Mac's)" if differ else ""), flush=True)
+    for k in differ[:20]:
+        print("    another size:", k, flush=True)
+    if not todo:
+        return True
+    names = "\n".join(todo).encode("utf-8")
+    r = subprocess.run(SSH + [f"cd {REMOTE_DATA}/{folder} && COPYFILE_DISABLE=1 tar -cf - -T -"], input=names, capture_output=True)
+    if r.returncode != 0:
+        print(r.stderr.decode("utf-8", "replace")[-500:], flush=True)
+        return False
+    import io
+    (DATA / folder).mkdir(parents=True, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
+        tf.extractall(DATA / folder, filter="data")
+    for k in todo[:20]:
+        print("   ", k, flush=True)
+    return True
+
+
+def pull(run, code_dir=REMOTE_CODE):
     dest = HERE / "runs_pulse" / run
     dest.mkdir(parents=True, exist_ok=True)
-    r = subprocess.run(SSH + [f"cd {REMOTE_CODE}/runs_pulse/{run} && tar -cf - ."], capture_output=True)
+    # COPYFILE_DISABLE: without it the Mac's tar adds a "._name" file of extended attributes next to every file
+    r = subprocess.run(SSH + [f"cd {code_dir}/runs_pulse/{run} && COPYFILE_DISABLE=1 tar -cf - ."], capture_output=True)
     if r.returncode != 0:
         raise SystemExit(f"no such run on the Mac: {run}")
     import io
@@ -208,9 +241,12 @@ def pull(run):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["push", "verify", "code", "pull"])
+    ap.add_argument("cmd", choices=["push", "verify", "code", "pull", "fetch"])
     ap.add_argument("names", nargs="*")
     ap.add_argument("--content", action="store_true", help="push / verify: compare every file's MD5, not only its size")
+    ap.add_argument("--overwrite", action="store_true", help="fetch: also take the files the PC has at another size")
+    ap.add_argument("--to", help="code / pull: another folder under ~/train than pulse (e.g. pulse_x for an experiment, so a "
+                                 "queued run keeps the code it started with)")
     a = ap.parse_intermixed_args()                              # --content may stand before the folder names
     ok = True
     for n in a.names if a.cmd != "code" else [None]:
@@ -219,8 +255,10 @@ if __name__ == "__main__":
         elif a.cmd == "verify":
             ok &= not verify(n, a.content)[0]
         elif a.cmd == "pull":
-            pull(n)
+            pull(n, f"~/train/{a.to}" if a.to else REMOTE_CODE)
+        elif a.cmd == "fetch":
+            ok &= fetch(n, a.overwrite)
         else:
-            code()
+            code(f"~/train/{a.to}" if a.to else REMOTE_CODE)
     print("ALL OK" if ok else "INCOMPLETE", flush=True)
     sys.exit(0 if ok else 1)

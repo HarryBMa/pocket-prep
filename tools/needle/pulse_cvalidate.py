@@ -10,6 +10,9 @@ line (beat 1); the firmware's is a beat (it makes no downbeat claim).
   C++ vs Python  BPM difference and anchor difference per track (the port must not change the answer)
 
     .venv\Scripts\python.exe pulse_cvalidate.py --model p3_w24_l6
+
+The C++ build is the model's own from pulse_passfail.py (F:\needle\pulse_passfail\<model>\pulse_cli.exe) when
+that is there, else F:\needle\pulse_c\pulse_cli.exe (then export that model there first: pulse_cexport.py).
 """
 import argparse
 import json
@@ -70,6 +73,8 @@ def main():
     net = Pulse(ck["width"], ck.get("levels", 5))
     net.load_state_dict(ck["model"])
     net = net.to(DEV).eval()
+    cli = DATA / "pulse_passfail" / a.model / "pulse_cli.exe"
+    cli = cli if cli.exists() else CLI
     index = json.loads((RAVE / "index.json").read_text())
     te = Rave("test")
     rows, times, audio_s = [], [], 0.0
@@ -79,7 +84,7 @@ def main():
         x, sr = sf.read(index[t]["file"], dtype="float32", always_2d=True)
         x = x[:, :2] if x.shape[1] >= 2 else np.repeat(x, 2, 1)
         np.ascontiguousarray(x).tofile(TMP)
-        v = subprocess.run([str(CLI), str(TMP), str(sr)], capture_output=True, text=True, timeout=600).stdout.split()
+        v = subprocess.run([str(cli), str(TMP), str(sr)], capture_output=True, text=True, timeout=600).stdout.split()
         ok, steady, cbpm, canchor, ms = int(v[0]), int(v[1]), float(v[2]), float(v[3]), float(v[7])
         times.append(ms)
         audio_s += len(x) / sr
@@ -96,7 +101,7 @@ def main():
         rows.append(r)
     (RAVE / "pulse_cvalidate.json").write_text(json.dumps(rows, indent=1, default=float))
     st = [r for r in rows if r["steady_human"]]
-    print(f"Raveform test set: {len(rows)} tracks ({len(st)} with a steady human grid); model {a.model}")
+    print(f"Raveform test set: {len(rows)} tracks ({len(st)} with a steady human grid); model {a.model}; C++ build {cli}")
     for k in ("firmware", "python", "cpp"):
         tr = [r[k] for r in st if r[k]["tempo_right"]]
         ph = np.array([x["phase_ms"] for x in tr])

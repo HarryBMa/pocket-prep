@@ -25,6 +25,10 @@ struct Result {
     double barPhaseShare = 0;      // share of detected downbeats on the chosen bar position (0..1)
     double onGridShare = 0;        // share of beat peaks within 35 ms of the grid
     int beatPeaks = 0;
+    double beatParity = 1;         // activation of the weaker half of the grid beats (every other one) / the stronger
+    bool halved = false;           // the grid was at double time (beatParity < 0.75): every other beat dropped
+    double gridActivation = 0;     // mean beat activation at the grid beats (0..1)
+    double barVoteMargin = 0;      // (votes for the chosen bar position - votes for the runner-up) / all votes
     double analysedSeconds = 0;    // audio actually run through the network
     std::vector<float> beatLogit, downLogit;   // per 20-ms frame (diagnostics / tests)
 };
@@ -33,12 +37,16 @@ struct Options {
     int threads = 0;          // worker threads; 0 = cores - 1, at most 3 (each at nice +10 on Linux)
     double maxSeconds = 0;    // > 0: analyse three windows of maxSeconds / 3 (at 20 / 50 / 80 %) instead of
                               // the whole track; tracks shorter than maxSeconds + 30 s are analysed whole
+    bool doubleTimeRule = true;   // halve a grid whose every other beat is weak (see fitGrid)
 };
 
 // Whole-track analysis of interleaved float stereo (or mono with channels = 1). integerSnapBpm > 0: a fitted
 // tempo within that distance of a whole BPM becomes the whole BPM, with the phase refitted to it.
 Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRate, double integerSnapBpm = 0.0,
                Options options = Options());
+
+// The grid stage alone: tempo, phase and bar line from r.beatLogit / r.downLogit (analyze() ends with it).
+void fitGrid(Result& r, double integerSnapBpm = 0.0, bool doubleTimeRule = true);
 
 // Building blocks (exposed for tests).
 std::vector<float> resampleTo22050(const std::vector<float>& mono, int sampleRate, int threads = 1);

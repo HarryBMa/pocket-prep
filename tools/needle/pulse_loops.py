@@ -19,11 +19,12 @@ grid and corrected by hand; its drum & bass is counted at 170-175 BPM, not at ha
 v1 also used a loop at half or double time when its own tempo did not fit. Then a 95-BPM hip-hop loop sat in
 a "190 BPM" track with a beat marked on every half beat, and a 140-BPM techno loop in a "70 BPM" track with a
 beat on every other kick. In the tracks labelled under 100 or from 160 BPM (35 % of the 1,500) 54 % of the
-drum layers played at double or half the label tempo (22 % over all tracks), and Pulse learned to double slow
-music. Every track now has drums (a tempo no drum loop fits is drawn again), and index.json lists the loops
-each track was made from.
+drum layers played at double or half the label tempo (21 % over all tracks; 458 tracks had such a layer), and
+Pulse learned to double slow music. Every track now has drums (a tempo no drum loop fits is drawn again), and
+index.json lists the loops each track was made from. v1 is kept as F:\needle\beat_loops_v1.
 
     .venv\Scripts\python.exe pulse_loops.py --n 1500         -> F:\needle\beat_loops
+    ... --loops-json F:\needle\beat_loops_v1\loops.json       the same loops as v1, without scanning D: again
 """
 import argparse
 import json

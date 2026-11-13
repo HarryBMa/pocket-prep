@@ -19,6 +19,7 @@ Data: F:\needle on the PC. Elsewhere PULSE_DATA names the folder with the same l
 ~/train/data); the absolute Windows paths stored in index files are mapped to it, the files are not rewritten.
 """
 import argparse
+import itertools
 import json
 import math
 import os
@@ -150,19 +151,25 @@ def make_mels(teacher: Path, dev):
             print(f"mels {i}/{len(index)} {time.time() - t0:.0f} s", flush=True)
 
 
+def split_ids(teacher: Path):
+    """A teacher folder's fixed split -> ({"train": ids, "val": ids, "holdout": ids}, {id: its mel file})."""
+    index = json.loads((teacher / "index.json").read_text())
+    hold = set((teacher / "holdout.txt").read_text(encoding="utf-8").split())
+    # an index entry may point at its mel elsewhere ("mel", an absolute path on the PC): the ensemble teacher
+    # reuses round 1's mels
+    where = {t: local_path(v["mel"]) if "mel" in v else mel_path(teacher, t) for t, v in index.items() if "error" not in v}
+    ids = [t for t, p in where.items() if p.exists()]
+    rng = random.Random(0)
+    rest = sorted(t for t in ids if t not in hold)
+    rng.shuffle(rest)
+    n_val = 60
+    return {"train": rest[n_val:], "val": rest[:n_val], "holdout": sorted(t for t in ids if t in hold)}, where
+
+
 class Tracks:
     def __init__(self, teacher: Path, split: str):
-        index = json.loads((teacher / "index.json").read_text())
-        hold = set((teacher / "holdout.txt").read_text(encoding="utf-8").split())
-        # an index entry may point at its mel elsewhere ("mel", an absolute path on the PC): the ensemble teacher
-        # reuses round 1's mels
-        where = {t: local_path(v["mel"]) if "mel" in v else mel_path(teacher, t) for t, v in index.items() if "error" not in v}
-        ids = [t for t, p in where.items() if p.exists()]
-        rng = random.Random(0)
-        rest = sorted(t for t in ids if t not in hold)
-        rng.shuffle(rest)
-        n_val = 60
-        self.ids = {"train": rest[n_val:], "val": rest[:n_val], "holdout": sorted(t for t in ids if t in hold)}[split]
+        splits, where = split_ids(teacher)
+        self.ids = splits[split]
         self.teacher = teacher
         allow_open_files()
         self.mels = {t: np.load(where[t], mmap_mode="r") for t in self.ids}
@@ -170,13 +177,34 @@ class Tracks:
         for t in self.ids:
             z = np.load(teacher / f"{t}.npz")
             self.lab[t] = (z["beat"].astype(np.float32), z["down"].astype(np.float32), z["beats"], z["downbeats"])
+        self.cum = None                                                     # set by balance_tempo
+
+    def tempo(self, t):
+        """The teacher's tempo for a track: 60 / its median beat interval (0 without beats)."""
+        b = self.lab[t][2]
+        return 60.0 / float(np.median(np.diff(b))) if len(b) > 1 else 0.0
+
+    def keep_tempo(self, lo, hi):
+        """Experiments: only the tracks with lo <= tempo < hi."""
+        self.ids = [t for t in self.ids if lo <= self.tempo(t) < hi]
+        self.cum = None
+
+    def balance_tempo(self, share):
+        """Experiments: draw tracks by tempo. With probability `share` a track comes from a 10-BPM bin picked
+        evenly between 60 and 200 BPM (slower and faster tracks count into the end bins), otherwise from all
+        tracks as before. The teacher set is 55 % at 120-140 BPM and 1.4 % at 60-80."""
+        bins = {}
+        for t in self.ids:
+            bins.setdefault(int(min(max(self.tempo(t), 60.0), 199.9) // 10), []).append(t)
+        w = {t: (1 - share) / len(self.ids) + share / (len(bins) * len(v)) for v in bins.values() for t in v}
+        self.cum = list(itertools.accumulate(w[t] for t in self.ids))
 
     def batch(self, n, rng, augment=True):
         """Random 512-frame crops. Augmentation: tempo +-8 % (resample the time axis of mels and targets
         together), pitch +-2 mel bands, gain -12..+6 dB (an offset in log-mel), band-limited EQ tilt."""
         xs, ys = [], []
         while len(xs) < n:
-            t = rng.choice(self.ids)
+            t = rng.choices(self.ids, cum_weights=self.cum)[0] if self.cum else rng.choice(self.ids)
             m, (b, d, _, _) = self.mels[t], self.lab[t]
             L = min(m.shape[1], len(b))
             r = rng.uniform(0.92, 1.08) if augment else 1.0

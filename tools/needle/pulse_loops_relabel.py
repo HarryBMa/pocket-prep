@@ -18,9 +18,11 @@ loops may still sit at half or double time against the drums here (in a freshly 
 The mels are the same files as v1's (hard links, no copy). The replay is checked against v1's index.json:
 every track's tempo has to come out the same, and it only does when every draw before it was the same.
 
-Make a fresh set with pulse_loops.py when the sample packs (D:) are connected; this is for when they are not.
+Make a fresh set with pulse_loops.py when the sample packs (D:) are connected; this is for when they are not,
+and it changes nothing but the labels: a model trained on it against one trained on v1 shows what the labels
+alone do.
 
-    .venv\Scripts\python.exe pulse_loops_relabel.py        F:\needle\beat_loops -> F:\needle\beat_loops_1t
+    .venv\Scripts\python.exe pulse_loops_relabel.py        F:\needle\beat_loops_v1 -> F:\needle\beat_loops_1t
 """
 import argparse
 import json
@@ -85,7 +87,7 @@ def replay(loops, n):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", default=str(DATA / "beat_loops"), help="the v1 set")
+    ap.add_argument("--src", default=str(DATA / "beat_loops_v1"), help="the v1 set")
     ap.add_argument("--out", default=str(DATA / "beat_loops_1t"))
     ap.add_argument("--dry", action="store_true", help="only replay, check and count")
     a = ap.parse_args()
@@ -142,7 +144,7 @@ def main():
     (out / "index.json").write_text(json.dumps(index, indent=1))
     (out / "test.txt").write_text("")
     (out / "README.txt").write_text(
-        "v1's synthetic tracks (F:\\needle\\beat_loops) with one tempo label each: pulse_loops_relabel.py.\n"
+        f"v1's synthetic tracks ({src}) with one tempo label each: pulse_loops_relabel.py.\n"
         "mels\\ are hard links to v1's mels. index.json: tempo = the tempo the drum loops play at, v1_tempo = v1's label.\n")
     print(f"{out}: {len(index)} tracks, {linked} mels linked", flush=True)
 
