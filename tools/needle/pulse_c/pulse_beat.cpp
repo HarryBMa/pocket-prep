@@ -294,7 +294,214 @@ void lineFit(const std::vector<double>& k, const std::vector<double>& t, double&
     icpt = mt - slope * mk;
 }
 
+// ── Phase refinement (Options::refinePhase; tools/needle/pulse_phase.py is the reference) ────────────────────
+// The network marks beats on a 20-ms frame lattice and learned where "the beat" is from labels that do not
+// agree with each other, so its grid sits a few ms early on some music and late on other. The drum hits are in
+// the audio:
+//   1. three bands of the 22.05 kHz signal (below 150 Hz, 150-2000 Hz, above 2 kHz; 4th-order Butterworth run
+//      forwards then backwards, so nothing is delayed), each as power per block of 10 samples
+//   2. per band: power smoothed (26 blocks below 150 Hz, 13 above), log10, its rise over 10 blocks (4.5 ms);
+//      the onset function is the three rises added
+//   3. around every grid beat: the highest point of the onset function within +-40 ms, its time to a fraction
+//      of a block (parabola through three points) and its height
+//   4. the beats whose height is at least 0.3 x the 90th percentile count, weighted by height:
+//      offset = weighted median of (onset - beat), spread = weighted median of |onset - beat - offset|
+//   5. the grid moves by offset + kPhaseShift, unless the track is faster than 150 BPM (drum & bass: the
+//      strongest onset near a beat is often a grace note before it) or the spread is over 6 ms
+// kPhaseShift is the convention: with it refined grids sit, in the median, where hand-made (rekordbox) grids do.
+constexpr std::size_t kPhaseBlock = 10;
+constexpr double kPhaseFs = double(kSampleRate) / double(kPhaseBlock);   // 2205 blocks per second
+constexpr std::size_t kPhaseLag = 10;
+constexpr double kPhaseCentre = double(kPhaseLag) / 2.0 + 0.3;   // onset[n] belongs to the time (n + this) / kPhaseFs
+constexpr double kPhaseWindow = 0.040;
+constexpr double kPhaseTau = 0.3;
+constexpr double kPhaseShift = 0.0023;
+constexpr double kPhaseMaxBpm = 150.0;
+constexpr double kPhaseMaxSpread = 0.006;
+constexpr std::size_t kPhaseChunk = 6 * kSampleRate;             // samples filtered in one go (whole blocks)
+constexpr std::size_t kPhaseSpare = kSampleRate / 5;             // ... with this many more on either side
+
+struct Biquad { double b0, b1, b2, a1, a2; };
+// scipy.signal.butter(4, ..., fs=22050, output="sos"): low-pass 150 Hz, band-pass 150-2000 Hz, high-pass 2 kHz
+const Biquad kBandLow[] = {
+    {1.9739622322682168e-07, 3.9479244645364335e-07, 1.9739622322682168e-07, -1.9222869522443091, 0.9240442445437955},
+    {1.0, 2.0, 1.0, -1.966024963538341, 0.9678222397072245}};
+const Biquad kBandMid[] = {
+    {0.002637848635736277, 0.005275697271472554, 0.002637848635736277, -1.2263990502000652, 0.3987476961287795},
+    {1.0, 2.0, 1.0, -1.4371016687604707, 0.697151142890563},
+    {1.0, -2.0, 1.0, -1.9140479261474708, 0.9163350658907653},
+    {1.0, -2.0, 1.0, -1.9694043527121972, 0.9712662382021913}};
+const Biquad kBandHigh[] = {
+    {0.4691666404516789, -0.9383332809033578, 0.4691666404516789, -1.123742921678533, 0.33468591437747025},
+    {1.0, -2.0, 1.0, -1.3957215810419232, 0.6577189485890346}};
+struct Band { const Biquad* sos; int sections; bool everyTenth; int smooth; };
+// Below 150 Hz the power is every 10th sample squared, smoothed over 26 blocks (as tools/needle beatgrid_lab.py
+// finds kicks); above, the mean square of each 10 samples, smoothed over 13.
+const Band kBands[3] = {{kBandLow, 2, true, 26}, {kBandMid, 4, false, 13}, {kBandHigh, 2, false, 13}};
+
+// x -> per band, its power per block. Each band's filter runs forwards then backwards over the signal, from
+// rest. The signal is taken in chunks of 6 s with 0.2 s more on either side: what a filter still carries of
+// an input 0.2 s old is below 1e-27 of it, so the result is that of one pass over the whole signal, and the
+// working memory is one chunk per thread instead of the track three times over.
+void bandPowers(const std::vector<float>& x, int threads, std::vector<float> power[3]) {
+    const std::size_t n = x.size();
+    power[0].assign((n + kPhaseBlock - 1) / kPhaseBlock, 0.f);
+    power[1].assign(n / kPhaseBlock, 0.f);
+    power[2].assign(n / kPhaseBlock, 0.f);
+    parallelFor(int((n + kPhaseChunk - 1) / kPhaseChunk), threads, [&](int chunk) {
+        const std::size_t c0 = std::size_t(chunk) * kPhaseChunk, c1 = std::min(n, c0 + kPhaseChunk);
+        const std::size_t e0 = c0 > kPhaseSpare ? c0 - kPhaseSpare : 0, e1 = std::min(n, c1 + kPhaseSpare);
+        std::vector<float> y(e1 - e0);
+        for (int b = 0; b < 3; ++b) {
+            const Band& band = kBands[b];
+            double z1[4], z2[4];
+            const auto step = [&](double v) {                     // direct form II transposed, as scipy's sosfilt
+                for (int s = 0; s < band.sections; ++s) {
+                    const Biquad& q = band.sos[s];
+                    const double out = q.b0 * v + z1[s];
+                    z1[s] = q.b1 * v - q.a1 * out + z2[s];
+                    z2[s] = q.b2 * v - q.a2 * out;
+                    v = out;
+                }
+                return float(v);
+            };
+            std::fill(z1, z1 + 4, 0.0);
+            std::fill(z2, z2 + 4, 0.0);
+            for (std::size_t i = e0; i < e1; ++i) y[i - e0] = step(x[i]);
+            std::fill(z1, z1 + 4, 0.0);
+            std::fill(z2, z2 + 4, 0.0);
+            for (std::size_t i = e1 - e0; i-- > 0;) y[i] = step(y[i]);
+            std::vector<float>& p = power[b];
+            for (std::size_t k = c0 / kPhaseBlock; k < p.size() && k * kPhaseBlock < c1; ++k) {
+                const float* s = y.data() + (k * kPhaseBlock - e0);
+                double sum = double(s[0]) * s[0];
+                if (!band.everyTenth) {
+                    for (std::size_t j = 1; j < kPhaseBlock; ++j) sum += double(s[j]) * s[j];
+                    sum /= double(kPhaseBlock);
+                }
+                p[k] = float(sum);
+            }
+        }
+    });
+}
+
+// value at the q-th quantile (0..1), linear between neighbours (numpy.percentile's default)
+template <class T>
+double quantile(std::vector<T> v, double q) {
+    if (v.empty()) return 0.0;
+    const double pos = q * double(v.size() - 1);
+    const std::size_t lo = std::size_t(pos);
+    std::nth_element(v.begin(), v.begin() + long(lo), v.end());
+    const double a = double(v[lo]);
+    if (lo + 1 >= v.size()) return a;
+    const double b = double(*std::min_element(v.begin() + long(lo) + 1, v.end()));
+    return a + (pos - double(lo)) * (b - a);
+}
+
+// A band's power per block -> in its place, how much the log10 of the smoothed power rises over kPhaseLag
+// blocks, never below 0. Element i is the rise from block i to block i + kPhaseLag.
+void riseOf(std::vector<float>& p, int smooth) {
+    const long n = long(p.size()), ahead = (smooth - 1) / 2;      // numpy.convolve(p, ones(smooth) / smooth, "same")
+    std::vector<float> e(p.size());
+    for (long i = 0; i < n; ++i) {
+        double sum = 0;
+        for (long j = std::max(0L, i + ahead + 1 - smooth), end = std::min(n, i + ahead + 1); j < end; ++j)
+            sum += double(p[std::size_t(j)]);
+        e[std::size_t(i)] = float(sum / smooth);
+    }
+    const double floor = 1e-4 * quantile(e, 0.99) + 1e-20;       // 40 dB under the loud passages
+    for (float& v : e) v = float(std::log10(double(v) + floor));
+    p.resize(p.size() > kPhaseLag ? p.size() - kPhaseLag : 0);
+    for (std::size_t i = 0; i < p.size(); ++i) p[i] = std::max(0.f, e[i + kPhaseLag] - e[i]);
+}
+
+std::vector<float> onsetFunction(const std::vector<float>& x, int threads) {
+    std::vector<float> band[3];
+    bandPowers(x, threads, band);
+    parallelFor(3, threads, [&](int b) { riseOf(band[b], kBands[b].smooth); });
+    std::vector<float> o = std::move(band[0]);
+    o.resize(std::min({o.size(), band[1].size(), band[2].size()}));
+    for (std::size_t i = 0; i < o.size(); ++i) o[i] += band[1][i] + band[2][i];
+    return o;
+}
+
+// Per grid beat inside the onset function o (which starts at t0 seconds of the track): onset time minus beat
+// time, and the onset's height. skipStart / skipEnd: seconds left out at the ends of a window cut out of the
+// track (the filters start from rest there).
+void beatOnsets(const std::vector<float>& o, double t0, double bpm, double first, double skipStart, double skipEnd,
+                std::vector<double>& d, std::vector<double>& h) {
+    const double period = 60.0 / bpm;
+    const long half = std::lround(kPhaseWindow * kPhaseFs), len = long(o.size());
+    const double local = first - t0;                              // a grid beat, on this window's clock
+    const long k0 = long(std::ceil((kPhaseWindow + 2 / kPhaseFs + skipStart - local) / period));
+    const long k1 = long(std::floor((double(len - 2) / kPhaseFs - kPhaseWindow - skipEnd - local) / period));
+    for (long k = k0; k <= k1; ++k) {
+        const double b = local + double(k) * period;
+        const long c = long(std::nearbyint(b * kPhaseFs - kPhaseCentre));     // o's index nearest to the beat
+        if (c - half < 0 || c + half >= len) continue;
+        long j = c - half;
+        for (long i = c - half + 1; i <= c + half; ++i)
+            if (o[std::size_t(i)] > o[std::size_t(j)]) j = i;
+        if (j == c - half || j == c + half) continue;             // a rise that peaks outside the window
+        const double y0 = o[std::size_t(j - 1)], y1 = o[std::size_t(j)], y2 = o[std::size_t(j + 1)];
+        const double den = y0 - 2 * y1 + y2;
+        const double frac = den < 0 ? 0.5 * (y0 - y2) / den : 0.0;
+        d.push_back((double(j) + kPhaseCentre + frac) / kPhaseFs - b);
+        h.push_back(y1);
+    }
+}
+
+double weightedMedian(const std::vector<double>& v, const std::vector<double>& w) {
+    std::vector<std::size_t> idx(v.size());
+    std::iota(idx.begin(), idx.end(), std::size_t(0));
+    std::stable_sort(idx.begin(), idx.end(), [&](std::size_t a, std::size_t b) { return v[a] < v[b]; });
+    const double half = std::accumulate(w.begin(), w.end(), 0.0) / 2;
+    double c = 0;
+    for (std::size_t i : idx) {
+        c += w[i];
+        if (c >= half) return v[i];
+    }
+    return v[idx.back()];
+}
+
+PhaseFit phaseSolve(const std::vector<double>& d, const std::vector<double>& h) {
+    PhaseFit fit;
+    if (d.size() < 8) return fit;
+    const double need = kPhaseTau * quantile(h, 0.9);
+    std::vector<double> dk, wk;
+    for (std::size_t i = 0; i < d.size(); ++i)
+        if (h[i] >= need) { dk.push_back(d[i]); wk.push_back(h[i]); }
+    if (dk.size() < 8) return fit;
+    const double offset = weightedMedian(dk, wk);
+    std::vector<double> dev(dk.size());
+    for (std::size_t i = 0; i < dk.size(); ++i) dev[i] = std::abs(dk[i] - offset);
+    fit.offset = offset + kPhaseShift;
+    fit.spread = weightedMedian(dev, wk);
+    fit.beats = int(dk.size());
+    return fit;
+}
+
 }  // namespace
+
+PhaseFit phaseFit(const std::vector<float>& mono22k, double bpm, double firstBeatSeconds, int threads, double startSeconds) {
+    std::vector<double> d, h;
+    if (bpm > 0) beatOnsets(onsetFunction(mono22k, threads), startSeconds, bpm, firstBeatSeconds, 0.0, 0.0, d, h);
+    return phaseSolve(d, h);
+}
+
+bool applyPhase(Result& r, const PhaseFit& fit) {
+    r.phaseOffset = fit.offset;
+    r.phaseSpread = fit.spread;
+    r.phaseBeats = fit.beats;
+    r.phaseShift = 0;
+    if (!r.ok || !(r.bpm > 0) || fit.beats < 8 || r.bpm > kPhaseMaxBpm || fit.spread > kPhaseMaxSpread) return false;
+    const double bar = 4 * 60.0 / r.bpm;
+    double anchor = r.firstBeatSeconds + fit.offset;
+    anchor -= std::floor(anchor / bar) * bar;                  // still the first bar line of the track
+    r.firstBeatSeconds = anchor;
+    r.phaseShift = fit.offset;
+    return true;
+}
 
 std::vector<float> resampleTo22050(const std::vector<float>& mono, int sampleRate, int threads) {
     return resample(mono, sampleRate, kSampleRate, threads);
@@ -408,6 +615,9 @@ Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRat
     } else {
         win.push_back({0.0, seconds});
     }
+    std::vector<std::vector<float>> onsets;                            // refinePhase: per analysed window
+    std::vector<double> onsetStart;
+    std::vector<std::pair<double, double>> onsetCut;
     for (const auto& [a, b] : win) {
         // whole 441-sample frames at 22.05 kHz, so the window's frames land exactly on the track's frame grid
         const long f0 = long(std::floor(a * kFps)), f1 = std::min<long>(n, long(std::ceil(b * kFps)));
@@ -421,6 +631,11 @@ Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRat
             mono[i - s0] = float(v / channels);
         }
         const auto x = resampleTo22050(mono, sampleRate, threads);
+        if (opt.refinePhase) {
+            onsets.push_back(onsetFunction(x, threads));
+            onsetStart.push_back(double(f0) / kFps);
+            onsetCut.push_back({f0 > 0 ? 0.25 : 0.0, f1 < n ? 0.25 : 0.0});
+        }
         int m = 0;
         const auto mel = logMel(x, m, threads);
         std::vector<float> bl, dl;
@@ -437,6 +652,12 @@ Result analyze(const float* pcm, std::size_t frames, int channels, int sampleRat
     }
 
     fitGrid(r, integerSnapBpm, opt.doubleTimeRule);
+    if (opt.refinePhase && r.ok && r.steady) {
+        std::vector<double> d, h;
+        for (std::size_t i = 0; i < onsets.size(); ++i)
+            beatOnsets(onsets[i], onsetStart[i], r.bpm, r.firstBeatSeconds, onsetCut[i].first, onsetCut[i].second, d, h);
+        applyPhase(r, phaseSolve(d, h));
+    }
     return r;
 }
 

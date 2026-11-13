@@ -13,13 +13,11 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import torch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from pulse import Pulse, predict_track          # noqa: E402
 
-SR = 22050
+SR = 22050                  # torch and pulse.py are imported in main(): pulse_phase.py takes test_signal from here
 
 
 def test_signal(seconds=20.0):
@@ -38,6 +36,7 @@ def test_signal(seconds=20.0):
 
 
 def fold(seq):
+    import torch
     conv, bn = seq[0], seq[1]
     s = bn.weight / torch.sqrt(bn.running_var + bn.eps)
     return (conv.weight * s[:, None, None, None]).detach(), (bn.bias - bn.running_mean * s).detach(), conv.stride, conv.padding, True
@@ -48,6 +47,8 @@ def main():
     ap.add_argument("--model", default="p4_w24_l6")
     ap.add_argument("--out", default=r"F:\needle\pulse_c")
     a = ap.parse_args()
+    import torch
+    from pulse import Pulse, predict_track
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     run = HERE / "runs_pulse" / a.model

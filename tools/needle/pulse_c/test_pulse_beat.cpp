@@ -1,4 +1,5 @@
-// Pulse C++ vs the PyTorch reference (fixtures written by tools pulse_cexport.py), plus a grid check.
+// Pulse C++ vs the PyTorch reference (fixtures written by tools pulse_cexport.py), a grid check, and the phase
+// stage vs its Python reference (pulse_phase.py).
 //   c++ -O2 -std=c++17 -I. test_pulse_beat.cpp pulse_beat.cpp -o test_pulse_beat && ./test_pulse_beat <fixture dir>
 #include "pulse_beat.h"
 
@@ -27,6 +28,18 @@ static std::vector<float> testSignal(double seconds = 20.0) {   // same formula 
     }
     return x;
 }
+
+// The phase stage on the test signal: grid tempo, a grid beat (s), and what pulse_phase.py's refine() gives for
+// that grid: offset (before the guards, s), spread (s), beats that counted. `pulse_phase.py fixture` prints the rows.
+struct PhaseRow { double bpm, first, offset, spread; int beats; };
+static const PhaseRow kPhaseFixture[] = {
+    {128.0, 0.0, -0.002278940305538737, 0.00017586754622200829, 42},
+    {128.0, 0.011, -0.01327894030553797, 0.00017586754622200829, 42},
+    {128.0, 0.45505, 0.011421059694461309, 0.00017586754622200829, 42},
+    {128.0, 0.238375, -0.004188075593100273, 0.0004496978239019178, 43},
+    {64.0, 0.006, -0.008278940305538964, 0.0002947240035964249, 21},
+    {127.9, 0.002, -0.011919007324891564, 0.0034845295716667835, 42},
+};
 
 static std::vector<float> readF32(const std::string& p) {
     std::ifstream f(p, std::ios::binary);
@@ -94,6 +107,55 @@ int main(int argc, char** argv) {
     const double beat = 60.0 / 128.0;
     const double phaseErr = std::abs(std::remainder(r.firstBeatSeconds, beat));
     if (!r.ok || std::abs(r.bpm - 128.0) > 0.05 || phaseErr > 0.02) { std::printf("FAIL grid\n"); ++fails; }
+
+    {   // phase stage: C++ vs pulse_phase.py on the same samples
+        double worst = 0;
+        bool counts = true;
+        for (const PhaseRow& w : kPhaseFixture) {
+            const auto f = PulseBeat::phaseFit(x, w.bpm, w.first);
+            worst = std::max({worst, std::abs(f.offset - w.offset), std::abs(f.spread - w.spread)});
+            counts = counts && f.beats == w.beats;
+        }
+        std::printf("phase: max |C++ - python| = %.3f us over %zu grids, beat counts %s\n", worst * 1e6,
+                    sizeof(kPhaseFixture) / sizeof(kPhaseFixture[0]), counts ? "equal" : "DIFFERENT");
+        if (worst > 5e-6 || !counts) { std::printf("FAIL phase\n"); ++fails; }
+    }
+    {   // the switch: analyze() with it moves the grid it finds without it by what phaseFit measures for that grid
+        PulseBeat::Options on;
+        on.refinePhase = true;
+        const auto p = PulseBeat::analyze(up.data(), up.size() / 2, 2, 44100, 0.0, on);
+        const auto fit = PulseBeat::phaseFit(x, r.bpm, r.firstBeatSeconds);       // x: the signal before the 2x upsampling
+        const double bar = 4 * 60.0 / r.bpm;
+        const double moved = std::remainder(p.firstBeatSeconds - r.firstBeatSeconds, bar);
+        std::printf("analyze with refinePhase: grid moved %+.3f ms (offset %+.3f ms, spread %.3f ms, %d beats); "
+                    "phaseFit on the 22.05 kHz signal: %+.3f ms\n", moved * 1e3, p.phaseOffset * 1e3, p.phaseSpread * 1e3,
+                    p.phaseBeats, fit.offset * 1e3);
+        if (!p.ok || p.bpm != r.bpm || p.phaseBeats < 8 || std::abs(moved - p.phaseShift) > 1e-9 ||
+            p.phaseShift != p.phaseOffset || std::abs(p.phaseOffset - fit.offset) > 0.0005 || r.phaseShift != 0) {
+            std::printf("FAIL phase switch\n");
+            ++fails;
+        }
+    }
+    {   // the guards: over 150 BPM, a spread over 6 ms and too few beats leave the grid where it is
+        auto grid = [](double bpm, double first) {
+            PulseBeat::Result g;
+            g.ok = g.steady = true;
+            g.bpm = bpm;
+            g.firstBeatSeconds = first;
+            return g;
+        };
+        auto fast = grid(174.0, 0.5), loose = grid(128.0, 0.5), few = grid(128.0, 0.5), good = grid(128.0, 0.001);
+        const bool f = PulseBeat::applyPhase(fast, {0.004, 0.001, 200}), l = PulseBeat::applyPhase(loose, {0.004, 0.0061, 200});
+        const bool w = PulseBeat::applyPhase(few, {0.004, 0.001, 7}), g = PulseBeat::applyPhase(good, {-0.004, 0.001, 200});
+        const double bar = 4 * 60.0 / 128.0;
+        std::printf("phase guards: 174 BPM moved=%d, spread 6.1 ms moved=%d, 7 beats moved=%d; 128 BPM -4 ms from 0.001 s "
+                    "-> %.4f s (moved=%d)\n", f, l, w, good.firstBeatSeconds, g);
+        if (f || l || w || fast.firstBeatSeconds != 0.5 || fast.phaseShift != 0 || fast.phaseOffset != 0.004 || !g ||
+            std::abs(good.firstBeatSeconds - (bar - 0.003)) > 1e-12 || good.phaseShift != -0.004) {
+            std::printf("FAIL phase guards\n");
+            ++fails;
+        }
+    }
     std::printf(fails ? "%d FAILED\n" : "ALL PASSED\n", fails);
     return fails ? 1 : 0;
 }
