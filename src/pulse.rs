@@ -182,6 +182,39 @@ mod tests {
         }
     }
 
+    /// Re-analyses every analysed library track the way startup does (analysis::analyse saves each result),
+    /// then tallies where the grid came from. Run: cargo test --release -- --ignored reanalyse_library_counts --nocapture
+    #[test]
+    #[ignore]
+    fn reanalyse_library_counts() {
+        let rows = crate::db::query("SELECT id, title FROM tracks WHERE deleted=0 AND analysed_at IS NOT NULL ORDER BY id", &[]).unwrap();
+        let (mut pulse_n, mut clubcraft_n, mut disagree_n, mut failed_n) = (0, 0, 0, 0);
+        for r in rows {
+            let id = r["id"].as_i64().unwrap();
+            let title = r["title"].as_str().unwrap_or("");
+            let t = std::time::Instant::now();
+            match crate::analysis::analyse(id, &|_, _| {}) {
+                Ok(_) => {
+                    let a = crate::analysis::load_analysis(id).unwrap();
+                    let src = a["grid_source"].as_str().unwrap_or("?").to_string();
+                    let dis = !a["grid_disagreement"].is_null();
+                    match src.as_str() {
+                        "pulse" => pulse_n += 1,
+                        "clubcraft" => clubcraft_n += 1,
+                        _ => {}
+                    }
+                    if dis { disagree_n += 1; }
+                    println!("{id}\t{title}\t{src}\t{}\t{:.0} ms", if dis { "disagree" } else { "" }, t.elapsed().as_secs_f64() * 1000.0);
+                }
+                Err(e) => {
+                    failed_n += 1;
+                    println!("{id}\t{title}\tFAILED\t{e:#}");
+                }
+            }
+        }
+        println!("COUNTS pulse={pulse_n} clubcraft={clubcraft_n} disagreement={disagree_n} failed={failed_n}");
+    }
+
     #[test]
     fn rejects_empty_and_mismatched_input() {
         assert!(analyse(&[], &[], 22050, 1).is_none());
