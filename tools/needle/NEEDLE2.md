@@ -7,8 +7,11 @@ reach 7-9 dB all share three things Needle 1 lacks: a band-split frequency grid,
 at once, and a sequence model over time. Needle 2 (`needle2.py`, `NeedleConfig.arch = "bs"`) adds those, using only
 what the Ethos-U55 runs.
 
-No Needle 2 model has been trained to the end yet. Everything below about speed and memory is measured with Vela 5.2.0
-on random weights. The only quality evidence so far is the 1,000-step pre-flight comparison further down.
+**Result (13 Nov 2026).** The first full run, `n2_a`, beats Needle 1 trained on the same data with the same amount of
+audio (`b20_jam3_frontier_env`) on every test set: +0.81 dB on MUSDB18-HQ (4.52 -> 5.19 dB), +1.24 dB on MoisesDB
+(5.47 -> 6.46 dB, better on all 30 songs), and it loses 0.09 dB in int8 with 0 CPU operators. Its one weak spot is
+the high-frequency attack of drum hits. Details under "First run" below. Speed and memory figures are Vela 5.2.0
+estimates.
 
 ## What the NPU can run (Vela 5.2.0, RA8P1 configs of `export_vela.py`, arena in SDRAM)
 
@@ -39,6 +42,7 @@ unbounded, which int8 handles worse than a GRU's state between -1 and 1.)
 |---|---|
 | STFT (M85) | n_fft 4096, hop 1024, 2048 bins: 10.8 Hz per bin; a 128-frame chunk is 2.97 s |
 | Input (M85) | per bin and channel: log1p magnitude, and the complex value with its magnitude log-compressed (6 channels) |
+| Input, optional (M85) | `--sub 4` (13 Nov, on trial in `n2_d`): per block of 16 bins, the mixture's envelope in four 5.8-ms slots inside the frame's hop; 8 more channels per row |
 | Band grid (M85) | 512 rows: 1 bin per row to 1.4 kHz, 2 to 5.5 kHz, 4 to 11 kHz, 16 above; a row's bins are stacked into channels |
 | Encoder (NPU) | 5 levels, widths 32 / 64 / 96 / 128 / 160; two 2x2 steps, then two frequency-only steps (the deepest level is 32 rows x 32 frames) |
 | TDF (NPU) | fully connected layer along frequency at levels 2-4, encoder and decoder |
@@ -80,7 +84,11 @@ thing to check after training; the fallback is 16-bit activations for the GRU pa
 | `export_vela2.py` | int8 TFLite + Vela report (random weights or `--checkpoint`) |
 | `vela_probe.py` | the building-block probes above |
 | `test_needle2.py` | checks without training; `--ref <folder>` Needle 1 unchanged; `--speed 8` training speed |
-| `needle.py`, `train.py`, `chunked.py`, `eval_tflite.py` | extended: config fields, `--arch bs`, evaluation in slices, band inputs for int8 |
+| `hit_scan2.py` | the drum-hit checks of `hit_scan.py` on any reference set (real stems); `--compare` two models hit by hit |
+| `oracle_hf.py` | ideal gains in each output format: what the format allows, without a network |
+| `ckinfo.py` | which weights a checkpoint holds (trained or an averaged copy), its step and validation SDR |
+| `queue_n2x.example.ps1` | one run from waiting for the GPU to the int8 score, with parameters (live copy `F:\needle\queue_n2x.ps1`) |
+| `needle.py`, `train.py`, `chunked.py`, `eval_tflite.py` | extended: config fields, `--arch bs`, evaluation in slices, band inputs for int8; `train.py --ema`, `--init`, `--sub` (13 Nov) |
 
 ```powershell
 .venv\Scripts\python needle2.py                        # self-test, parameters, GMAC
@@ -102,11 +110,104 @@ What would count as success: clearly better than `b20_jam3_frontier_env` in the 
 the house hold-out set, at an int8 loss under 0.2 dB. The blueprint's estimate for this class of model is 6-7.5 dB on
 MUSDB18-HQ against 4.5 dB today; that is an extrapolation from published models, not a promise.
 
+### Result (13 Nov 2026)
+
+150,000 steps in 4.9 h (9.7 steps/s; Needle 1 needed 5.6 h for the same audio). Validation on the 14 MUSDB tracks:
+best 5.56 dB at step 120,000, 5.51 at the end (Needle 1: best 4.60). It passed Needle 1's best after 25,000 steps.
+
+SDR in dB as `eval.py` reports it (drums / bass / other / vocals in brackets); the last column is `paired.py`:
+the mean difference per song with its 95 % bootstrap interval, and on how many songs Needle 2 is better.
+
+| Test set | Needle 1 `b20_jam3_frontier_env` | Needle 2 `n2_a` | Needle 2 minus Needle 1, per song |
+|---|---|---|---|
+| MUSDB18-HQ test, 50 songs | 4.52 (5.64 / 3.96 / 3.44 / 5.04) | 5.19 (6.08 / 4.56 / 4.07 / 6.06) | +0.81 [+0.63, +0.96], 46/50 |
+| MoisesDB test, 30 songs | 5.47 (6.08 / 6.44 / 3.36 / 6.01) | 6.46 (7.16 / 7.40 / 4.55 / 6.75) | +1.24 [+1.09, +1.39], 30/30 |
+| NI stems, 6 songs | 4.49 (7.96 / 6.87 / 2.39 / 0.75) | 4.63 (9.03 / 7.57 / 1.68 / 0.24) | +0.39 [-0.17, +0.88], 4/6 |
+| House hold-out, 50 songs, teacher stems | 6.07 (10.87 / 7.28 / 6.15 / -0.00) | 7.00 (12.30 / 8.69 / 7.00 / 0.01) | +1.06 [+0.76, +1.41], 47/50 |
+| Ibiza, 43 songs, teacher stems | 8.47 (18.53 / 9.86 / 4.48 / 1.00) | 9.07 (19.88 / 10.51 / 5.25 / 0.63) | +0.76 [+0.51, +1.01], 36/43 |
+
+Per stem, song by song: MUSDB drums +0.76, bass +0.66, other +0.61, vocals +1.19; MoisesDB +1.34, +1.11, +1.02,
++1.49. Every one of these intervals excludes 0. The NI set is too small to tell.
+
+**int8** (post-training, calibrated on MUSDB training mixtures): 3,270 operators, 0 on the CPU, 250 ms per chunk
+with the arena in SDRAM (RTF 0.084), arena 5.9 MiB, weights 2.78 MiB; TensorFlow copy against PyTorch 9e-6.
+MoisesDB: 6.38 dB in int8 against 6.46 dB in float. Loss: drums 0.11, bass 0.03, other 0.24, vocals -0.03,
+average 0.09 dB. The GRUs hold in int8; a 16-bit sub-graph is not needed.
+
+**Drum hits** on the house hold-out set against the teacher's drums (`hit_scan.py`, 82,253 hits):
+
+| | Needle 1 | Needle 2 |
+|---|---|---|
+| Level of a hit, median | -0.06 dB | -0.11 dB |
+| Hits more than 10 dB too quiet | 1.9 % | 2.1 % |
+| Hit-to-hit spread | 2.74 dB | 2.75 dB |
+| The same inside chunk crossfades / elsewhere | 1.6 % / 2.0 % | 1.6 % / 2.2 % |
+| 6-16 kHz attack more than 6 dB down | 1.0 % | 3.0 % |
+
+### The weak spot: high-frequency attacks
+
+Needle 2 keeps the level of drum hits as well as Needle 1, but it dulls the bright first 20 ms of more of them.
+
+- House hold-out, against the teacher (`hit_scan2.py --compare` on `hit_scan.json`): attack more than 6 dB down on
+  3.8 % of the hits that have high-frequency content, against 1.2 %; more than 10 dB down on 2.5 % against 0.6 %.
+  At the hits Needle 2 dulls, Needle 1 is fine (median +0.18 dB). It is concentrated: the worst 5 of 50 tracks hold
+  37 % of the dulled hits (45 % and 29 % of all hits in the two worst, where Needle 1 has 4.5 % and 2.2 %). It does
+  not depend on the position in the chunk (3.9 % inside crossfades, 3.8 % elsewhere).
+- MoisesDB test, against real drum stems (`hit_scan2.py`, 28,303 hits): 6.0 % against 4.9 % more than 6 dB down,
+  2.9 % against 2.3 % more than 10 dB down; Needle 2 dulls more hits on 26 of 30 tracks (median per track 5.3 %
+  against 2.9 %). The hit-to-hit spread is better (2.61 against 2.98 dB), the median level 0.3 dB lower.
+
+So the effect is real, moderate on acoustic kits and large on a few dense electronic tracks. SDR does not show
+it: on three of the five worst tracks Needle 2's drums still score 0.7-1.2 dB higher than Needle 1's (on the other
+two 0.7-0.8 dB lower).
+
+**It is not the output format** (`oracle_hf.py`). The first suspicion was time resolution at the output: a 93-ms
+window (Needle 1: 46 ms) and one filter for the 4 or 16 bins of a row. The oracle test rebuilds the drums of the
+five worst tracks with the ideal real gain per cell of each format:
+
+| Format, ideal gains | Drums SDR | 6-16 kHz SDR | Attack > 6 dB down |
+|---|---|---|---|
+| Needle 2: 4096 / 1024, one gain per row | 14.33 dB | 18.42 dB | 2.9 % |
+| 4096 / 1024, one gain per bin | 14.34 dB | 19.04 dB | 2.4 % |
+| Needle 1: 2048 / 512, one gain per bin | 13.88 dB | 19.40 dB | 2.8 % |
+| Split: 1024 / 256 above 5.5 kHz (5.8-ms frames) | 14.33 dB | 18.39 dB | 3.7 % |
+
+With ideal gains Needle 2's format keeps the attacks as well as Needle 1's (2.9 % against 2.8 %), and a
+short-window output above 5.5 kHz gains nothing. The trained `n2_a` dulls 10-45 % of the hits on these tracks where
+the oracle in its own format dulls 0-9 %. So the network does not find these hits; it could pass them.
+
+**What it probably cannot see.** In the magnitudes of a 93-ms frame a 20-ms hat is a small bump on whatever else
+is bright. The frame still holds the timing, in the phases of neighbouring bins, but the first layer would have to
+learn an inverse DFT to read it. `--sub 4` (`needle.subframe_envelope`) hands it over: for every block of 16 bins
+(172 Hz) the envelope in four 5.8-ms slots inside the frame's hop, computed from the same STFT (16 complex
+multiply-adds per slot on the M85, no second STFT), 8 extra input channels per row. On the RA8P1 it costs 1 ms
+(251 ms per chunk, RTF 0.085, arena 5.9 MiB, 0 CPU operators; random weights). Whether it brings the hats back is
+what `n2_d` tests. If `n2_b` (no GRU) does not dull them, the cause is the GRU's wide view instead.
+
 ## Second run: `n2_b` = `n2_a` without the GRU (`queue_n2b.example.ps1`, live copy `F:\needle\queue_n2b.ps1`)
 
 `--rnn 0`, everything else and the number of steps as `n2_a`; starts when `queue_n2a` has finished. The GRU blocks are
 73 ms of the 250 ms per chunk (RTF 0.084 against 0.060 without them), so the deck needs to know what they buy. The
-queue prints the song-by-song difference `n2_a` minus `n2_b`.
+queue prints the song-by-song difference `n2_a` minus `n2_b`. Started 13 Nov 09:02 (1.53 M parameters, 10.5 steps/s).
+
+## Runs queued on 13 Nov: `n2_d` and `n2_c` (`queue_n2x.example.ps1`)
+
+| Run | What changes against `n2_a` | Question |
+|---|---|---|
+| `n2_d` | `--sub 4` (the sub-frame envelope input), from scratch, 150,000 steps; `--ema 0.999` | Do the hats come back, at what price in SDR? |
+| `n2_c` | starts from `n2_a`'s best weights (`--init`), 150,000 more steps, new schedule with peak lr 5e-4; `--ema 0.999 0.9999` | Does more training help? Do averaged weights help? |
+
+**Averaged weights (`--ema`).** A copy of the weights follows the trained ones as an exponential moving average
+(decay 0.999 = about the last 1,000 steps; warmed up so that the first steps count fully). It is never trained.
+Every validation scores the trained weights and each copy; `best.pt` is the best of all, `best_raw.pt` the trained
+weights' own best, so runs with and without `--ema` still compare like for like. Reason to expect a gain: v16's and
+`n2_a`'s validation SDR move by up to 0.25 dB from one validation to the next. Checked on a 450-step test: all
+three are scored and saved, `--resume` restores the copies.
+
+The queue evaluates `best_raw.pt` on the five sets and compares it with `n2_a` song by song; if `best.pt` is an
+averaged copy it is scored on MUSDB and MoisesDB as `<name>_ema`. `best.pt` goes to the two hit scans (house
+hold-out against the teacher, MoisesDB against real stems, each with `hit_scan2.py --compare` against `n2_a`) and
+to int8.
 
 ## Pre-flight checks (12 Nov 2026, late evening)
 
@@ -139,10 +240,13 @@ Two more checks before the night run:
 
 ## Open questions, in the order they should be answered
 
-1. Does the family beat Needle 1 at all on the same data (`n2_a`)?
-2. Does int8 hold for the GRUs of a trained model?
-3. Which parts carry the gain: `--rnn 0` (no GRU), `--tdf 0 0 0 0 0`, `--no-cplx`, and the old STFT
+1. ~~Does the family beat Needle 1 at all on the same data (`n2_a`)?~~ Yes: +0.8 dB on MUSDB, +1.2 dB on MoisesDB.
+2. ~~Does int8 hold for the GRUs of a trained model?~~ Yes: 0.09 dB lost on MoisesDB.
+3. Why does Needle 2 lose more high-frequency attacks? Not the output format (oracle). Does the sub-frame envelope
+   input bring them back (`n2_d`), or is it the GRU (`n2_b`'s hit scan)?
+4. Does more training help, and do averaged weights (`n2_c`)?
+5. Which parts carry the gain: `--rnn 0` (no GRU, `n2_b`), `--tdf 0 0 0 0 0`, `--no-cplx`, and the old STFT
    (`--n-fft 2048 --hop 512 --bins 1024` with a three-band grid) are one flag each.
-4. Time resolution at the deepest level: `--tsteps 1` keeps 64 steps instead of 32 (about 1.5x the compute).
-5. Per-stem refiners that run ahead of the playhead (blueprint, Candidate C), vocals first.
-6. Real hardware: every time here is a Vela estimate with assumed SDRAM bandwidth (350 MB/s).
+6. Time resolution at the deepest level: `--tsteps 1` keeps 64 steps instead of 32 (about 1.5x the compute).
+7. Per-stem refiners that run ahead of the playhead (blueprint, Candidate C), vocals first.
+8. Real hardware: every time here is a Vela estimate with assumed SDRAM bandwidth (350 MB/s).

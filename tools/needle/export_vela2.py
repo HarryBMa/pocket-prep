@@ -89,6 +89,7 @@ def main():
     ap.add_argument("--rnn-hidden", type=int, help="(random weights only) GRU state size per direction")
     ap.add_argument("--tsteps", type=int, help="(random weights only) down-samplings that also halve time")
     ap.add_argument("--taps", type=int, help="(random weights only) deep-filter taps")
+    ap.add_argument("--sub", type=int, help="(random weights only) sub-frame envelope slots per frame, 0 = none")
     ap.add_argument("--audio", help="folder of 44.1 kHz stereo tracks for calibration (training data, never test)")
     ap.add_argument("--audio-glob", default="**/*")
     ap.add_argument("--calib-chunks", type=int, default=64)
@@ -106,7 +107,7 @@ def main():
         model.load_state_dict(ck["model"])
     else:
         kw = {k: v for k, v in dict(frames=a.frames, widths=a.widths, tdf=a.tdf, rnn=a.rnn, rnn_hidden=a.rnn_hidden,
-                                    tsteps=a.tsteps, taps=a.taps).items() if v is not None}
+                                    tsteps=a.tsteps, taps=a.taps, sub=a.sub).items() if v is not None}
         cfg = bs_config(**kw)
         model = randomize_norms(Needle(cfg))
     assert cfg.arch == "bs", "this script exports Needle 2; use export_vela.py for Needle 1"

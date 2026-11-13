@@ -24,6 +24,7 @@ Optional "frontier" features (all off by default, so the plain model and its che
   "other", channel and bin, a complex filter over `taps` neighbouring STFT frames (tanh instead of
   sigmoid), and "other" is the residual. Same layer types, so still 0 CPU operators in Vela.
 """
+import math
 from dataclasses import dataclass
 
 import torch
@@ -61,6 +62,9 @@ class NeedleConfig:
     tdf: tuple = (0, 0, 4, 2, 2)                  # bs: TDF bottleneck factor per level (0 = no TDF at that level)
     rnn: int = 2                                  # bs: dual-path GRU blocks at the deepest level
     rnn_hidden: int = 96                          # bs: GRU state size per direction
+    sub: int = 0                                  # bs: + `sub` input channels per audio channel: the mixture's envelope in
+                                                  # `sub` time slots inside each frame's hop (subframe_envelope), so short
+                                                  # hits are visible although the STFT window is long. 0 = off
 
     def __post_init__(self):
         self.mult, self.harmonics = tuple(self.mult), tuple(self.harmonics)
@@ -88,7 +92,23 @@ class NeedleConfig:
 
     @property
     def in_channels(self):
-        return self.audio_channels + int(self.coord) + len(self.harmonics) + (2 * self.audio_channels if self.cplx else 0)
+        return (self.audio_channels + int(self.coord) + len(self.harmonics) + (2 * self.audio_channels if self.cplx else 0)
+                + self.sub_channels)
+
+    @property
+    def sub_channels(self):
+        """The last input channels: the sub-frame envelope (one value per block of bins, not per bin)."""
+        return self.audio_channels * self.sub
+
+    @property
+    def sub_block(self):
+        """Bins per block of the sub-frame envelope: as many as it takes for a time slot of hop / sub samples."""
+        return self.n_fft * self.sub // self.hop
+
+    def band_in(self, stack):
+        """bs: input channels of a band whose rows hold `stack` bins: the per-bin channels of all its bins, plus
+        the sub-frame envelope once."""
+        return (self.in_channels - self.sub_channels) * stack + self.sub_channels
 
     @property
     def out_channels(self):
@@ -105,7 +125,12 @@ class NeedleConfig:
                 f"every band's row count must be divisible by {down}"
             assert self.frames % self.time_multiple == 0, f"frames must be divisible by {self.time_multiple}"
             assert len(self.tdf) == len(self.widths) and 0 <= self.tsteps < len(self.widths)
+            if self.sub:
+                g = self.sub_block
+                assert self.hop % self.sub == 0 and self.bins % g == 0, "sub must divide the hop, and its blocks the bins"
+                assert all(b % g == 0 and g % s == 0 for b, s in self.bands), f"every band must hold whole blocks of {g} bins"
         else:
+            assert self.sub == 0, "the sub-frame envelope is a Needle 2 input"
             assert self.bins % 2 ** self.levels == 0 and self.frames % 2 ** self.levels == 0, \
                 f"bins and frames must be divisible by {2 ** self.levels}"
         assert self.bins <= self.n_fft // 2
@@ -114,7 +139,7 @@ class NeedleConfig:
     def tag(self):
         """Short name of the non-default features, for folder and file names ('' for the plain model)."""
         return (("_c" if self.coord else "") + (("_h" + "".join(map(str, self.harmonics))) if self.harmonics else "")
-                + (f"_t{self.taps}" if self.taps else "") + ("_x" if self.cplx else ""))
+                + (f"_t{self.taps}" if self.taps else "") + ("_x" if self.cplx else "") + (f"_s{self.sub}" if self.sub else ""))
 
 
 class Block(nn.Module):
@@ -216,7 +241,35 @@ def network_input(spec, cfg: NeedleConfig):
         m = mag[:, :, : cfg.bins]
         z = spec[:, :, : cfg.bins] * (torch.log1p(m) / m.clamp(min=1e-8))
         chans.append(torch.view_as_real(z).permute(0, 1, 4, 2, 3).reshape(b, 2 * c, cfg.bins, t))
+    if cfg.sub:
+        chans.append(subframe_envelope(spec, cfg))                          # must stay last (NeedleConfig.sub_channels)
     return torch.cat(chans, 1)
+
+
+def subframe_envelope(spec, cfg: NeedleConfig):
+    """Complex STFT (B, C, F, T) -> (B, C * sub, bins, T): log1p of the mixture's envelope in `sub` time slots
+    inside each frame's hop, for every block of g = n_fft * sub / hop neighbouring bins (16 bins = 172 Hz for
+    4096 / 1024 and 4 slots of 5.8 ms). All bins of a block get the same values.
+
+    Why: a 4096-sample window is 93 ms long. A hi-hat lasts 20 ms; in the magnitudes of such a frame it is a small
+    bump on top of whatever else is bright, and Needle 2 lost hats that Needle 1 (46-ms windows) kept. The
+    information is still in the frame: g neighbouring bins, added up with the phase turned to a time tau inside the
+    window, give the band's signal around tau (an inverse DFT over g bins; the time resolution is n_fft / g
+    samples). So this is a short-window view computed from the long-window STFT, with no second STFT: on the
+    deck it is `sub` dot products of g complex numbers per block and frame, on the M85.
+
+    The slots tile the hop in the middle of the window (where the Hann window is above 0.9), so the slots of
+    successive frames follow each other without gaps."""
+    g, s = cfg.sub_block, cfg.sub
+    b, c, _, t = spec.shape
+    z = spec[:, :, : cfg.bins].reshape(b, c, cfg.bins // g, g, t)
+    tau = cfg.n_fft / 2 - cfg.hop / 2 + (torch.arange(s, device=spec.device) + 0.5) * (cfg.hop / s)   # slot centres, samples from the window start
+    angle = 2 * math.pi * tau[:, None] * torch.arange(g, device=spec.device)[None] / cfg.n_fft        # (s, g)
+    turn = torch.polar(torch.ones_like(angle), angle).to(z.dtype)
+    with torch.autocast(spec.device.type, enabled=False):                 # complex sums stay in float32
+        y = torch.einsum("bcngt,sg->bcsnt", z, turn)                      # (B, C, s, blocks, T)
+        env = torch.log1p(y.abs())
+    return env.repeat_interleave(g, dim=3).reshape(b, c * s, cfg.bins, t)
 
 
 def apply_masks(masks, spec, cfg: NeedleConfig, eps=1e-4):

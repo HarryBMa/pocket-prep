@@ -131,7 +131,7 @@ def build(model: Needle2):
     (rows, frames, channels), without the batch dimension of 1."""
     assert not model.training, "call model.eval() first: the BatchNorms are folded with their running statistics"
     cfg = model.cfg
-    shapes = [(b // s, cfg.frames, cfg.in_channels * s) for b, s in cfg.bands]
+    shapes = [(b // s, cfg.frames, cfg.band_in(s)) for b, s in cfg.bands]
 
     def fn(*bands):
         x = tf.concat([conv2d(band, *fold_conv(stem[0], stem[1])) for stem, band in zip(model.stems, bands)], axis=1)

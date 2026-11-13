@@ -9,7 +9,8 @@ r"""Checks for Needle 2 (needle2.py) that need no training.
 2. The band grid: stacking bins into rows loses nothing, and every bin takes its row's output.
 3. Device-style chunked separation runs and the four stems add up to the mix.
 4. The training loss runs, is finite and backpropagates into every part (stems, TDF, GRU, decoder, head).
-5. (--ref) With the Needle 2 changes in needle.py, Needle 1 still gives bit-identical outputs.
+5. The sub-frame envelope input (--sub): a click lands in the right time slot, a row takes it once.
+6. (--ref) With the Needle 2 changes in needle.py, Needle 1 still gives bit-identical outputs.
 """
 import argparse
 import importlib.util
@@ -20,7 +21,7 @@ from pathlib import Path
 import torch
 
 from chunked import separate_chunked, torch_predictor
-from needle import Needle, NeedleConfig, apply_output, count_macs, network_input, spectrogram
+from needle import Needle, NeedleConfig, apply_output, count_macs, network_input, spectrogram, subframe_envelope
 from needle2 import Needle2, bs_config, randomize_norms, row_of_bin, to_bands
 from train import check_alignment, compute_loss, crop_length, save_model
 
@@ -74,7 +75,7 @@ def test_loss():
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     if dev == "cuda":
         torch.cuda.set_per_process_memory_fraction(0.15)    # a training run may own the rest of the card
-    for cfg in (bs_config(**SMALL), bs_config(**SMALL, taps=0, cplx=False)):
+    for cfg in (bs_config(**SMALL), bs_config(**SMALL, taps=0, cplx=False), bs_config(**SMALL, sub=4)):
         check_alignment(cfg, dev)
         model = Needle(cfg).to(dev).train()
         stems = torch.randn(2, 4, 2, crop_length(cfg), device=dev) * 0.05
@@ -88,8 +89,47 @@ def test_loss():
         assert torch.isfinite(loss), loss
         dead = [n for n, p in model.named_parameters() if p.grad is None or not torch.isfinite(p.grad).all() or p.grad.abs().sum() == 0]
         assert not dead, f"no gradient in: {dead[:8]}"
-        print(f"loss ok on {dev} (taps {cfg.taps}, cplx {cfg.cplx}): {loss.item():.4f} spec {spec_l1.item():.4f} wave {wave_l1.item():.4f}; "
+        print(f"loss ok on {dev} (taps {cfg.taps}, cplx {cfg.cplx}, sub {cfg.sub}): {loss.item():.4f} spec {spec_l1.item():.4f} wave {wave_l1.item():.4f}; "
               f"every parameter gets a gradient")
+
+
+def test_sub():
+    cfg = bs_config(**SMALL, sub=4)
+    cfg.check()
+    g, e, slot = cfg.sub_block, cfg.sub_channels, cfg.hop // cfg.sub
+    assert (g, e, cfg.in_channels, cfg.band_in(16)) == (16, 8, 14, 6 * 16 + 8)
+    # A click 300 samples after the centre of frame 20: its hop starts 512 samples before the centre, so the click is
+    # 812 samples into it = slot 3 (of 256 samples each). A frame is centred on t * hop (center=True).
+    wav = torch.zeros(1, 2, cfg.hop * 40)
+    wav[..., 20 * cfg.hop + 300] = 1.0
+    env = subframe_envelope(spectrogram(wav, cfg), cfg)[0, :cfg.sub]                # left channel: (slots, bins, T)
+    assert env.shape == (cfg.sub, cfg.bins, 41)
+    for block in (0, 40, cfg.bins // g - 1):
+        top = env[:, block * g].flatten().argmax().item()                            # index = slot * T + frame
+        assert (top // 41, top % 41) == (3, 20), (block, top // 41, top % 41)
+    assert torch.equal(env[:, 5 * g], env[:, 6 * g - 1])                             # one value per block
+    # A steady tone fills every slot alike (the Hann window is 0.92 to 1 over the middle hop).
+    n = torch.arange(cfg.hop * 40)
+    tone = torch.sin(2 * torch.pi * 8000 / cfg.sample_rate * n)[None, None].repeat(1, 2, 1)
+    env = torch.expm1(subframe_envelope(spectrogram(tone, cfg), cfg)[0, :cfg.sub, int(8000 * cfg.n_fft / cfg.sample_rate), 10:30])
+    assert env.max() / env.min() < 1.15, (env.max() / env.min()).item()
+    # The band grid stacks the per-bin channels and takes the envelope once per row.
+    x = network_input(torch.randn(2, 2, cfg.bins + 1, 8, dtype=torch.complex64), cfg)
+    assert x.shape == (2, cfg.in_channels, cfg.bins, 8)
+    k = 0
+    for band, (bins, s) in zip(to_bands(x, cfg), cfg.bands):
+        b, c, rows, t = band.shape
+        assert c == cfg.band_in(s) and torch.equal(band[:, c - e:], x[:, -e:, k:k + bins:s])
+        main = band[:, :c - e].reshape(b, (c - e) // s, s, rows, t).permute(0, 1, 3, 2, 4).reshape(b, (c - e) // s, bins, t)
+        assert torch.equal(main, x[:, :-e, k:k + bins])
+        k += bins
+    torch.manual_seed(0)
+    model = randomize_norms(Needle(cfg)).eval()
+    wav = torch.randn(2, cfg.sample_rate * 3) * 0.1
+    stems = separate_chunked(torch_predictor(model, 4), wav, cfg, overlap=8, batch=4)
+    err = (stems.sum(0) - wav).abs().max().item()
+    assert stems.shape == (4, 2, wav.shape[-1]) and err < 1e-4, (stems.shape, err)
+    print(f"sub-frame envelope: ok (a click lands in its {slot}-sample slot, {e} extra channels per row, chunked separation runs)")
 
 
 def test_needle1_unchanged(ref_dir, checkpoint=None):
@@ -169,6 +209,7 @@ if __name__ == "__main__":
         test_bands()
         test_chunked()
         test_loss()
+        test_sub()
         if a.ref:
             test_needle1_unchanged(a.ref, a.checkpoint)
         print("all ok")

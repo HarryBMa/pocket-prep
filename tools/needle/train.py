@@ -16,8 +16,13 @@
     # complex input and 3-tap deep filtering are its defaults
     python train.py --musdb ... --arch bs --batch 8 --name n2_a
 
+    # train on from another run's weights with a new schedule, and keep two averaged copies of the weights
+    python train.py --musdb ... --arch bs --batch 8 --init runs\\n2_a\\best.pt --lr 5e-4 --ema 0.999 0.9999 --name n2_c
+
 Writes runs/<name>/:
   best.pt   best validation SDR so far: {"model", "config", ...}, what export_vela.py --checkpoint reads
+            (with --ema: of the trained weights and the averaged copies, whichever scored best; best_raw.pt and
+            best_ema<decay>.pt keep each one's own best)
   last.pt   everything needed to resume (model, optimiser, schedule, step)
   log.csv   training losses every --log-every steps;  val.csv  validation SDR per source
   TensorBoard events:  tensorboard --logdir runs
@@ -29,6 +34,7 @@ One training step, in words:
   4. loss = L1(masked mixture magnitude, stem magnitude) + 0.1 x L1(waveform after iSTFT, stem).
 """
 import argparse
+import copy
 import csv
 import math
 import time
@@ -177,15 +183,42 @@ def validate(model, tracks, cfg: NeedleConfig, overlap, device):
     """Separate every validation track with device-style chunking (float) and return the
     per-track SDR (tracks, sources). The mixture is the sum of the stems."""
     batch = 16 if cfg.taps else 64                               # deep filtering: 4x the outputs per chunk, keep validation small next to training
-    predict = torch_predictor(model, batch)
+    was_training = model.training
+    predict = torch_predictor(model, batch)                      # puts the model in eval mode
     scores = []
     for _, stems in tracks:
         ref = torch.from_numpy(np.array(stems)).float() / 32768             # reference stays on the CPU
         est = separate_chunked(predict, ref.sum(0).to(device), cfg, overlap, batch)
         scores.append(nsdr(ref, est))
-    model.train()
+    model.train(was_training)                                     # the trained model goes back to training, an averaged copy stays in eval
     torch.cuda.empty_cache()                                      # give validation's memory back before training
     return torch.stack(scores).float()
+
+
+# ── Averaged weights (--ema) ─────────────────────────────────────────────────
+
+def ema_copy(model):
+    """A frozen copy of the model that ema_update() lets follow the trained weights slowly."""
+    e = copy.deepcopy(model).eval().requires_grad_(False)
+    for m in e.modules():
+        if isinstance(m, torch.nn.RNNBase):
+            m.flatten_parameters()                                # the copy's GRU weights back in one block for cuDNN
+    return e
+
+
+@torch.no_grad()
+def ema_update(ema, model, decay):
+    """ema <- decay * ema + (1 - decay) * model: an exponential moving average of the weights and of the
+    BatchNorm running statistics. The copy is never trained. Single steps of training jump around the
+    valley the optimiser is in; their average sits nearer its middle, which usually scores a little higher
+    and much more evenly from one validation to the next."""
+    for e, m in zip(ema.parameters(), model.parameters()):
+        e.lerp_(m, 1 - decay)
+    for e, m in zip(ema.buffers(), model.buffers()):
+        if e.dtype.is_floating_point:
+            e.lerp_(m, 1 - decay)
+        else:
+            e.copy_(m)                                            # counters, index tables
 
 
 # ── Checkpoints ──────────────────────────────────────────────────────────────
@@ -211,6 +244,8 @@ def main():
     ap.add_argument("--name", required=True)
     ap.add_argument("--runs", default=str(HERE / "runs"))
     ap.add_argument("--resume", action="store_true", help="continue from runs/<name>/last.pt")
+    ap.add_argument("--init", help="start from the weights of this checkpoint (another run's best.pt, same model "
+                    "config) with a new optimiser and schedule; unlike --resume, which continues a run")
     # model (only these may change; the layer types are fixed for the NPU)
     ap.add_argument("--base", type=int, default=16)
     ap.add_argument("--mult", type=int, nargs="+", default=list(NeedleConfig.mult))
@@ -235,6 +270,8 @@ def main():
     ap.add_argument("--tsteps", type=int, help="bs: how many of the down-samplings also halve time (default 2)")
     ap.add_argument("--rnn", type=int, help="bs: dual-path GRU blocks at the deepest level (default 2; 0 = none)")
     ap.add_argument("--rnn-hidden", type=int, help="bs: GRU state size per direction (default 96)")
+    ap.add_argument("--sub", type=int, help="bs: extra input, the mixture's envelope in this many time slots inside each "
+                    "frame's hop (needle.subframe_envelope); 4 = 5.8-ms slots. Default 0 = off")
     # optimisation
     ap.add_argument("--steps", type=int, default=200_000)
     ap.add_argument("--batch", type=int, default=64)
@@ -251,6 +288,9 @@ def main():
     ap.add_argument("--p-speed", type=float, default=0.0, help="probability of speed/pitch augmentation (0 = off)")
     ap.add_argument("--speed-change", type=float, default=0.06, help="largest speed change, 0.06 = +-6 %%")
     ap.add_argument("--wave-weight", type=float, default=0.1)
+    ap.add_argument("--ema", type=float, nargs="*", default=[],
+                    help="keep averaged copies of the weights (exponential moving average) with these decays, e.g. "
+                         "0.999 0.9999; every validation scores the trained weights and each copy")
     # augmentation
     ap.add_argument("--remix", type=float, default=0.5, help="probability that a crop mixes stems of different songs")
     ap.add_argument("--gain-db", type=float, default=6.0)
@@ -280,7 +320,7 @@ def main():
               harmonics=tuple(a.harmonics), taps=(3 if bs else 0) if a.taps is None else a.taps,
               cplx=(bs and not a.no_cplx) or a.cplx, n_fft=a.n_fft or (4096 if bs else 2048),
               hop=a.hop or (1024 if bs else 512), bins=a.bins or (2048 if bs else 1024))
-    for k in ("widths", "tdf", "tsteps", "rnn", "rnn_hidden"):          # Needle 2's sizes: only what was given, the rest are NeedleConfig's defaults
+    for k in ("widths", "tdf", "tsteps", "rnn", "rnn_hidden", "sub"):   # Needle 2's sizes: only what was given, the rest are NeedleConfig's defaults
         if getattr(a, k) is not None:
             kw[k] = getattr(a, k)
     cfg = NeedleConfig(**kw)
@@ -289,6 +329,7 @@ def main():
     model = Needle(cfg).to(device)
     info = count_macs(cfg)
     what = (f"Needle 2 widths {cfg.widths} tdf {cfg.tdf} gru {cfg.rnn} x {cfg.rnn_hidden}, STFT {cfg.n_fft}/{cfg.hop}, {cfg.rows} rows"
+            + (f", sub-frame envelope in {cfg.sub} slots" if cfg.sub else "")
             if bs else f"Needle base {cfg.base} mult {cfg.mult}")
     print(f"{what}, frames {cfg.frames} coord {cfg.coord} harmonics {cfg.harmonics} cplx {cfg.cplx} "
           f"taps {cfg.taps}: {info['params']:,} parameters, "
@@ -320,6 +361,21 @@ def main():
         scaler.load_state_dict(ck["scaler"])
         start, best, bad = ck["step"], ck["best"], ck["bad"]
         print(f"resumed at step {start:,}, best validation SDR {best:.2f} dB")
+    elif a.init:
+        ck0 = torch.load(a.init, map_location=device, weights_only=False)
+        assert NeedleConfig(**ck0["config"]) == cfg, "--init: the checkpoint was trained with another config"
+        model.load_state_dict(ck0["model"])
+        print(f"initialised from {a.init} (step {ck0.get('step', 0):,}, validation SDR {ck0.get('val_avg', float('nan')):.2f} dB)")
+
+    # --ema: averaged copies of the weights. "raw" below is the trained model itself.
+    ema_names = [f"ema{d:g}" for d in a.ema]
+    emas = [ema_copy(model) for _ in a.ema]
+    stream_best = {}                                              # best validation SDR of the trained weights and of each copy
+    if a.resume and emas:
+        assert ck.get("ema_decays") == list(a.ema), f"the run was started with --ema {ck.get('ema_decays')}"
+        for e, sd in zip(emas, ck["ema"]):
+            e.load_state_dict(sd)
+        stream_best = ck["stream_best"]
 
     # Data
     t = time.time()
@@ -362,7 +418,7 @@ def main():
     log, val = csv.writer(log_f), csv.writer(val_f)
     if new:
         log.writerow(["step", "hours", "loss", "spec_l1", "wave_l1", "grad_norm", "lr", "steps_per_s"])
-        val.writerow(["step", "hours", *SOURCES, "avg", "best"])
+        val.writerow(["step", "hours", *SOURCES, "avg", "best", *(f"{n}_{s}" for n in ema_names for s in (*SOURCES, "avg"))])
 
     model.train()
     t_wall = t_log = time.time()                                  # this session, for --max-hours
@@ -384,6 +440,8 @@ def main():
         scaler.update()
         sched.step()
         step += 1
+        for d, e in zip(a.ema, emas):
+            ema_update(e, model, min(d, (1 + step) / (10 + step)))    # the first steps count fully: the average warms up
         acc += torch.stack([loss.detach(), spec_l1.detach(), wave_l1.detach(), grad_norm.detach()])
 
         if step % a.log_every == 0:                               # one GPU sync per log line, not per step
@@ -406,24 +464,38 @@ def main():
 
         done = step >= a.steps or (time.time() - t_wall) / 3600 > a.max_hours
         if step % a.val_every == 0 or done:
-            sdr = validate(model, valid, cfg, a.overlap, device)  # (tracks, sources)
-            med = sdr.median(0).values                            # median over tracks, as in SiSEC/museval
-            avg = med.mean().item()
-            improved = avg > best
-            best, bad = (avg, 0) if improved else (best, bad + 1)
+            # The trained weights first, then each averaged copy (--ema). Per model: (tracks, sources) -> median
+            # over tracks, as in SiSEC/museval -> mean over sources.
+            streams = [("raw", model)] + list(zip(ema_names, emas))
+            meds = [validate(net, valid, cfg, a.overlap, device).median(0).values for _, net in streams]
+            avgs = [md.mean().item() for md in meds]
+            med, avg = meds[0], avgs[0]                           # the trained weights: what the logs have always shown
+            top = max(range(len(streams)), key=lambda i: avgs[i])
+            improved = avgs[top] > best
+            best, bad = (avgs[top], 0) if improved else (best, bad + 1)
             h = (time.time() - t_start) / 3600
-            val.writerow([step, f"{h:.4f}", *(f"{v:.3f}" for v in med.tolist()), f"{avg:.3f}", f"{best:.3f}"])
+            ema_cols = [f"{x:.3f}" for md, av in zip(meds[1:], avgs[1:]) for x in (*md.tolist(), av)]
+            val.writerow([step, f"{h:.4f}", *(f"{v:.3f}" for v in med.tolist()), f"{avg:.3f}", f"{best:.3f}", *ema_cols])
             val_f.flush()
             for s, v in zip(SOURCES, med.tolist()):
                 tb.add_scalar(f"val_sdr/{s}", v, step)
             tb.add_scalar("val_sdr/avg", avg, step)
+            for n, v in zip(ema_names, avgs[1:]):
+                tb.add_scalar(f"val_sdr/avg_{n}", v, step)
             print(f"validation at step {step:,}: " + ", ".join(f"{s} {v:.2f}" for s, v in zip(SOURCES, med.tolist()))
-                  + f"  -> avg {avg:.2f} dB {'(new best)' if improved else f'(best {best:.2f})'}", flush=True)
-            extra = {"step": step, "val_sdr": dict(zip(SOURCES, med.tolist())), "val_avg": avg}
+                  + f"  -> avg {avg:.2f} dB" + "".join(f", {n} {v:.2f}" for n, v in zip(ema_names, avgs[1:]))
+                  + (f" (new best{': ' + streams[top][0] if emas else ''})" if improved else f" (best {best:.2f})"), flush=True)
+            extras = [{"step": step, "val_sdr": dict(zip(SOURCES, md.tolist())), "val_avg": av} for md, av in zip(meds, avgs)]
             if improved:
-                save_model(run / "best.pt", model, cfg, **extra)
+                save_model(run / "best.pt", streams[top][1], cfg, **extras[top], **({"weights": streams[top][0]} if emas else {}))
+            if emas:                                              # each one's own best, to compare them on the test sets later
+                for (n, net), x in zip(streams, extras):
+                    if x["val_avg"] > stream_best.get(n, -float("inf")):
+                        stream_best[n] = x["val_avg"]
+                        save_model(run / f"best_{n}.pt", net, cfg, weights=n, **x)
             save_model(run / "last.pt", model, cfg, optimizer=opt.state_dict(), scheduler=sched.state_dict(),
-                       scaler=scaler.state_dict(), best=best, bad=bad, **extra)
+                       scaler=scaler.state_dict(), best=best, bad=bad, **extras[0],
+                       **({"ema": [e.state_dict() for e in emas], "ema_decays": list(a.ema), "stream_best": stream_best} if emas else {}))
             if bad >= a.patience:
                 print(f"no improvement in {a.patience} validations: stopping early")
                 break

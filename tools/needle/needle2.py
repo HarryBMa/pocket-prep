@@ -47,11 +47,13 @@ def to_bands(x, cfg: NeedleConfig):
     """Network input (B, C, bins, T) -> one tensor per band, (B, C * stack, rows, T): the `stack` bins of a row
     become channels (channel index = c * stack + position in the row). Nothing is lost; it is only a different
     layout, and it is the layout the M85 fills in on the deck."""
+    e = cfg.sub_channels                                    # the sub-frame envelope: one value per block of bins already,
+    env, x = (x[:, x.shape[1] - e:], x[:, :x.shape[1] - e]) if e else (None, x)   # so it is not stacked, a row takes it once
     b, c, _, t = x.shape
     out, k = [], 0
     for bins, s in cfg.bands:
-        band = x[:, :, k:k + bins].reshape(b, c, bins // s, s, t).permute(0, 1, 3, 2, 4)
-        out.append(band.reshape(b, c * s, bins // s, t))
+        band = x[:, :, k:k + bins].reshape(b, c, bins // s, s, t).permute(0, 1, 3, 2, 4).reshape(b, c * s, bins // s, t)
+        out.append(torch.cat([band, env[:, :, k:k + bins:s]], 1) if e else band)
         k += bins
     return out
 
@@ -143,7 +145,7 @@ class Needle2(nn.Module):
         def tdf(i):
             return [TDF(rows[i], cfg.tdf[i])] if cfg.tdf[i] else []
 
-        self.stems = nn.ModuleList(ConvBN(cfg.in_channels * s, w[0]) for _, s in cfg.bands)
+        self.stems = nn.ModuleList(ConvBN(cfg.band_in(s), w[0]) for _, s in cfg.bands)
         self.enc = nn.ModuleList([nn.Sequential(ConvBN(w[0], w[0]), *tdf(0))])
         for i in range(1, n):
             self.enc.append(nn.Sequential(ConvBN(w[i - 1], w[i], self.strides[i - 1]), ConvBN(w[i], w[i]), *tdf(i)))
@@ -208,7 +210,7 @@ def selftest():
         model = randomize_norms(Needle2(cfg)).eval()
         x = torch.randn(2, cfg.in_channels, cfg.bins, cfg.frames)
         bands = to_bands(x, cfg)
-        assert [tuple(b.shape[1:3]) for b in bands] == [(cfg.in_channels * s, n // s) for n, s in cfg.bands]
+        assert [tuple(b.shape[1:3]) for b in bands] == [(cfg.band_in(s), n // s) for n, s in cfg.bands]
         assert torch.equal(bands[1][0, 1, 3], x[0, 0, 128 + 3 * 2 + 1])          # band 1, row 3, second bin of channel 0
         with torch.no_grad():
             rows, out = model.forward_rows(x), model(x)
